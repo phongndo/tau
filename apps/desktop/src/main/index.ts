@@ -151,6 +151,7 @@ function resolveAppIconPath(): string | null {
   const fileName = appIconFileName()
   const candidates = [
     resolve(process.cwd(), 'assets/nightly', fileName),
+    resolve(process.cwd(), '../../assets/nightly', fileName),
     join(__dirname, '../renderer/nightly', fileName),
   ]
 
