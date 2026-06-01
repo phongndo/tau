@@ -419,6 +419,12 @@ export function detachTerminalSurface(sessionId: string, term?: Terminal | null)
   getTerminalParkingContainer().appendChild(runtime.wrapper)
 }
 
+export function disposeTerminalRuntime(sessionId: string): void {
+  const runtime = terminalRuntimes.get(sessionId)
+  if (!runtime || runtime.disposed) return
+  runtime.term.dispose()
+}
+
 function installWebglRenderer(term: Terminal): void {
   const webglAddon = new WebglAddon()
   const contextLoss = webglAddon.onContextLoss(() => {

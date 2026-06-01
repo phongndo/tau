@@ -62,6 +62,7 @@ import { sanitizeTerminalTitle } from '../osc-title'
 import { runRendererEffect } from '../runtime'
 import { WorkspaceMetadataCache } from '../workspace-service'
 import { TerminalPane } from './TerminalPane'
+import { disposeTerminalRuntime } from '../terminal'
 import { getDiffFileName, type ParsedDiffFile, type ParsedDiffResult } from '../diff-parser'
 import { parseDiffFilesOffThread } from '../diff-parser-client'
 import { markRendererEvent } from '../trace'
@@ -76,6 +77,10 @@ type TerminalPreloadDiagnostics = ReturnType<Window['electronAPI']['getTerminalP
 type TaudPtyBridgeDiagnostics = Awaited<
   ReturnType<Window['electronAPI']['getTaudPtyBridgeDiagnostics']>
 >
+type TrackedTerminalPane = {
+  readonly sessionId: string
+  readonly disposeRuntimeOnRemove: boolean
+}
 
 const SIDEBAR_DEFAULT_WIDTH = 240
 const SIDEBAR_EXPANDED_MIN_WIDTH = 240
@@ -3362,8 +3367,18 @@ export function App() {
     () => new Map(Object.entries(terminalSearchCounts)),
     [terminalSearchCounts],
   )
-  const previousPaneSessionsRef = useRef(
-    new Map(panes.map((pane) => [pane.id, pane.lastSessionId ?? pane.id])),
+  const previousPaneSessionsRef = useRef<Map<string, TrackedTerminalPane>>(
+    new Map(
+      panes
+        .filter((pane) => pane.type === 'terminal')
+        .map((pane) => [
+          pane.id,
+          {
+            sessionId: pane.lastSessionId ?? pane.id,
+            disposeRuntimeOnRemove: pane.agentProvider === 'pi' && pane.id.startsWith('pane-pi-'),
+          },
+        ]),
+    ),
   )
   const applyWorkspaceRecord = useCallback(
     (record: WorkspaceRecord) => {
@@ -3589,17 +3604,25 @@ export function App() {
 
   useEffect(() => {
     if (!layoutLoaded) return
-    const terminalPanes = panes.filter(
-      (pane) => pane.type === 'terminal' && pane.agentProvider !== 'pi',
-    )
+    const terminalPanes = panes.filter((pane) => pane.type === 'terminal')
     const nextPaneIds = new Set(terminalPanes.map((pane) => pane.id))
-    for (const [paneId, sessionId] of previousPaneSessionsRef.current) {
+    for (const [paneId, previousPane] of previousPaneSessionsRef.current) {
       if (!nextPaneIds.has(paneId)) {
-        void window.electronAPI.killSession(sessionId)
+        if (previousPane.disposeRuntimeOnRemove) {
+          disposeTerminalRuntime(previousPane.sessionId)
+        } else {
+          void window.electronAPI.killSession(previousPane.sessionId)
+        }
       }
     }
     previousPaneSessionsRef.current = new Map(
-      terminalPanes.map((pane) => [pane.id, pane.lastSessionId ?? pane.id]),
+      terminalPanes.map((pane) => [
+        pane.id,
+        {
+          sessionId: pane.lastSessionId ?? pane.id,
+          disposeRuntimeOnRemove: pane.agentProvider === 'pi' && pane.id.startsWith('pane-pi-'),
+        },
+      ]),
     )
   }, [layoutLoaded, panes])
 
