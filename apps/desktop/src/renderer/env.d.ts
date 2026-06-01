@@ -15,6 +15,8 @@ import type {
   CurrentScreenSnapshotFrame,
   ExitInfo,
   OutputFrame,
+  PiThread,
+  PiThreadListInput,
   TaudLifecycleDiagnostics,
   TaudLifecycleRecoveryInput,
 } from '@tau/shared/taud-protocol'
@@ -124,6 +126,7 @@ export interface ElectronAPI {
   createWorktree(input: WorktreeCreateInput): Promise<WorkspaceWorktreeResponse>
   refreshWorktree(worktreeId: WorktreeRefreshInput): Promise<WorkspaceWorktreeResponse>
   removeWorktree(input: WorktreeRemoveInput): Promise<WorkspaceIpcResponse<void>>
+  listPiThreads(input?: PiThreadListInput): Promise<WorkspaceIpcResponse<readonly PiThread[]>>
   readLayout(): Promise<PaneLayoutData | null>
   writeLayout(data: PaneLayoutData): Promise<void>
   readSettings(): Promise<SettingsData | null>

@@ -175,6 +175,7 @@ export class TaudPtyBridge {
   private port: MessagePortMain | null = null
   private readonly sessions = new Map<string, BridgeSession>()
   private readonly supersededAttachStreams = new WeakSet<TaudSessionStream>()
+  private readonly detachedBeforeReadySessionIds = new Set<string>()
   private readonly cleanupTimer: ReturnType<typeof setInterval>
   private messagesPostedTotal = 0
   private dataMessagesPostedTotal = 0
@@ -297,6 +298,7 @@ export class TaudPtyBridge {
           sanitizeCwd(message.cwd),
           {
             forceCreate: false,
+            argv: sanitizeArgv(message.argv),
             workspaceId: sanitizeId(message.workspaceId),
             worktreeId: sanitizeId(message.worktreeId),
           },
@@ -335,6 +337,7 @@ export class TaudPtyBridge {
       worktreeId?: string
     },
   ): Promise<void> {
+    this.detachedBeforeReadySessionIds.delete(sessionId)
     const workspaceId = options.workspaceId
     if (!workspaceId) {
       throw new Error('Terminal sessions require a workspace')
@@ -359,6 +362,7 @@ export class TaudPtyBridge {
     let attachMode: AttachSessionMode = 'live'
     if (options.forceCreate) {
       await this.createShellSession(sessionId, terminalId, cols, rows, cwd, sessionOptions)
+      this.throwIfDetachedBeforeReady(sessionId)
       attachMode = 'fresh'
       ;({ response: attachResponse, stream } = await this.client.attachSession({
         sessionId,
@@ -369,6 +373,11 @@ export class TaudPtyBridge {
         rows,
         cwd,
       }))
+      if (this.detachedBeforeReadySessionIds.has(sessionId)) {
+        stream.close()
+        await this.client.detachSession(sessionId).catch(() => {})
+        this.throwIfDetachedBeforeReady(sessionId)
+      }
     } else {
       try {
         ;({ response: attachResponse, stream } = await this.client.attachSession({
@@ -380,9 +389,15 @@ export class TaudPtyBridge {
           workspaceId,
           worktreeId: options.worktreeId,
         }))
+        if (this.detachedBeforeReadySessionIds.has(sessionId)) {
+          stream.close()
+          await this.client.detachSession(sessionId).catch(() => {})
+          this.throwIfDetachedBeforeReady(sessionId)
+        }
       } catch (error) {
         if (!isNotFoundError(error)) throw error
         await this.createShellSession(sessionId, terminalId, cols, rows, cwd, sessionOptions)
+        this.throwIfDetachedBeforeReady(sessionId)
         attachMode = 'fresh'
         ;({ response: attachResponse, stream } = await this.client.attachSession({
           sessionId,
@@ -393,6 +408,11 @@ export class TaudPtyBridge {
           rows,
           cwd,
         }))
+        if (this.detachedBeforeReadySessionIds.has(sessionId)) {
+          stream.close()
+          await this.client.detachSession(sessionId).catch(() => {})
+          this.throwIfDetachedBeforeReady(sessionId)
+        }
       }
     }
     if (attachMode === 'live') attachMode = responseAttachMode(attachResponse)
@@ -529,6 +549,7 @@ export class TaudPtyBridge {
   }
 
   private async detachSession(sessionId: string): Promise<void> {
+    this.detachedBeforeReadySessionIds.add(sessionId)
     this.closeSessionStream(sessionId)
     await this.client.detachSession(sessionId).catch(() => {})
   }
@@ -543,11 +564,18 @@ export class TaudPtyBridge {
   }
 
   private async killSession(sessionId: string): Promise<void> {
+    this.detachedBeforeReadySessionIds.delete(sessionId)
     this.closeSessionStream(sessionId)
     const session = this.sessions.get(sessionId)
     if (session) this.stopProcessTitlePolling(session)
     this.sessions.delete(sessionId)
     await this.client.killSession(sessionId).catch(() => {})
+  }
+
+  private throwIfDetachedBeforeReady(sessionId: string): void {
+    if (!this.detachedBeforeReadySessionIds.has(sessionId)) return
+    this.detachedBeforeReadySessionIds.delete(sessionId)
+    throw new Error(`Session ${sessionId} detached before ready`)
   }
 
   private closeSessionStream(sessionId: string): void {

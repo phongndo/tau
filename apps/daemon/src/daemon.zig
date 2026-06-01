@@ -217,6 +217,10 @@ pub const Daemon = struct {
         return control.handleConfigurePersistenceLocked(self, allocator, request);
     }
 
+    pub fn handlePiThreadListLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
+        return control.handlePiThreadListLocked(self, allocator, request);
+    }
+
     pub fn handleWorkspaceListLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
         return workspace_mod.handleListLocked(self, allocator, request);
     }

@@ -15,6 +15,7 @@ export const TAUD_CONTROL_CAPABILITIES = [
   'workspaces-v1',
   'worktrees-v1',
   'persistence-v1',
+  'pi-threads-v1',
 ] as const
 
 export const TaudStreamFrameKind = {
@@ -181,6 +182,7 @@ export const AttachSessionInputSchema = Schema.Struct({
   cols: Schema.optional(Schema.Number),
   rows: Schema.optional(Schema.Number),
   cwd: Schema.optional(Schema.String),
+  argv: Schema.optional(Schema.Array(Schema.String)),
 })
 
 export const AttachSessionResultSchema = Schema.Struct({
@@ -199,6 +201,28 @@ export const OutputFrameSchema = Schema.Struct({
   sessionId: NonEmptyString,
   seq: Schema.Number,
   data: Schema.String,
+})
+
+export const PiThreadListInputSchema = Schema.Struct({
+  workspaceId: Schema.optional(NonEmptyString),
+  worktreeId: Schema.optional(NonEmptyString),
+  rootPath: Schema.optional(NonEmptyString),
+})
+
+export const PiThreadSchema = Schema.Struct({
+  id: NonEmptyString,
+  terminalSessionId: NonEmptyString,
+  terminalId: NonEmptyString,
+  workspaceId: Schema.optional(Schema.String),
+  worktreeId: Schema.optional(Schema.String),
+  cwd: Schema.optional(Schema.String),
+  terminalStatus: Schema.String,
+  agentStatus: Schema.String,
+  nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
+  resumeArgv: Schema.optional(Schema.Array(Schema.String)),
+  title: Schema.optional(Schema.String),
+  lastSeq: Schema.Number,
+  lastActivityAt: Schema.optional(Schema.String),
 })
 
 export const CurrentScreenSnapshotFrameSchema = Schema.Struct({
@@ -224,6 +248,8 @@ export type CreateSessionResult = Schema.Schema.Type<typeof CreateSessionResultS
 export type AttachSessionMode = Schema.Schema.Type<typeof AttachSessionModeSchema>
 export type AttachSessionInput = Schema.Schema.Type<typeof AttachSessionInputSchema>
 export type AttachSessionResult = Schema.Schema.Type<typeof AttachSessionResultSchema>
+export type PiThreadListInput = Schema.Schema.Type<typeof PiThreadListInputSchema>
+export type PiThread = Schema.Schema.Type<typeof PiThreadSchema>
 export type OutputFrame = Schema.Schema.Type<typeof OutputFrameSchema>
 export type CurrentScreenSnapshotFrame = Schema.Schema.Type<typeof CurrentScreenSnapshotFrameSchema>
 export type ExitInfo = Schema.Schema.Type<typeof ExitInfoSchema>

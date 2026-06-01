@@ -186,6 +186,7 @@ pub fn handleControlRequest(self: anytype, allocator: std.mem.Allocator, request
         .worktree_handoff => self.handleWorktreeHandoffLocked(allocator, request),
         .worktree_refresh => self.handleWorktreeRefreshLocked(allocator, request),
         .worktree_reorder => self.handleWorktreeReorderLocked(allocator, request),
+        .pi_thread_list => self.handlePiThreadListLocked(allocator, request),
         .ping => blk: {
             const response = try rpc.responseJsonAlloc(allocator, .{
                 .id = request.requestId(),

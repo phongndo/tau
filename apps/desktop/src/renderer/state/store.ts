@@ -3,6 +3,7 @@ import { Schema } from 'effect'
 import { create } from 'zustand'
 import type { PaneFocusDirection } from '@tau/shared/app-command'
 import type { PaneLayoutData } from '@tau/shared/session'
+import type { PiThread } from '@tau/shared/taud-protocol'
 import { type WorkspaceWorktree, WorkspaceWorktreeSchema } from '@tau/shared/workspace'
 import { sanitizeTerminalTitle } from '../osc-title'
 
@@ -41,6 +42,7 @@ export interface TauState {
   selectWorktree(worktreeId: string): void
   selectWorkspaceByIndex(index: number): void
   newTab(workspaceId?: string): void
+  importPiThreads(workspaceId: string, threads: readonly PiThread[]): void
   openChangesTab(workspaceId?: string): void
   closeTab(tabId: string): void
   closeActiveTab(): void
@@ -98,6 +100,8 @@ export interface Pane {
   type: PaneType
   name: string
   cwd?: string
+  agentProvider?: 'pi'
+  argv?: string[]
   status?: PaneStatus
   lastSessionId?: string
 }
@@ -145,6 +149,8 @@ const PersistedPaneSchema = Schema.Struct({
   type: PaneTypeSchema,
   name: Schema.String,
   cwd: Schema.optional(Schema.String),
+  agentProvider: Schema.optional(Schema.Literal('pi')),
+  argv: Schema.optional(Schema.Array(Schema.String)),
   status: Schema.optional(PaneStatusSchema),
   lastSessionId: Schema.optional(Schema.String),
 })
@@ -184,34 +190,106 @@ function createId(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2)}`
 }
 
-function createTerminalPane(tabId: string, index: number): Pane {
-  const terminalId = createId('term')
+function createTerminalPane(
+  tabId: string,
+  index: number,
+  options: { thread?: PiThread } = {},
+): Pane {
+  const thread = options.thread
+  const terminalId = thread?.terminalId ?? createId('term')
+  const title = piThreadTitle(thread, index)
   return {
-    id: createId('pane'),
+    id: thread ? stableImportedId('pane-pi', thread.terminalSessionId) : createId('pane'),
     terminalId,
     tabId,
     type: 'terminal',
-    name: `Terminal ${index}`,
-    status: 'idle',
-    lastSessionId: createId('session'),
+    name: title,
+    cwd: thread?.cwd,
+    agentProvider: 'pi' as const,
+    argv: piThreadArgv(thread),
+    status: piThreadPaneStatus(thread),
+    lastSessionId: thread?.terminalSessionId ?? createId('session'),
   }
 }
 
-function createTerminalTab(workspaceId: string, order: number): { tab: Tab; pane: Pane } {
-  const tabId = createId('tab')
-  const pane = createTerminalPane(tabId, 1)
+function createTerminalTab(
+  workspaceId: string,
+  order: number,
+  options: { thread?: PiThread } = {},
+): { tab: Tab; pane: Pane } {
+  const thread = options.thread
+  const tabId = thread ? stableImportedId('tab-pi', thread.terminalSessionId) : createId('tab')
+  const pane = createTerminalPane(tabId, 1, options)
+  const title = piThreadTitle(thread, order + 1)
 
   return {
     tab: {
       id: tabId,
       workspaceId,
-      name: order === 0 ? 'Terminal' : `Terminal ${order + 1}`,
+      name: title,
       layout: pane.id,
       lastActivePaneId: pane.id,
       order,
     },
     pane,
   }
+}
+
+function stableImportedId(prefix: string, value: string): string {
+  return `${prefix}-${value.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+}
+
+function piThreadPaneStatus(thread?: PiThread): PaneStatus {
+  if (!thread) return 'idle'
+  if (thread.terminalStatus === 'live' || thread.terminalStatus === 'detached') return 'idle'
+  if (thread.agentStatus === 'resumable') return 'idle'
+  return 'archived'
+}
+
+function piThreadTitle(thread: PiThread | undefined, index: number): string {
+  const title = usefulPiThreadTitle(thread?.title)
+  if (title) return title
+  if (thread?.nativeSessionId) return `Pi ${thread.nativeSessionId.slice(0, 8)}`
+  return index === 1 ? 'Pi' : `Pi ${index}`
+}
+
+function usefulPiThreadTitle(title: string | undefined): string | null {
+  const normalized = sanitizeTerminalTitle(title ?? '')
+  if (!normalized || normalized.toLowerCase() === 'pi') return null
+  return normalized
+}
+
+function piThreadArgv(thread?: PiThread): string[] {
+  if (thread?.resumeArgv && thread.resumeArgv.length > 0) return [...thread.resumeArgv]
+  if (thread?.nativeSessionId) return ['pi', '--session', thread.nativeSessionId]
+  return ['pi']
+}
+
+function isPiPane(pane: Pick<Pane, 'type' | 'agentProvider'>): boolean {
+  return pane.type === 'terminal' && pane.agentProvider === 'pi'
+}
+
+function isPiThreadTab(tab: Tab, panes: readonly Pane[]): boolean {
+  const tabPanes = panes.filter((pane) => pane.tabId === tab.id)
+  return tabPanes.length > 0 && tabPanes.every(isPiPane)
+}
+
+function isImportedPiThreadTab(tab: Tab, panes: readonly Pane[]): boolean {
+  const tabPanes = panes.filter((pane) => pane.tabId === tab.id)
+  return (
+    tabPanes.length > 0 &&
+    tabPanes.every(
+      (pane) =>
+        isPiPane(pane) &&
+        (pane.argv?.includes('--session') || pane.lastSessionId?.startsWith('pi-native:')),
+    )
+  )
+}
+
+function piThreadContextId(fallbackWorkspaceId: string, thread: PiThread): string {
+  return thread.worktreeId
+    ? worktreeContextId(thread.worktreeId)
+    : (thread.workspaceId ?? fallbackWorkspaceId)
 }
 
 function createChangesPane(tabId: string): Pane {
@@ -486,6 +564,7 @@ function reorderWorkspaceTabs(tabs: Tab[], workspaceId: string): Tab[] {
 function closeTabState(state: TauState, tabId: string): Partial<TauState> {
   const tab = state.tabs.find((candidate) => candidate.id === tabId)
   if (!tab) return {}
+  if (isPiThreadTab(tab, state.panes)) return {}
 
   const paneIds = new Set(getPaneIdsInLayout(tab.layout))
   const nextTabs = reorderWorkspaceTabs(
@@ -561,9 +640,17 @@ function closePaneState(state: TauState, paneId: string): Partial<TauState> {
 
 function selectWorkspaceTabState(state: TauState, workspaceId: string): Partial<TauState> {
   const workspaceTabs = getWorkspaceTabs(state.tabs, workspaceId)
+  const nonImportedWorkspaceTabs = workspaceTabs.filter(
+    (tab) => !isImportedPiThreadTab(tab, state.panes),
+  )
   const existingTab =
     workspaceTabs.find((tab) => tab.id === state.activeTabId) ??
-    getPreferredWorkspaceTab(state.tabs, state.workspaces, workspaceId, state.lastActiveLocalTabId)
+    getPreferredWorkspaceTab(
+      nonImportedWorkspaceTabs,
+      state.workspaces,
+      workspaceId,
+      state.lastActiveLocalTabId,
+    )
   if (existingTab) {
     const activePaneId = getPreferredPaneId(existingTab)
 
@@ -686,12 +773,15 @@ function normalizePersistedState(persistedState: unknown): Partial<TauState> {
     .map<Pane>((pane) => ({
       ...pane,
       terminalId: isNonEmptyString(pane.terminalId ?? '') ? pane.terminalId! : createId('term'),
-      name: sanitizeTerminalTitle(pane.name) ?? 'Terminal',
+      name: sanitizeTerminalTitle(pane.name) ?? 'Pi',
+      agentProvider: pane.agentProvider,
+      argv: pane.argv?.filter((arg) => typeof arg === 'string'),
       status: pane.status === 'archived' ? 'idle' : (pane.status ?? 'idle'),
       lastSessionId: isNonEmptyString(pane.lastSessionId ?? '')
         ? pane.lastSessionId
         : createId('session'),
     }))
+    .filter((pane) => pane.type !== 'terminal')
   const paneIdsByTab = new Map<string, Set<string>>()
   for (const pane of panes) {
     const paneIds = paneIdsByTab.get(pane.tabId) ?? new Set<string>()
@@ -714,7 +804,7 @@ function normalizePersistedState(persistedState: unknown): Partial<TauState> {
       return [
         {
           ...tab,
-          name: sanitizeTerminalTitle(tab.name) ?? 'Terminal',
+          name: sanitizeTerminalTitle(tab.name) ?? 'Pi',
           layout,
           lastActivePaneId:
             isNonEmptyString(tab.lastActivePaneId ?? '') &&
@@ -1022,6 +1112,67 @@ export const useTauStore = create<TauState>()((set) => ({
         activePaneId: pane.id,
       }
     }),
+  importPiThreads: (workspaceId, threads) =>
+    set((state) => {
+      if (!contextExists(state.workspaces, workspaceId)) return {}
+
+      const targetWorkspaceIds = new Set<string>([workspaceId])
+      for (const thread of threads) {
+        const targetWorkspaceId = piThreadContextId(workspaceId, thread)
+        if (contextExists(state.workspaces, targetWorkspaceId))
+          targetWorkspaceIds.add(targetWorkspaceId)
+      }
+      const replacedTabIds = new Set(
+        state.tabs
+          .filter(
+            (tab) => targetWorkspaceIds.has(tab.workspaceId) && isPiThreadTab(tab, state.panes),
+          )
+          .map((tab) => tab.id),
+      )
+      let tabs = state.tabs.filter((tab) => !replacedTabIds.has(tab.id))
+      let panes = state.panes.filter((pane) => !replacedTabIds.has(pane.tabId))
+      let changed = false
+
+      for (const thread of threads) {
+        const targetWorkspaceId = piThreadContextId(workspaceId, thread)
+        if (!contextExists(state.workspaces, targetWorkspaceId)) continue
+
+        const order = getWorkspaceTabs(tabs, targetWorkspaceId).length
+
+        const { tab, pane } = createTerminalTab(targetWorkspaceId, order, { thread })
+        tabs = [...tabs, tab]
+        panes = [...panes, pane]
+        changed = true
+      }
+
+      if (!changed && replacedTabIds.size === 0) return {}
+
+      const activeTabStillExists =
+        state.activeTabId !== null && tabs.some((tab) => tab.id === state.activeTabId)
+      const needsActiveClear = state.activeTabId !== null && !activeTabStillExists
+      const piTabIds = new Set(
+        tabs
+          .filter((tab) => targetWorkspaceIds.has(tab.workspaceId) && isPiThreadTab(tab, panes))
+          .map((tab) => tab.id),
+      )
+      const workspaces = state.workspaces.map((workspace) =>
+        workspace.lastActiveTabId && piTabIds.has(workspace.lastActiveTabId)
+          ? { ...workspace, lastActiveTabId: undefined }
+          : workspace,
+      )
+
+      return {
+        workspaces,
+        tabs: reorderAllWorkspaceTabs(tabs),
+        panes,
+        ...(needsActiveClear
+          ? {
+              activeTabId: null,
+              activePaneId: null,
+            }
+          : {}),
+      }
+    }),
   openChangesTab: (workspaceId) =>
     set((state) => {
       const targetWorkspaceId = workspaceId ?? state.activeWorkspaceId
@@ -1177,6 +1328,7 @@ export const useTauStore = create<TauState>()((set) => ({
     set((state) => {
       const pane = state.panes.find((candidate) => candidate.id === paneId)
       if (!pane) return {}
+      if (isPiPane(pane)) return {}
 
       const name = sanitizeTerminalTitle(title)
       if (!name) return {}
@@ -1276,6 +1428,16 @@ export const useTauStore = create<TauState>()((set) => ({
 }))
 
 export function selectPaneLayoutData(state: TauState): PaneLayoutData {
+  const persistedTabs = state.tabs.filter((tab) => !isPiThreadTab(tab, state.panes))
+  const persistedTabIds = new Set(persistedTabs.map((tab) => tab.id))
+  const persistedPanes = state.panes.filter((pane) => persistedTabIds.has(pane.tabId))
+  const activeTabId =
+    state.activeTabId && persistedTabIds.has(state.activeTabId) ? state.activeTabId : null
+  const activePaneId =
+    state.activePaneId && persistedPanes.some((pane) => pane.id === state.activePaneId)
+      ? state.activePaneId
+      : null
+
   return {
     version: 2,
     workspaces: state.workspaces.map((workspace) => ({
@@ -1284,12 +1446,15 @@ export function selectPaneLayoutData(state: TauState): PaneLayoutData {
       projectPath: workspace.projectPath,
       branch: workspace.branch,
       worktrees: workspace.worktrees,
-      lastActiveTabId: workspace.lastActiveTabId,
+      lastActiveTabId:
+        workspace.lastActiveTabId && persistedTabIds.has(workspace.lastActiveTabId)
+          ? workspace.lastActiveTabId
+          : undefined,
       order: workspace.order,
     })),
     activeWorkspaceId: state.activeWorkspaceId,
     lastActiveLocalTabId: state.lastActiveLocalTabId,
-    tabs: state.tabs.map((tab) => ({
+    tabs: persistedTabs.map((tab) => ({
       id: tab.id,
       workspaceId: tab.workspaceId,
       name: tab.name,
@@ -1297,18 +1462,20 @@ export function selectPaneLayoutData(state: TauState): PaneLayoutData {
       lastActivePaneId: tab.lastActivePaneId,
       order: tab.order,
     })),
-    panes: state.panes.map((pane) => ({
+    panes: persistedPanes.map((pane) => ({
       id: pane.id,
       terminalId: pane.terminalId,
       tabId: pane.tabId,
       type: pane.type,
       name: pane.name,
       cwd: pane.cwd,
+      agentProvider: pane.agentProvider,
+      argv: pane.argv,
       status: pane.status,
       lastSessionId: pane.lastSessionId,
     })),
-    activeTabId: state.activeTabId,
-    activePaneId: state.activePaneId,
+    activeTabId,
+    activePaneId,
     sidebarExpanded: state.sidebarExpanded,
     sidebarWidth: state.sidebarWidth,
     rightSidebarExpanded: state.rightSidebarExpanded,

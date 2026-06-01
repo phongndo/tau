@@ -21,7 +21,6 @@ import {
   FiSettings,
   FiTerminal,
   FiTrash2,
-  FiX,
 } from 'react-icons/fi'
 import { TbLayoutSidebar } from 'react-icons/tb'
 import {
@@ -68,6 +67,7 @@ import { parseDiffFilesOffThread } from '../diff-parser-client'
 import { markRendererEvent } from '../trace'
 import type { WorkspaceFileTree, WorkspaceRecord } from '@tau/shared/workspace'
 import type {
+  PiThread,
   TaudLifecycleDiagnostics,
   TaudLifecycleRecoveryAction,
 } from '@tau/shared/taud-protocol'
@@ -896,7 +896,6 @@ function ProjectItem({
   archivedTabIds,
   onSelectThread,
   onNewThread,
-  onCloseThread,
   onReorderWorkspace,
 }: {
   workspace: Workspace
@@ -906,7 +905,6 @@ function ProjectItem({
   archivedTabIds: ReadonlySet<string>
   onSelectThread(tabId: string): void
   onNewThread(workspaceId: string): void
-  onCloseThread(tabId: string): void
   onReorderWorkspace(
     workspaceId: string,
     targetWorkspaceId: string,
@@ -1023,7 +1021,7 @@ function ProjectItem({
       </div>
       {isExpanded ? (
         <div className="project-thread-list">
-          {sortedThreads.map((thread, index) => {
+          {sortedThreads.map((thread) => {
             const isThreadActive = thread.id === activeThreadId
             const title = tabLabelsById.get(thread.id) ?? thread.name
             const isArchived = archivedTabIds.has(thread.id)
@@ -1048,21 +1046,7 @@ function ProjectItem({
                     <span className="project-thread-archive" aria-label="Read-only archive">
                       <FiArchive size={10} />
                     </span>
-                  ) : (
-                    <span className="project-thread-index">#{index + 1}</span>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="icon-button project-thread-close-button"
-                  aria-label={`Remove ${title}`}
-                  title="Close thread"
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onCloseThread(thread.id)
-                  }}
-                >
-                  <FiX size={11} />
+                  ) : null}
                 </button>
               </div>
             )
@@ -3048,6 +3032,7 @@ const PaneTile = memo(function PaneTile({
           workspaceId={terminalWorkspaceId}
           worktreeId={terminalWorktreeId}
           cwd={pane.cwd ?? terminalCwd}
+          argv={pane.argv}
           isActive={isActive}
           focusToken={focusToken}
           searchToken={searchToken}
@@ -3205,8 +3190,8 @@ export function App() {
   const addWorkspace = useTauStore((state) => state.addWorkspace)
   const selectWorkspaceByIndex = useTauStore((state) => state.selectWorkspaceByIndex)
   const newTab = useTauStore((state) => state.newTab)
+  const importPiThreads = useTauStore((state) => state.importPiThreads)
   const openChangesTab = useTauStore((state) => state.openChangesTab)
-  const closeTab = useTauStore((state) => state.closeTab)
   const closeActiveTab = useTauStore((state) => state.closeActiveTab)
   const selectTab = useTauStore((state) => state.selectTab)
   const selectTabByIndex = useTauStore((state) => state.selectTabByIndex)
@@ -3249,7 +3234,7 @@ export function App() {
   const [daemonRecoveryInFlight, setDaemonRecoveryInFlight] = useState(false)
   const [daemonRecoveryError, setDaemonRecoveryError] = useState<string | null>(null)
   const activeWorkspaceKey = activeWorkspaceId
-  const canCreateTerminal = activeWorkspaceKey !== null
+  const canCreateThread = activeWorkspaceKey !== null
 
   useEffect(() => {
     markRendererEvent('ui:app-mounted')
@@ -3403,6 +3388,39 @@ export function App() {
     [removeWorktree, upsertWorkspace],
   )
 
+  const importWorkspacePiThreads = useCallback(
+    async (workspace: Workspace) => {
+      const importRoots = [
+        workspace.projectPath,
+        ...(workspace.worktrees ?? []).map((worktree) => worktree.path),
+      ]
+      const seenThreadIds = new Set<string>()
+      const importedThreads: PiThread[] = []
+
+      for (const rootPath of importRoots) {
+        try {
+          const response = await window.electronAPI.listPiThreads({ rootPath })
+          if (!response.ok) {
+            console.warn('[pi] Failed to import threads:', response.error.message)
+            continue
+          }
+
+          const nextThreads = response.value.filter((thread) => {
+            if (seenThreadIds.has(thread.id)) return false
+            seenThreadIds.add(thread.id)
+            return true
+          })
+          importedThreads.push(...nextThreads)
+        } catch (error) {
+          console.warn('[pi] Failed to import threads:', error)
+        }
+      }
+
+      importPiThreads(workspace.id, importedThreads)
+    },
+    [importPiThreads],
+  )
+
   useEffect(() => {
     let cancelled = false
 
@@ -3480,7 +3498,6 @@ export function App() {
 
     async function syncDaemonWorkspaces() {
       const currentWorkspaces = useTauStore.getState().workspaces
-      if (currentWorkspaces.length === 0) return
 
       for (const workspace of currentWorkspaces) {
         try {
@@ -3490,7 +3507,11 @@ export function App() {
             name: workspace.name,
             orderIndex: workspace.order,
           })
-          if (!cancelled && response.ok) applyWorkspaceRecord(response.value)
+          if (!cancelled && response.ok) {
+            const nextWorkspace = workspaceFromRecord(response.value)
+            applyWorkspaceRecord(response.value)
+            await importWorkspacePiThreads(nextWorkspace)
+          }
         } catch (error) {
           console.warn('[workspace] Failed to import workspace into taud:', error)
         }
@@ -3499,7 +3520,11 @@ export function App() {
       try {
         const response = await window.electronAPI.listWorkspaces()
         if (!cancelled && response.ok) {
-          for (const workspace of response.value) applyWorkspaceRecord(workspace)
+          for (const workspace of response.value) {
+            const nextWorkspace = workspaceFromRecord(workspace)
+            applyWorkspaceRecord(workspace)
+            await importWorkspacePiThreads(nextWorkspace)
+          }
         }
       } catch (error) {
         console.warn('[workspace] Failed to list daemon workspaces:', error)
@@ -3511,7 +3536,7 @@ export function App() {
     return () => {
       cancelled = true
     }
-  }, [applyWorkspaceRecord, layoutLoaded])
+  }, [applyWorkspaceRecord, importWorkspacePiThreads, layoutLoaded])
 
   useEffect(() => {
     return window.electronAPI.onWorkspaceChanged((workspace) => {
@@ -3564,7 +3589,9 @@ export function App() {
 
   useEffect(() => {
     if (!layoutLoaded) return
-    const terminalPanes = panes.filter((pane) => pane.type === 'terminal')
+    const terminalPanes = panes.filter(
+      (pane) => pane.type === 'terminal' && pane.agentProvider !== 'pi',
+    )
     const nextPaneIds = new Set(terminalPanes.map((pane) => pane.id))
     for (const [paneId, sessionId] of previousPaneSessionsRef.current) {
       if (!nextPaneIds.has(paneId)) {
@@ -3670,7 +3697,9 @@ export function App() {
       orderIndex: workspaces.length,
     })
     if (response.ok) {
-      addWorkspace(workspaceFromRecord(response.value))
+      const workspace = workspaceFromRecord(response.value)
+      addWorkspace(workspace)
+      await importWorkspacePiThreads(workspace)
       return
     }
 
@@ -3830,7 +3859,6 @@ export function App() {
                       setIsSettingsOpen(false)
                       newTab(workspaceId)
                     }}
-                    onCloseThread={closeTab}
                     onReorderWorkspace={reorderWorkspace}
                   />
                 ))}
@@ -3900,6 +3928,7 @@ export function App() {
           <div className="pane-grid">
             {mountedTabs.map((tab) => {
               const isTabActive = tab.id === activeTab?.id
+              if (!isTabActive) return null
               const metadata = contextMetadataById.get(tab.workspaceId) ?? {}
               const tabWorkspace = workspaceForContext(workspaces, tab.workspaceId)
               return (
@@ -3933,11 +3962,12 @@ export function App() {
             {!activeTab ? (
               <div className="pane-grid-layer pane-grid-layer-active">
                 <div className="pane-grid-empty">
-                  {canCreateTerminal ? (
+                  {canCreateThread ? (
                     <button
                       type="button"
                       className="empty-new-tab-button"
-                      aria-label="New tab"
+                      aria-label="New thread"
+                      title="New thread"
                       onClick={() => {
                         setIsSettingsOpen(false)
                         newTab(activeWorkspaceKey ?? undefined)

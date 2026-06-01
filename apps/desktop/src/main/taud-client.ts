@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
+import { open, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { spawn, type ChildProcess, type StdioOptions } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import net from 'node:net'
@@ -17,6 +18,7 @@ import {
   type TaudLifecycleEvent,
   type TaudLifecycleRecoveryAction,
   type TaudLifecycleState,
+  type PiThread,
   type TaudStreamDiagnostics,
   type TaudStreamFrameKind as TaudStreamFrameKindValue,
 } from '@tau/shared/taud-protocol'
@@ -48,6 +50,7 @@ const DEFAULT_RESTART_BACKOFF_MS = 750
 const DEFAULT_DISPOSE_DAEMON_TIMEOUT_MS = 1000
 const CONTROL_RESPONSE_MAX_BYTES = 1024 * 1024
 const TAUD_LIFECYCLE_EVENT_LIMIT = 32
+const PI_SESSION_TITLE_SCAN_BYTES = 256 * 1024
 
 type ElectronAppLike = {
   getAppPath(): string
@@ -95,6 +98,8 @@ export type TaudControlResponse = {
   readonly ports?: unknown
   readonly pull_request?: unknown
   readonly pullRequest?: unknown
+  readonly pi_threads?: unknown
+  readonly piThreads?: unknown
   readonly stream_diagnostics?: unknown
   readonly streamDiagnostics?: unknown
   readonly control_diagnostics?: unknown
@@ -142,6 +147,32 @@ type RawPullRequestInfo = {
   readonly state?: unknown
   readonly head_ref_name?: unknown
   readonly headRefName?: unknown
+}
+
+type RawPiThread = {
+  readonly id?: unknown
+  readonly terminal_session_id?: unknown
+  readonly terminalSessionId?: unknown
+  readonly terminal_id?: unknown
+  readonly terminalId?: unknown
+  readonly workspace_id?: unknown
+  readonly workspaceId?: unknown
+  readonly worktree_id?: unknown
+  readonly worktreeId?: unknown
+  readonly cwd?: unknown
+  readonly terminal_status?: unknown
+  readonly terminalStatus?: unknown
+  readonly agent_status?: unknown
+  readonly agentStatus?: unknown
+  readonly native_session_id?: unknown
+  readonly nativeSessionId?: unknown
+  readonly resume_argv?: unknown
+  readonly resumeArgv?: unknown
+  readonly title?: unknown
+  readonly last_seq?: unknown
+  readonly lastSeq?: unknown
+  readonly last_activity_at?: unknown
+  readonly lastActivityAt?: unknown
 }
 
 type RawTaudStreamDiagnostics = {
@@ -265,6 +296,12 @@ export type TaudCleanupSessionsInput = {
 export type TaudPersistenceSettingsInput = {
   readonly enabled: boolean
   readonly persistInput: boolean
+}
+
+export type TaudListPiThreadsInput = {
+  readonly workspaceId?: string
+  readonly worktreeId?: string
+  readonly rootPath?: string
 }
 
 export type TaudAddWorkspaceInput = {
@@ -563,6 +600,260 @@ function normalizePullRequestInfo(value: unknown): PullRequestInfo | null {
     state,
     ...(headRefName ? { headRefName } : {}),
   }
+}
+
+function normalizePiThread(value: unknown): PiThread {
+  if (!value || typeof value !== 'object') throw new Error('Invalid pi.thread.list response')
+  const raw = value as RawPiThread
+  const id = optionalString(raw.id)
+  const terminalSessionId = optionalString(raw.terminal_session_id ?? raw.terminalSessionId)
+  const terminalId = optionalString(raw.terminal_id ?? raw.terminalId)
+  const terminalStatus = optionalString(raw.terminal_status ?? raw.terminalStatus)
+  const agentStatus = optionalString(raw.agent_status ?? raw.agentStatus)
+  if (!id || !terminalSessionId || !terminalId || !terminalStatus || !agentStatus) {
+    throw new Error('Invalid pi.thread.list response')
+  }
+
+  return {
+    id,
+    terminalSessionId,
+    terminalId,
+    workspaceId: optionalString(raw.workspace_id ?? raw.workspaceId),
+    worktreeId: optionalString(raw.worktree_id ?? raw.worktreeId),
+    cwd: optionalString(raw.cwd),
+    terminalStatus,
+    agentStatus,
+    nativeSessionId: optionalNullableString(raw.native_session_id ?? raw.nativeSessionId),
+    resumeArgv: optionalStringArray(raw.resume_argv ?? raw.resumeArgv),
+    title: optionalString(raw.title),
+    lastSeq: numberOr(raw.last_seq ?? raw.lastSeq, 0),
+    lastActivityAt: optionalString(raw.last_activity_at ?? raw.lastActivityAt),
+  }
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const strings = value.filter(
+    (item): item is string => typeof item === 'string' && item.length > 0,
+  )
+  return strings.length > 0 ? strings : undefined
+}
+
+type NativePiSession = {
+  readonly id: string
+  readonly cwd: string
+  readonly timestamp?: string
+  readonly filePath: string
+  readonly title?: string
+  readonly lastActivityAt?: string
+}
+
+type NativePiSessionHeader = {
+  readonly type?: unknown
+  readonly id?: unknown
+  readonly cwd?: unknown
+  readonly timestamp?: unknown
+}
+
+type NativePiMessageLine = {
+  readonly type?: unknown
+  readonly message?: {
+    readonly role?: unknown
+    readonly content?: unknown
+  }
+}
+
+function piSessionsRoot(): string {
+  return join(homedir(), '.pi', 'agent', 'sessions')
+}
+
+function isPathInRoot(candidate: string, rootPath: string): boolean {
+  const root = resolve(rootPath)
+  const value = resolve(candidate)
+  return value === root || value.startsWith(`${root}/`)
+}
+
+async function listNativePiThreads(rootPath: string): Promise<readonly PiThread[]> {
+  const sessionsRoot = piSessionsRoot()
+  let projectDirs: string[]
+  try {
+    const entries = await readdir(sessionsRoot, { withFileTypes: true })
+    projectDirs = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(sessionsRoot, entry.name))
+  } catch {
+    return []
+  }
+
+  const threads: PiThread[] = []
+  for (const projectDir of projectDirs) {
+    let files: string[]
+    try {
+      const entries = await readdir(projectDir, { withFileTypes: true })
+      files = entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
+        .map((entry) => join(projectDir, entry.name))
+    } catch {
+      continue
+    }
+
+    for (const filePath of files) {
+      const session = await readNativePiSession(filePath)
+      if (!session || !isPathInRoot(session.cwd, rootPath)) continue
+      threads.push(nativePiSessionToThread(session))
+    }
+  }
+
+  return threads.sort((left, right) =>
+    (right.lastActivityAt ?? '').localeCompare(left.lastActivityAt ?? ''),
+  )
+}
+
+async function readNativePiSession(filePath: string): Promise<NativePiSession | null> {
+  let text: string
+  try {
+    text = await readPiSessionPrefix(filePath)
+  } catch {
+    return null
+  }
+
+  const lines = text.split(/\r?\n/u).filter((line) => line.length > 0)
+  if (lines.length === 0) return null
+
+  const header = parseJsonLine<NativePiSessionHeader>(lines[0])
+  if (
+    !header ||
+    header.type !== 'session' ||
+    typeof header.id !== 'string' ||
+    typeof header.cwd !== 'string'
+  ) {
+    return null
+  }
+
+  const fileStat = await stat(filePath).catch(() => null)
+  return {
+    id: header.id,
+    cwd: header.cwd,
+    timestamp: typeof header.timestamp === 'string' ? header.timestamp : undefined,
+    filePath,
+    title: nativePiTitle(lines) ?? nativePiFallbackTitle(header.timestamp, filePath),
+    lastActivityAt: fileStat ? fileStat.mtime.toISOString() : undefined,
+  }
+}
+
+async function readPiSessionPrefix(filePath: string): Promise<string> {
+  const file = await open(filePath, 'r')
+  try {
+    const buffer = Buffer.alloc(PI_SESSION_TITLE_SCAN_BYTES)
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
+    return buffer.subarray(0, bytesRead).toString('utf8')
+  } finally {
+    await file.close()
+  }
+}
+
+function parseJsonLine<T>(line: string): T | null {
+  try {
+    return JSON.parse(line) as T
+  } catch {
+    return null
+  }
+}
+
+function nativePiTitle(lines: readonly string[]): string | null {
+  for (const line of lines.slice(1, 200)) {
+    const parsed = parseJsonLine<NativePiMessageLine>(line)
+    if (!parsed || parsed.type !== 'message') continue
+    if (parsed.message?.role !== 'user') continue
+    const text = firstTextContent(parsed.message.content)
+    const title = text
+      ?.split(/\r?\n/u)
+      .map((part) => part.trim())
+      .find((part) => part.length > 0)
+    if (title) return truncateThreadTitle(title.replace(/^#+\s*/u, ''))
+  }
+  return null
+}
+
+function firstTextContent(content: unknown): string | null {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return null
+  for (const item of content) {
+    if (
+      item &&
+      typeof item === 'object' &&
+      'type' in item &&
+      item.type === 'text' &&
+      'text' in item &&
+      typeof item.text === 'string'
+    ) {
+      return item.text
+    }
+  }
+  return null
+}
+
+function truncateThreadTitle(title: string): string {
+  const normalized = title.replace(/\s+/gu, ' ').trim()
+  return normalized.length > 64 ? `${normalized.slice(0, 61)}...` : normalized
+}
+
+function nativePiFallbackTitle(timestamp: unknown, filePath: string): string {
+  if (typeof timestamp === 'string' && timestamp.length > 0) {
+    return `Pi ${timestamp.slice(0, 16).replace('T', ' ')}`
+  }
+  return `Pi ${basename(filePath, '.jsonl').slice(0, 8)}`
+}
+
+function nativePiSessionToThread(session: NativePiSession): PiThread {
+  return {
+    id: `pi-native:${session.id}`,
+    terminalSessionId: `pi-native:${session.id}`,
+    terminalId: `pi-native-term:${session.id}`,
+    cwd: session.cwd,
+    terminalStatus: 'detached',
+    agentStatus: 'resumable',
+    nativeSessionId: session.id,
+    resumeArgv: ['pi', '--session', session.filePath],
+    title: session.title,
+    lastSeq: 0,
+    lastActivityAt: session.lastActivityAt ?? session.timestamp,
+  }
+}
+
+function mergePiThreads(
+  daemonThreads: readonly PiThread[],
+  nativeThreads: readonly PiThread[],
+): readonly PiThread[] {
+  const threads = new Map<string, PiThread>()
+  for (const thread of daemonThreads) {
+    threads.set(piThreadKey(thread), thread)
+  }
+  for (const thread of nativeThreads) {
+    const key = piThreadKey(thread)
+    const existing = threads.get(key)
+    threads.set(
+      key,
+      existing
+        ? {
+            ...thread,
+            ...existing,
+            nativeSessionId: existing.nativeSessionId ?? thread.nativeSessionId,
+            resumeArgv: existing.resumeArgv ?? thread.resumeArgv,
+            title: thread.title,
+          }
+        : thread,
+    )
+  }
+  return [...threads.values()].sort((left, right) =>
+    (right.lastActivityAt ?? '').localeCompare(left.lastActivityAt ?? ''),
+  )
+}
+
+function piThreadKey(thread: PiThread): string {
+  return thread.nativeSessionId
+    ? `native:${thread.nativeSessionId}`
+    : `terminal:${thread.terminalSessionId}`
 }
 
 function normalizeTaudStreamDiagnostics(value: unknown): TaudStreamDiagnostics | undefined {
@@ -1590,6 +1881,30 @@ export class TaudClient {
     })
     if (!response.ok) throw responseError(response)
     return normalizePullRequestInfo(response.pull_request ?? response.pullRequest)
+  }
+
+  async listPiThreads(input: TaudListPiThreadsInput = {}): Promise<readonly PiThread[]> {
+    const response = await this.request({
+      type: 'pi.thread.list',
+      id: nextRequestId('pi-thread-list'),
+      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+      ...(input.worktreeId ? { worktreeId: input.worktreeId } : {}),
+      ...(input.rootPath ? { rootPath: input.rootPath } : {}),
+    })
+    if (!response.ok) throw responseError(response)
+    const threads = response.pi_threads ?? response.piThreads
+    if (!Array.isArray(threads)) throw new Error('Invalid pi.thread.list response')
+    const daemonThreads = threads.map(normalizePiThread)
+    if (!input.rootPath) return daemonThreads
+
+    const nativeThreads = await listNativePiThreads(input.rootPath)
+    const nativeSessionIds = new Set(
+      nativeThreads.flatMap((thread) => thread.nativeSessionId ?? []),
+    )
+    const matchingDaemonThreads = daemonThreads.filter(
+      (thread) => thread.nativeSessionId && nativeSessionIds.has(thread.nativeSessionId),
+    )
+    return mergePiThreads(matchingDaemonThreads, nativeThreads)
   }
 
   private async gitPathAction(

@@ -5,19 +5,15 @@ const adapter_output_max = 64 * 1024;
 const adapter_command_timeout_ms = 3000;
 const adapter_kill_grace_ms = 250;
 
-const known_providers = [_]Provider{ .pi, .codex, .claude };
+const known_providers = [_]Provider{.pi};
 
 pub const Provider = enum {
     pi,
-    codex,
-    claude,
     unknown,
 
     pub fn text(self: Provider) []const u8 {
         return switch (self) {
             .pi => "pi",
-            .codex => "codex",
-            .claude => "claude",
             .unknown => "unknown",
         };
     }
@@ -26,8 +22,6 @@ pub const Provider = enum {
         if (argv.len == 0) return .unknown;
         const exe = std.fs.path.basename(argv[0]);
         if (std.mem.eql(u8, exe, "pi")) return .pi;
-        if (std.mem.eql(u8, exe, "codex")) return .codex;
-        if (std.mem.eql(u8, exe, "claude")) return .claude;
         return .unknown;
     }
 };
@@ -228,14 +222,6 @@ pub fn resumeArgvJsonAlloc(
     switch (provider) {
         .pi => {
             const argv = [_][]const u8{ exe, "--session", native_session_id };
-            return try argvJsonAlloc(allocator, &argv);
-        },
-        .codex => {
-            const argv = [_][]const u8{ exe, "resume", native_session_id };
-            return try argvJsonAlloc(allocator, &argv);
-        },
-        .claude => {
-            const argv = [_][]const u8{ exe, "--resume", native_session_id };
             return try argvJsonAlloc(allocator, &argv);
         },
         .unknown => return null,
@@ -622,15 +608,14 @@ test "agent provider detection uses argv executable name" {
 
 test "agent adapter extracts native session ids from common argv shapes" {
     try std.testing.expectEqualStrings("abc", discoverNativeSessionIdArgv(&.{ "pi", "--session", "abc" }).?);
-    try std.testing.expectEqualStrings("def", discoverNativeSessionIdArgv(&.{ "codex", "resume", "def" }).?);
-    try std.testing.expectEqualStrings("ghi", discoverNativeSessionIdArgv(&.{ "claude", "--resume=ghi" }).?);
-    try std.testing.expect(discoverNativeSessionIdArgv(&.{ "codex", "--session" }) == null);
+    try std.testing.expectEqualStrings("def", discoverNativeSessionIdArgv(&.{ "pi", "--resume=def" }).?);
+    try std.testing.expect(discoverNativeSessionIdArgv(&.{ "pi", "--session" }) == null);
 }
 
 test "agent adapter builds conservative resume argv JSON" {
-    const json = (try resumeArgvJsonAlloc(std.testing.allocator, .codex, "codex", "native-1")).?;
+    const json = (try resumeArgvJsonAlloc(std.testing.allocator, .pi, "pi", "native-1")).?;
     defer std.testing.allocator.free(json);
-    try std.testing.expectEqualStrings("[\"codex\",\"resume\",\"native-1\"]", json);
+    try std.testing.expectEqualStrings("[\"pi\",\"--session\",\"native-1\"]", json);
 }
 
 test "agent adapter request and response JSON are stable" {
@@ -729,13 +714,13 @@ fn chmodPathForTest(allocator: std.mem.Allocator, path: []const u8, mode: std.c.
 test "agent adapter external detection falls back to argv heuristics" {
     var detection = (try detectSessionAlloc(std.testing.allocator, "/definitely/missing/adapters", .{
         .terminal_session_id = "session-1",
-        .argv = &.{ "claude", "--resume", "native-claude" },
+        .argv = &.{ "pi", "--session", "native-pi" },
     })).?;
     defer detection.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(Provider.claude, detection.provider);
-    try std.testing.expectEqualStrings("native-claude", detection.native_session_id.?);
-    try std.testing.expectEqualStrings("[\"claude\",\"--resume\",\"native-claude\"]", detection.resume_argv_json.?);
+    try std.testing.expectEqual(Provider.pi, detection.provider);
+    try std.testing.expectEqualStrings("native-pi", detection.native_session_id.?);
+    try std.testing.expectEqualStrings("[\"pi\",\"--session\",\"native-pi\"]", detection.resume_argv_json.?);
 }
 
 fn adapterRequestForAllocationFailure(allocator: std.mem.Allocator) !void {
@@ -755,12 +740,12 @@ fn adapterRequestForAllocationFailure(allocator: std.mem.Allocator) !void {
 }
 
 fn heuristicDetectionForAllocationFailure(allocator: std.mem.Allocator) !void {
-    var detection = (detectSessionHeuristicAlloc(allocator, &.{ "codex", "resume", "native-oom" }) catch |err| switch (err) {
+    var detection = (detectSessionHeuristicAlloc(allocator, &.{ "pi", "--session", "native-oom" }) catch |err| switch (err) {
         error.WriteFailed => return error.OutOfMemory,
         else => return err,
     }).?;
     defer detection.deinit(allocator);
-    try std.testing.expectEqual(Provider.codex, detection.provider);
+    try std.testing.expectEqual(Provider.pi, detection.provider);
 }
 
 test "agent adapter allocation-heavy helpers clean up on OOM" {

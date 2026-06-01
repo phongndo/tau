@@ -279,6 +279,38 @@ const find_agent_resume_by_terminal_sql =
     \\LIMIT 1;
 ;
 
+const list_pi_threads_sql =
+    \\SELECT
+    \\    a.id,
+    \\    a.terminal_session_id,
+    \\    t.terminal_id,
+    \\    t.workspace_id,
+    \\    t.worktree_id,
+    \\    COALESCE(a.cwd, t.cwd) AS cwd,
+    \\    t.status AS terminal_status,
+    \\    a.status AS agent_status,
+    \\    a.native_session_id,
+    \\    a.title,
+    \\    t.last_seq,
+    \\    COALESCE(a.last_activity_at, t.last_activity_at, a.updated_at, t.updated_at) AS last_activity_at
+    \\FROM agent_sessions a
+    \\JOIN terminal_sessions t ON t.id = a.terminal_session_id
+    \\LEFT JOIN workspaces w ON w.id = t.workspace_id
+    \\LEFT JOIN worktrees wt ON wt.id = t.worktree_id
+    \\WHERE a.provider = 'pi'
+    \\  AND (? IS NULL OR t.workspace_id = ?)
+    \\  AND (? IS NULL OR t.worktree_id = ?)
+    \\  AND (
+    \\      ? IS NULL
+    \\      OR w.root_path = ?
+    \\      OR wt.path = ?
+    \\      OR t.cwd = ?
+    \\      OR t.cwd LIKE ?
+    \\  )
+    \\ORDER BY COALESCE(a.last_activity_at, t.last_activity_at, a.updated_at, t.updated_at) DESC
+    \\LIMIT ?;
+;
+
 const insert_terminal_search_sql =
     \\INSERT INTO terminal_search (terminal_session_id, workspace_id, title, excerpt)
     \\VALUES (?, ?, ?, ?);
@@ -563,6 +595,43 @@ pub const AgentResumeLookup = struct {
     }
 };
 
+pub const PiThreadListFilter = struct {
+    workspace_id: ?[]const u8 = null,
+    worktree_id: ?[]const u8 = null,
+    root_path: ?[]const u8 = null,
+    limit: u32 = 100,
+};
+
+pub const PiThreadRow = struct {
+    id: []u8,
+    terminal_session_id: []u8,
+    terminal_id: []u8,
+    workspace_id: ?[]u8,
+    worktree_id: ?[]u8,
+    cwd: ?[]u8,
+    terminal_status: []u8,
+    agent_status: []u8,
+    native_session_id: ?[]u8,
+    title: ?[]u8,
+    last_seq: u64,
+    last_activity_at: ?[]u8,
+
+    pub fn deinit(self: *PiThreadRow, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.terminal_session_id);
+        allocator.free(self.terminal_id);
+        if (self.workspace_id) |value| allocator.free(value);
+        if (self.worktree_id) |value| allocator.free(value);
+        if (self.cwd) |value| allocator.free(value);
+        allocator.free(self.terminal_status);
+        allocator.free(self.agent_status);
+        if (self.native_session_id) |value| allocator.free(value);
+        if (self.title) |value| allocator.free(value);
+        if (self.last_activity_at) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
 pub const TerminalSearchRecord = struct {
     terminal_session_id: []const u8,
     workspace_id: ?[]const u8 = null,
@@ -675,6 +744,16 @@ pub const WorktreeRow = struct {
         self.* = undefined;
     }
 };
+
+fn normalizeFilterRootPathAlloc(allocator: std.mem.Allocator, root_path: ?[]const u8) !?[]u8 {
+    const value = root_path orelse return null;
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) return null;
+
+    var end = trimmed.len;
+    while (end > 1 and trimmed[end - 1] == '/') end -= 1;
+    return try allocator.dupe(u8, trimmed[0..end]);
+}
 
 pub const Database = struct {
     allocator: std.mem.Allocator,
@@ -884,6 +963,45 @@ pub const Database = struct {
         var stmt = try self.handle.prepareDynamic(find_agent_resume_by_terminal_sql);
         defer stmt.deinit();
         return try stmt.oneAlloc(AgentResumeLookup, allocator, .{}, .{terminal_session_id});
+    }
+
+    pub fn listPiThreads(self: *Database, allocator: std.mem.Allocator, filter: PiThreadListFilter) ![]PiThreadRow {
+        if (filter.limit > search_results_max) return error.SearchLimitTooLarge;
+
+        const normalized_root_path = try normalizeFilterRootPathAlloc(allocator, filter.root_path);
+        defer if (normalized_root_path) |value| allocator.free(value);
+        const root_path_like = if (normalized_root_path) |value| try std.fmt.allocPrint(allocator, "{s}/%", .{value}) else null;
+        defer if (root_path_like) |value| allocator.free(value);
+
+        var stmt = try self.handle.prepareDynamic(list_pi_threads_sql);
+        defer stmt.deinit();
+        var iter = try stmt.iteratorAlloc(PiThreadRow, allocator, .{
+            filter.workspace_id,
+            filter.workspace_id,
+            filter.worktree_id,
+            filter.worktree_id,
+            normalized_root_path,
+            normalized_root_path,
+            normalized_root_path,
+            normalized_root_path,
+            root_path_like,
+            filter.limit,
+        });
+
+        var rows: std.ArrayList(PiThreadRow) = .empty;
+        errdefer {
+            for (rows.items) |*row| row.deinit(allocator);
+            rows.deinit(allocator);
+        }
+
+        while (try iter.nextAlloc(allocator, .{})) |row_value| {
+            var row = row_value;
+            errdefer row.deinit(allocator);
+            if (rows.items.len >= search_results_max) return error.TooManySearchResults;
+            try rows.append(allocator, row);
+        }
+
+        return rows.toOwnedSlice(allocator);
     }
 
     pub fn recordTerminalSearch(self: *Database, record: TerminalSearchRecord) !void {
@@ -1298,6 +1416,8 @@ test "sqlite database records agent resume metadata and FTS excerpts" {
     try database.recordTerminalSession(.{
         .id = "session-agent",
         .terminal_id = "terminal-agent",
+        .workspace_id = "workspace-agent",
+        .cwd = "/repo/tau",
         .status = "live",
         .cols = 80,
         .rows = 24,
@@ -1306,20 +1426,29 @@ test "sqlite database records agent resume metadata and FTS excerpts" {
     });
 
     try database.recordAgentSession(.{
-        .id = "agent-session-agent-codex",
+        .id = "agent-session-agent-pi",
         .terminal_session_id = "session-agent",
-        .provider = "codex",
+        .provider = "pi",
         .native_session_id = "native-123",
-        .original_argv_json = "[\"codex\"]",
-        .resume_argv_json = "[\"codex\",\"resume\",\"native-123\"]",
+        .original_argv_json = "[\"pi\"]",
+        .resume_argv_json = "[\"pi\",\"--session\",\"native-123\"]",
         .status = "resumable",
     });
 
     try std.testing.expectEqual(@as(u64, 1), try database.countAgentSessions());
     var agent_resume = (try database.findAgentResumeForTerminal(std.testing.allocator, "session-agent")).?;
     defer agent_resume.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("codex", agent_resume.provider);
+    try std.testing.expectEqualStrings("pi", agent_resume.provider);
     try std.testing.expectEqualStrings("native-123", agent_resume.native_session_id);
+
+    const pi_threads = try database.listPiThreads(std.testing.allocator, .{ .root_path = "/repo" });
+    defer {
+        for (pi_threads) |*thread| thread.deinit(std.testing.allocator);
+        std.testing.allocator.free(pi_threads);
+    }
+    try std.testing.expectEqual(@as(usize, 1), pi_threads.len);
+    try std.testing.expectEqualStrings("session-agent", pi_threads[0].terminal_session_id);
+    try std.testing.expectEqualStrings("native-123", pi_threads[0].native_session_id.?);
 
     try database.recordTerminalSearch(.{
         .terminal_session_id = "session-agent",

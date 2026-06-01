@@ -85,6 +85,8 @@ export const PaneLayoutSchema = Schema.Struct({
   ]),
   name: Schema.String,
   cwd: Schema.optional(Schema.String),
+  agentProvider: Schema.optional(Schema.Literal('pi')),
+  argv: Schema.optional(Schema.Array(Schema.String)),
   status: Schema.optional(
     Schema.Union([
       Schema.Literal('idle'),
