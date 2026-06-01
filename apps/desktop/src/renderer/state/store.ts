@@ -276,14 +276,7 @@ function isPiThreadTab(tab: Tab, panes: readonly Pane[]): boolean {
 
 function isImportedPiThreadTab(tab: Tab, panes: readonly Pane[]): boolean {
   const tabPanes = panes.filter((pane) => pane.tabId === tab.id)
-  return (
-    tabPanes.length > 0 &&
-    tabPanes.every(
-      (pane) =>
-        isPiPane(pane) &&
-        (pane.argv?.includes('--session') || pane.lastSessionId?.startsWith('pi-native:')),
-    )
-  )
+  return tab.id.startsWith('tab-pi-') && tabPanes.length > 0 && tabPanes.every(isPiPane)
 }
 
 function piThreadContextId(fallbackWorkspaceId: string, thread: PiThread): string {

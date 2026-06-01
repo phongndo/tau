@@ -290,6 +290,7 @@ const list_pi_threads_sql =
     \\    t.status AS terminal_status,
     \\    a.status AS agent_status,
     \\    a.native_session_id,
+    \\    a.resume_argv_json,
     \\    a.title,
     \\    t.last_seq,
     \\    COALESCE(a.last_activity_at, t.last_activity_at, a.updated_at, t.updated_at) AS last_activity_at
@@ -305,7 +306,7 @@ const list_pi_threads_sql =
     \\      OR w.root_path = ?
     \\      OR wt.path = ?
     \\      OR t.cwd = ?
-    \\      OR t.cwd LIKE ?
+    \\      OR t.cwd LIKE ? ESCAPE '\'
     \\  )
     \\ORDER BY COALESCE(a.last_activity_at, t.last_activity_at, a.updated_at, t.updated_at) DESC
     \\LIMIT ?;
@@ -612,6 +613,7 @@ pub const PiThreadRow = struct {
     terminal_status: []u8,
     agent_status: []u8,
     native_session_id: ?[]u8,
+    resume_argv_json: ?[]u8,
     title: ?[]u8,
     last_seq: u64,
     last_activity_at: ?[]u8,
@@ -626,6 +628,7 @@ pub const PiThreadRow = struct {
         allocator.free(self.terminal_status);
         allocator.free(self.agent_status);
         if (self.native_session_id) |value| allocator.free(value);
+        if (self.resume_argv_json) |value| allocator.free(value);
         if (self.title) |value| allocator.free(value);
         if (self.last_activity_at) |value| allocator.free(value);
         self.* = undefined;
@@ -753,6 +756,27 @@ fn normalizeFilterRootPathAlloc(allocator: std.mem.Allocator, root_path: ?[]cons
     var end = trimmed.len;
     while (end > 1 and trimmed[end - 1] == '/') end -= 1;
     return try allocator.dupe(u8, trimmed[0..end]);
+}
+
+fn sqliteLikeEscapeAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var escaped: std.ArrayList(u8) = .empty;
+    errdefer escaped.deinit(allocator);
+
+    for (value) |byte| {
+        if (byte == '%' or byte == '_' or byte == '\\') {
+            try escaped.append(allocator, '\\');
+        }
+        try escaped.append(allocator, byte);
+    }
+
+    return escaped.toOwnedSlice(allocator);
+}
+
+fn rootPathLikePatternAlloc(allocator: std.mem.Allocator, root_path: ?[]const u8) !?[]u8 {
+    const value = root_path orelse return null;
+    const escaped = try sqliteLikeEscapeAlloc(allocator, value);
+    defer allocator.free(escaped);
+    return try std.fmt.allocPrint(allocator, "{s}/%", .{escaped});
 }
 
 pub const Database = struct {
@@ -970,7 +994,7 @@ pub const Database = struct {
 
         const normalized_root_path = try normalizeFilterRootPathAlloc(allocator, filter.root_path);
         defer if (normalized_root_path) |value| allocator.free(value);
-        const root_path_like = if (normalized_root_path) |value| try std.fmt.allocPrint(allocator, "{s}/%", .{value}) else null;
+        const root_path_like = try rootPathLikePatternAlloc(allocator, normalized_root_path);
         defer if (root_path_like) |value| allocator.free(value);
 
         var stmt = try self.handle.prepareDynamic(list_pi_threads_sql);
@@ -1449,6 +1473,33 @@ test "sqlite database records agent resume metadata and FTS excerpts" {
     try std.testing.expectEqual(@as(usize, 1), pi_threads.len);
     try std.testing.expectEqualStrings("session-agent", pi_threads[0].terminal_session_id);
     try std.testing.expectEqualStrings("native-123", pi_threads[0].native_session_id.?);
+    try std.testing.expectEqualStrings("[\"pi\",\"--session\",\"native-123\"]", pi_threads[0].resume_argv_json.?);
+
+    try database.recordTerminalSession(.{
+        .id = "session-agent-like",
+        .terminal_id = "terminal-agent-like",
+        .cwd = "/repo/userXname/project",
+        .status = "live",
+        .cols = 80,
+        .rows = 24,
+        .event_log_path = "/tmp/agent-like/events.tauev",
+        .last_seq = 1,
+    });
+    try database.recordAgentSession(.{
+        .id = "agent-session-agent-like",
+        .terminal_session_id = "session-agent-like",
+        .provider = "pi",
+        .original_argv_json = "[\"pi\"]",
+        .resume_argv_json = "[\"pi\"]",
+        .status = "resumable",
+    });
+
+    const escaped_pi_threads = try database.listPiThreads(std.testing.allocator, .{ .root_path = "/repo/user_name" });
+    defer {
+        for (escaped_pi_threads) |*thread| thread.deinit(std.testing.allocator);
+        std.testing.allocator.free(escaped_pi_threads);
+    }
+    try std.testing.expectEqual(@as(usize, 0), escaped_pi_threads.len);
 
     try database.recordTerminalSearch(.{
         .terminal_session_id = "session-agent",

@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { open, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { spawn, type ChildProcess, type StdioOptions } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import net from 'node:net'
@@ -670,7 +670,11 @@ function piSessionsRoot(): string {
 function isPathInRoot(candidate: string, rootPath: string): boolean {
   const root = resolve(rootPath)
   const value = resolve(candidate)
-  return value === root || value.startsWith(`${root}/`)
+  const relativePath = relative(root, value)
+  return (
+    relativePath === '' ||
+    (relativePath.length > 0 && !relativePath.startsWith('..') && !isAbsolute(relativePath))
+  )
 }
 
 async function listNativePiThreads(rootPath: string): Promise<readonly PiThread[]> {
@@ -1898,13 +1902,7 @@ export class TaudClient {
     if (!input.rootPath) return daemonThreads
 
     const nativeThreads = await listNativePiThreads(input.rootPath)
-    const nativeSessionIds = new Set(
-      nativeThreads.flatMap((thread) => thread.nativeSessionId ?? []),
-    )
-    const matchingDaemonThreads = daemonThreads.filter(
-      (thread) => thread.nativeSessionId && nativeSessionIds.has(thread.nativeSessionId),
-    )
-    return mergePiThreads(matchingDaemonThreads, nativeThreads)
+    return mergePiThreads(daemonThreads, nativeThreads)
   }
 
   private async gitPathAction(

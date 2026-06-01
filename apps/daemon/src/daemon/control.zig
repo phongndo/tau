@@ -381,15 +381,24 @@ pub fn handlePiThreadListLocked(self: anytype, allocator: std.mem.Allocator, req
 
     const responses = try allocator.alloc(rpc.PiThreadResponse, rows.len);
     defer allocator.free(responses);
+    const resume_argvs = try allocator.alloc(util.ParsedArgv, rows.len);
+    defer {
+        for (resume_argvs) |*resume_argv| resume_argv.deinit();
+        allocator.free(resume_argvs);
+    }
+    @memset(resume_argvs, .{});
 
     for (rows, 0..) |row, index| {
-        responses[index] = piThreadResponseFromRow(row);
+        if (row.resume_argv_json) |resume_argv_json| {
+            resume_argvs[index] = util.parseArgvJson(allocator, resume_argv_json) catch .{};
+        }
+        responses[index] = piThreadResponseFromRow(row, resume_argvs[index].items());
     }
 
     return piThreadListResponseJsonAlloc(allocator, request.requestId(), responses);
 }
 
-fn piThreadResponseFromRow(row: db.PiThreadRow) rpc.PiThreadResponse {
+fn piThreadResponseFromRow(row: db.PiThreadRow, resume_argv: []const []const u8) rpc.PiThreadResponse {
     return .{
         .id = row.id,
         .terminal_session_id = row.terminal_session_id,
@@ -400,6 +409,7 @@ fn piThreadResponseFromRow(row: db.PiThreadRow) rpc.PiThreadResponse {
         .terminal_status = row.terminal_status,
         .agent_status = row.agent_status,
         .native_session_id = row.native_session_id,
+        .resume_argv = if (resume_argv.len > 0) resume_argv else null,
         .title = row.title,
         .last_seq = row.last_seq,
         .last_activity_at = row.last_activity_at,

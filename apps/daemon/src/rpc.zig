@@ -376,6 +376,7 @@ pub const PiThreadResponse = struct {
     terminal_status: []const u8,
     agent_status: []const u8,
     native_session_id: ?[]const u8 = null,
+    resume_argv: ?[]const []const u8 = null,
     title: ?[]const u8 = null,
     last_seq: u64,
     last_activity_at: ?[]const u8 = null,

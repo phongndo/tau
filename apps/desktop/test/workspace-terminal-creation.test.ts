@@ -258,6 +258,33 @@ test('persisted layout excludes Pi thread projections', () => {
   assert.equal(layout.activePaneId, null)
 })
 
+test('imported daemon Pi threads without native metadata are not auto-selected', () => {
+  resetStore()
+
+  const thread: PiThread = {
+    id: 'agent-pi',
+    terminalSessionId: 'session-pi',
+    terminalId: 'term-pi',
+    workspaceId: 'workspace-a',
+    cwd: '/tmp/workspace-a',
+    terminalStatus: 'detached',
+    agentStatus: 'resumable',
+    title: 'Daemon-only Pi thread',
+    lastSeq: 7,
+    lastActivityAt: '2026-05-31T00:00:00Z',
+  }
+
+  useTauStore.getState().addWorkspace(workspace('workspace-a'))
+  useTauStore.getState().importPiThreads('workspace-a', [thread])
+  useTauStore.getState().selectWorkspace('workspace-a')
+
+  const state = useTauStore.getState()
+  assert.equal(state.tabs.length, 1)
+  assert.equal(state.tabs[0]?.id, 'tab-pi-session-pi')
+  assert.equal(state.activeTabId, null)
+  assert.equal(state.activePaneId, null)
+})
+
 test('importPiThreads replaces the local Pi projection from source of truth', () => {
   resetStore()
 

@@ -659,6 +659,7 @@ export async function createTerminal(
     openedTerm.dispose()
     throw new Error(`Terminal runtime was not registered for ${sessionId}`)
   }
+  const activeRuntime = runtime
 
   // Step 4: Wire IPC
   updateStatus('Wiring IPC...')
@@ -750,7 +751,9 @@ export async function createTerminal(
     pendingSessionFitFrame = window.requestAnimationFrame(() => {
       pendingSessionFitFrame = null
       if (archived) return
-      fitTerminalToContainer(container, openedTerm)
+      const currentContainer = activeRuntime.container
+      if (!currentContainer) return
+      fitTerminalToContainer(currentContainer, openedTerm)
       forceTerminalRender(openedTerm)
     })
   }
