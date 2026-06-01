@@ -31,6 +31,8 @@ pub fn Context(comptime Daemon: type) type {
 
             var env_pairs: std.ArrayList(pty.EnvPair) = .empty;
             defer env_pairs.deinit(daemon.allocator);
+            try env_pairs.append(daemon.allocator, .{ .name = "TERM", .value = "xterm-256color" });
+            try env_pairs.append(daemon.allocator, .{ .name = "COLORTERM", .value = "truecolor" });
             var workspace_row: ?@import("../db.zig").WorkspaceRow = null;
             defer if (workspace_row) |*row| row.deinit(daemon.allocator);
             var worktree_row: ?@import("../db.zig").WorktreeRow = null;

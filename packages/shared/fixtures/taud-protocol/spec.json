@@ -9,7 +9,8 @@
       "stream-frames-v1",
       "workspaces-v1",
       "worktrees-v1",
-      "persistence-v1"
+      "persistence-v1",
+      "pi-threads-v1"
     ],
     "requestFixtures": [
       "control-workspace-branch-request.ndjson",

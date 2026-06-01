@@ -175,6 +175,9 @@ export class TaudPtyBridge {
   private port: MessagePortMain | null = null
   private readonly sessions = new Map<string, BridgeSession>()
   private readonly supersededAttachStreams = new WeakSet<TaudSessionStream>()
+  private readonly sessionAttachGenerations = new Map<string, number>()
+  private readonly openingSessionGenerations = new Map<string, number>()
+  private readonly detachedBeforeReadySessionGenerations = new Map<string, number>()
   private readonly cleanupTimer: ReturnType<typeof setInterval>
   private messagesPostedTotal = 0
   private dataMessagesPostedTotal = 0
@@ -297,6 +300,7 @@ export class TaudPtyBridge {
           sanitizeCwd(message.cwd),
           {
             forceCreate: false,
+            argv: sanitizeArgv(message.argv),
             workspaceId: sanitizeId(message.workspaceId),
             worktreeId: sanitizeId(message.worktreeId),
           },
@@ -335,54 +339,36 @@ export class TaudPtyBridge {
       worktreeId?: string
     },
   ): Promise<void> {
+    const attachGeneration = (this.sessionAttachGenerations.get(sessionId) ?? 0) + 1
+    this.sessionAttachGenerations.set(sessionId, attachGeneration)
+    this.openingSessionGenerations.set(sessionId, attachGeneration)
     const workspaceId = options.workspaceId
-    if (!workspaceId) {
-      throw new Error('Terminal sessions require a workspace')
-    }
-    const sessionOptions = { argv: options.argv, workspaceId, worktreeId: options.worktreeId }
+    let readyPosted = false
+    try {
+      if (!workspaceId) {
+        throw new Error('Terminal sessions require a workspace')
+      }
+      const sessionOptions = { argv: options.argv, workspaceId, worktreeId: options.worktreeId }
 
-    const existing = this.sessions.get(sessionId)
-    if (existing?.stream) {
-      // A renderer can request attach for an already-streaming session when a terminal view is
-      // remounted during tab/layout changes. Returning a bare ready message here leaves the new
-      // terminal view with no current-screen snapshot or startup bytes because the previous stream
-      // already consumed them. Treat it as a real live reattach instead: close the old subscriber
-      // socket and continue through taud attach so the daemon sends a fresh snapshot.
-      existing.cols = cols
-      existing.rows = rows
-      this.supersededAttachStreams.add(existing.stream)
-      this.closeSessionStream(sessionId)
-    }
+      const existing = this.sessions.get(sessionId)
+      if (existing?.stream) {
+        // A renderer can request attach for an already-streaming session when a terminal view is
+        // remounted during tab/layout changes. Returning a bare ready message here leaves the new
+        // terminal view with no current-screen snapshot or startup bytes because the previous stream
+        // already consumed them. Treat it as a real live reattach instead: close the old subscriber
+        // socket and continue through taud attach so the daemon sends a fresh snapshot.
+        existing.cols = cols
+        existing.rows = rows
+        this.supersededAttachStreams.add(existing.stream)
+        this.closeSessionStream(sessionId)
+      }
 
-    let attachResponse: TaudControlResponse
-    let stream: TaudSessionStream
-    let attachMode: AttachSessionMode = 'live'
-    if (options.forceCreate) {
-      await this.createShellSession(sessionId, terminalId, cols, rows, cwd, sessionOptions)
-      attachMode = 'fresh'
-      ;({ response: attachResponse, stream } = await this.client.attachSession({
-        sessionId,
-        terminalId,
-        workspaceId,
-        worktreeId: options.worktreeId,
-        cols,
-        rows,
-        cwd,
-      }))
-    } else {
-      try {
-        ;({ response: attachResponse, stream } = await this.client.attachSession({
-          sessionId,
-          terminalId,
-          cols,
-          rows,
-          cwd,
-          workspaceId,
-          worktreeId: options.worktreeId,
-        }))
-      } catch (error) {
-        if (!isNotFoundError(error)) throw error
+      let attachResponse: TaudControlResponse
+      let stream: TaudSessionStream
+      let attachMode: AttachSessionMode = 'live'
+      if (options.forceCreate) {
         await this.createShellSession(sessionId, terminalId, cols, rows, cwd, sessionOptions)
+        this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
         attachMode = 'fresh'
         ;({ response: attachResponse, stream } = await this.client.attachSession({
           sessionId,
@@ -393,43 +379,96 @@ export class TaudPtyBridge {
           rows,
           cwd,
         }))
+        if (this.wasDetachedBeforeReady(sessionId, attachGeneration)) {
+          stream.close()
+          await this.client.detachSession(sessionId).catch(() => {})
+          this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
+        }
+      } else {
+        try {
+          ;({ response: attachResponse, stream } = await this.client.attachSession({
+            sessionId,
+            terminalId,
+            cols,
+            rows,
+            cwd,
+            workspaceId,
+            worktreeId: options.worktreeId,
+          }))
+          if (this.wasDetachedBeforeReady(sessionId, attachGeneration)) {
+            stream.close()
+            await this.client.detachSession(sessionId).catch(() => {})
+            this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
+          }
+        } catch (error) {
+          if (!isNotFoundError(error)) throw error
+          await this.createShellSession(sessionId, terminalId, cols, rows, cwd, sessionOptions)
+          this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
+          attachMode = 'fresh'
+          ;({ response: attachResponse, stream } = await this.client.attachSession({
+            sessionId,
+            terminalId,
+            workspaceId,
+            worktreeId: options.worktreeId,
+            cols,
+            rows,
+            cwd,
+          }))
+          if (this.wasDetachedBeforeReady(sessionId, attachGeneration)) {
+            stream.close()
+            await this.client.detachSession(sessionId).catch(() => {})
+            this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
+          }
+        }
+      }
+      if (attachMode === 'live') attachMode = responseAttachMode(attachResponse)
+
+      const archived = false
+      const session: BridgeSession = {
+        stream,
+        decoder: new StringDecoder('utf8'),
+        cols,
+        rows,
+        archived,
+        attachMode,
+        agentProvider: attachResponse.agent_provider,
+        nativeSessionId: attachResponse.native_session_id,
+        rootPid: typeof attachResponse.pid === 'number' ? attachResponse.pid : 0,
+        fallbackTitle: processTitleFromShell(this.defaultShell),
+        processTitle: null,
+        processTitlePoll: null,
+        processTitleInFlight: false,
+      }
+      this.sessions.set(sessionId, session)
+      this.wireStream(sessionId, session, stream)
+      this.startProcessTitlePolling(sessionId, session)
+      const attachReady = waitForAttachStreamReady(stream)
+      stream.start()
+      try {
+        await attachReady
+      } catch (error) {
+        // A remount/new renderer can supersede an in-flight attach for the same session. In that
+        // case the old stream closes because Tau intentionally replaced it; don't report that stale
+        // close to the renderer or it can clear the ready state for the newer attach.
+        if (this.supersededAttachStreams.has(stream)) return
+        this.closeSessionStream(sessionId)
+        throw error
+      }
+      this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
+      const size = responseSize(attachResponse, { cols, rows })
+      this.postReady(sessionId, size, responseSeq(attachResponse), session)
+      readyPosted = true
+    } finally {
+      if (this.openingSessionGenerations.get(sessionId) === attachGeneration) {
+        this.openingSessionGenerations.delete(sessionId)
+      }
+      if (
+        !readyPosted &&
+        this.detachedBeforeReadySessionGenerations.get(sessionId) === attachGeneration
+      ) {
+        this.detachedBeforeReadySessionGenerations.delete(sessionId)
       }
     }
-    if (attachMode === 'live') attachMode = responseAttachMode(attachResponse)
-
-    const archived = false
-    const session: BridgeSession = {
-      stream,
-      decoder: new StringDecoder('utf8'),
-      cols,
-      rows,
-      archived,
-      attachMode,
-      agentProvider: attachResponse.agent_provider,
-      nativeSessionId: attachResponse.native_session_id,
-      rootPid: typeof attachResponse.pid === 'number' ? attachResponse.pid : 0,
-      fallbackTitle: processTitleFromShell(this.defaultShell),
-      processTitle: null,
-      processTitlePoll: null,
-      processTitleInFlight: false,
-    }
-    this.sessions.set(sessionId, session)
-    this.wireStream(sessionId, session, stream)
-    this.startProcessTitlePolling(sessionId, session)
-    const attachReady = waitForAttachStreamReady(stream)
-    stream.start()
-    try {
-      await attachReady
-    } catch (error) {
-      // A remount/new renderer can supersede an in-flight attach for the same session. In that
-      // case the old stream closes because Tau intentionally replaced it; don't report that stale
-      // close to the renderer or it can clear the ready state for the newer attach.
-      if (this.supersededAttachStreams.has(stream)) return
-      this.closeSessionStream(sessionId)
-      throw error
-    }
-    const size = responseSize(attachResponse, { cols, rows })
-    this.postReady(sessionId, size, responseSeq(attachResponse), session)
   }
 
   private async createShellSession(
@@ -529,6 +568,12 @@ export class TaudPtyBridge {
   }
 
   private async detachSession(sessionId: string): Promise<void> {
+    const openingGeneration = this.openingSessionGenerations.get(sessionId)
+    if (openingGeneration !== undefined) {
+      this.detachedBeforeReadySessionGenerations.set(sessionId, openingGeneration)
+    } else {
+      this.detachedBeforeReadySessionGenerations.delete(sessionId)
+    }
     this.closeSessionStream(sessionId)
     await this.client.detachSession(sessionId).catch(() => {})
   }
@@ -543,11 +588,24 @@ export class TaudPtyBridge {
   }
 
   private async killSession(sessionId: string): Promise<void> {
+    this.sessionAttachGenerations.delete(sessionId)
+    this.openingSessionGenerations.delete(sessionId)
+    this.detachedBeforeReadySessionGenerations.delete(sessionId)
     this.closeSessionStream(sessionId)
     const session = this.sessions.get(sessionId)
     if (session) this.stopProcessTitlePolling(session)
     this.sessions.delete(sessionId)
     await this.client.killSession(sessionId).catch(() => {})
+  }
+
+  private wasDetachedBeforeReady(sessionId: string, attachGeneration: number): boolean {
+    return this.detachedBeforeReadySessionGenerations.get(sessionId) === attachGeneration
+  }
+
+  private throwIfDetachedBeforeReady(sessionId: string, attachGeneration: number): void {
+    if (!this.wasDetachedBeforeReady(sessionId, attachGeneration)) return
+    this.detachedBeforeReadySessionGenerations.delete(sessionId)
+    throw new Error(`Session ${sessionId} detached before ready`)
   }
 
   private closeSessionStream(sessionId: string): void {

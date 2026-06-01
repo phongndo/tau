@@ -1123,6 +1123,11 @@ body {
   margin: 0 -4px;
   overflow: auto;
   overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.project-list::-webkit-scrollbar {
+  display: none;
 }
 
 .project-list-empty {
@@ -1305,7 +1310,6 @@ body {
   white-space: nowrap;
 }
 
-.project-thread-index,
 .project-thread-archive {
   flex: 0 0 auto;
   display: inline-flex;
@@ -2538,8 +2542,51 @@ body {
   outline: none;
 }
 
+.terminal-runtime-wrapper {
+  width: 100%;
+  height: 100%;
+}
+
 .terminal-surface-restoring {
   opacity: 0;
+}
+
+.terminal-opening {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #8d91a0;
+  font:
+    12px/1.2 Menlo,
+    Monaco,
+    'Courier New',
+    monospace;
+  pointer-events: none;
+}
+
+.terminal-opening-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #8fd1b3;
+  box-shadow: 0 0 0 0 rgb(143 209 179 / 34%);
+  animation: terminal-opening-pulse 1.2s ease-out infinite;
+}
+
+@keyframes terminal-opening-pulse {
+  0% {
+    opacity: 0.95;
+    box-shadow: 0 0 0 0 rgb(143 209 179 / 34%);
+  }
+
+  100% {
+    opacity: 0.38;
+    box-shadow: 0 0 0 8px rgb(143 209 179 / 0%);
+  }
 }
 
 .terminal-search-panel {
@@ -2750,38 +2797,4 @@ body {
   border-color: rgb(230 185 157 / 68%);
   background: rgb(230 185 157 / 18%);
   outline: none;
-}
-
-.terminal-resume-banner {
-  position: absolute;
-  top: 14px;
-  right: 16px;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: min(520px, calc(100% - 32px));
-  padding: 7px 11px;
-  border: 1px solid rgb(140 176 255 / 34%);
-  border-radius: 7px;
-  background: rgb(20 24 34 / 95%);
-  color: #c9c7cd;
-  font-size: 11px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 25%);
-}
-
-.terminal-resume-label {
-  flex: 0 0 auto;
-  color: #9fb9ff;
-  font-weight: 800;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-
-.terminal-resume-detail {
-  min-width: 0;
-  overflow: hidden;
-  color: #9699a8;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

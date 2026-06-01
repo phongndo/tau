@@ -36,6 +36,7 @@ export const PtyClientMessageSchema = Schema.Union([
     cols: Schema.Number,
     rows: Schema.Number,
     cwd: Schema.optional(CwdSchema),
+    argv: Schema.optional(Schema.Array(Schema.String)),
   }),
   Schema.Struct({ type: Schema.Literal('detach'), sessionId: SessionIdSchema }),
   Schema.Struct({

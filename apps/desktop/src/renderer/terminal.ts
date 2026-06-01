@@ -40,44 +40,42 @@ type CreateTerminalOptions = {
   readonly workspaceId?: string
   readonly worktreeId?: string
   readonly cwd?: string
+  readonly argv?: readonly string[]
   readonly onTitle?: (title: string) => void
   readonly onArchived?: () => void
   readonly onAttach?: (result: AttachSessionResult) => void
 }
 
-/**
- * Tau Default — based on Mellow by @kvparik (shipped with Ghostty).
- * https://github.com/ghostty-org/ghostty
- */
 const THEME = {
   background: '#151515',
-  foreground: '#c9c7cd',
-  cursor: '#cac9dd',
+  foreground: '#d4d4d4',
+  cursor: '#d4d4d4',
   cursorAccent: '#151515',
-  selectionBackground: '#2a2a2d',
-  selectionForeground: '#c1c0d4',
-  black: '#27272a',
-  red: '#f5a191',
-  green: '#90b99f',
-  yellow: '#e6b99d',
-  blue: '#aca1cf',
-  magenta: '#e29eca',
-  cyan: '#ea83a5',
-  white: '#c1c0d4',
-  brightBlack: '#424246',
-  brightRed: '#ffae9f',
-  brightGreen: '#9dc6ac',
-  brightYellow: '#f0c5a9',
-  brightBlue: '#b9aeda',
-  brightMagenta: '#ecaad6',
-  brightCyan: '#f591b2',
-  brightWhite: '#cac9dd',
+  selectionBackground: '#264f78',
+  selectionForeground: '#ffffff',
+  black: '#000000',
+  red: '#cd3131',
+  green: '#0dbc79',
+  yellow: '#e5e510',
+  blue: '#2472c8',
+  magenta: '#bc3fbc',
+  cyan: '#11a8cd',
+  white: '#e5e5e5',
+  brightBlack: '#666666',
+  brightRed: '#f14c4c',
+  brightGreen: '#23d18b',
+  brightYellow: '#f5f543',
+  brightBlue: '#3b8eea',
+  brightMagenta: '#d670d6',
+  brightCyan: '#29b8db',
+  brightWhite: '#ffffff',
 }
 
 const terminalFontFamily =
   '"SF Mono", Menlo, Monaco, "JetBrains Mono", "JetBrainsMono Nerd Font Mono", "Tau Symbols Nerd Font Mono", "Symbols Nerd Font Mono", monospace'
 
 const SIDEBAR_RESIZE_FIT_DELAY_MS = 80
+const PTY_RESIZE_SETTLE_DELAY_MS = 120
 const STARTUP_OUTPUT_BUFFER_MAX_CHARS = 1024 * 1024
 const tauSymbolsFontFamily = 'Tau Symbols Nerd Font Mono'
 const tauSymbolsFontProbe = '\ue0a0\uf07b\ue7a8'
@@ -92,11 +90,27 @@ type DiagnosticWindow = Window & {
   __TAU_TERMINAL_DIAGNOSTICS__?: TerminalDiagnosticsRegistry
 }
 
+type TerminalRuntime = {
+  readonly sessionId: string
+  readonly term: Terminal
+  readonly wrapper: HTMLDivElement
+  container: HTMLElement | null
+  stopResizeObserver: (() => void) | null
+  archived: boolean
+  attachResult: AttachSessionResult | null
+  disposed: boolean
+  onTitle?: (title: string) => void
+  onArchived?: () => void
+  onAttach?: (result: AttachSessionResult) => void
+}
+
 let terminalFontsLoad: Promise<void> | null = null
 
 const terminalFitAddons = new WeakMap<Terminal, FitAddon>()
 const terminalSearchAddons = new WeakMap<Terminal, SearchAddon>()
 const terminalWebglAddons = new WeakMap<Terminal, WebglAddon>()
+const terminalRuntimes = new Map<string, TerminalRuntime>()
+const terminalRuntimeByTerminal = new WeakMap<Terminal, TerminalRuntime>()
 
 function updateStatus(msg: string) {
   if (window.location.protocol !== 'file:') {
@@ -147,6 +161,32 @@ function renderTerminalError(container: HTMLElement, err: unknown) {
   errorNode.style.fontFamily = 'monospace'
   errorNode.textContent = `Error opening terminal: ${String(err)}`
   container.replaceChildren(errorNode)
+}
+
+function getTerminalParkingContainer(): HTMLElement {
+  const existing = document.getElementById('tau-terminal-parking')
+  if (existing) return existing
+
+  const parking = document.createElement('div')
+  parking.id = 'tau-terminal-parking'
+  parking.setAttribute('aria-hidden', 'true')
+  parking.style.position = 'fixed'
+  parking.style.left = '-10000px'
+  parking.style.top = '-10000px'
+  parking.style.width = '1px'
+  parking.style.height = '1px'
+  parking.style.overflow = 'hidden'
+  parking.style.pointerEvents = 'none'
+  document.body.appendChild(parking)
+  return parking
+}
+
+function createTerminalWrapper(): HTMLDivElement {
+  const wrapper = document.createElement('div')
+  wrapper.className = 'terminal-runtime-wrapper'
+  wrapper.style.width = '100%'
+  wrapper.style.height = '100%'
+  return wrapper
 }
 
 function terminalDiagnosticsRegistry(): TerminalDiagnosticsRegistry {
@@ -227,7 +267,7 @@ async function tryApplyCurrentScreenSnapshot(
       if (snapshot.cols !== envelope.cols || snapshot.rows !== envelope.rows) return 0
 
       if (term.cols !== snapshot.cols || term.rows !== snapshot.rows) {
-        term.resize(snapshot.cols, snapshot.rows)
+        return 0
       }
 
       await writeAndRefresh(term, ghosttyNativeCurrentScreenSnapshotToAnsi(snapshot))
@@ -243,7 +283,7 @@ async function tryApplyCurrentScreenSnapshot(
     if (snapshot.cols !== envelope.cols || snapshot.rows !== envelope.rows) return 0
 
     if (term.cols !== snapshot.cols || term.rows !== snapshot.rows) {
-      term.resize(snapshot.cols, snapshot.rows)
+      return 0
     }
 
     // This consumes only the daemon's live current-screen frame. It is deliberately not event-log
@@ -289,32 +329,36 @@ function observeTerminalResize(container: HTMLElement, term: Terminal): () => vo
   let lastWidth = container.clientWidth
   let lastHeight = container.clientHeight
 
+  function fitAndRender() {
+    fitTerminalToContainer(container, term)
+    forceTerminalRender(term)
+  }
+
   function scheduleAnimationFit() {
     if (resizeFrame !== null) return
     resizeFrame = window.requestAnimationFrame(() => {
       resizeFrame = null
       if (disposed) return
 
-      fitTerminalToContainer(container, term)
-      forceTerminalRender(term)
+      fitAndRender()
     })
   }
 
-  function scheduleFit() {
+  function scheduleSettledFit() {
     if (resizeSettleTimer !== null) {
       clearTimeout(resizeSettleTimer)
       resizeSettleTimer = null
     }
 
-    if (document.body.classList.contains('sidebar-resizing')) {
-      resizeSettleTimer = setTimeout(() => {
-        resizeSettleTimer = null
-        scheduleAnimationFit()
-      }, SIDEBAR_RESIZE_FIT_DELAY_MS)
-      return
-    }
+    resizeSettleTimer = setTimeout(() => {
+      resizeSettleTimer = null
+      scheduleAnimationFit()
+    }, SIDEBAR_RESIZE_FIT_DELAY_MS)
+  }
 
+  function scheduleFit() {
     scheduleAnimationFit()
+    scheduleSettledFit()
   }
 
   const observer = new ResizeObserver((entries) => {
@@ -343,6 +387,42 @@ function observeTerminalResize(container: HTMLElement, term: Terminal): () => vo
     }
     container.classList.remove('terminal-surface-layout-pending')
   }
+}
+
+function attachTerminalRuntime(runtime: TerminalRuntime, container: HTMLElement): void {
+  if (runtime.disposed) return
+
+  runtime.stopResizeObserver?.()
+  runtime.stopResizeObserver = null
+  runtime.container?.classList.remove('terminal-surface-restoring')
+
+  if (runtime.wrapper.parentElement !== container) {
+    container.replaceChildren(runtime.wrapper)
+  }
+  runtime.container = container
+  container.classList.add('terminal-surface-restoring')
+
+  fitTerminalToContainer(container, runtime.term)
+  forceTerminalRender(runtime.term)
+  runtime.stopResizeObserver = observeTerminalResize(container, runtime.term)
+}
+
+export function detachTerminalSurface(sessionId: string, term?: Terminal | null): void {
+  const runtime = term ? terminalRuntimeByTerminal.get(term) : terminalRuntimes.get(sessionId)
+  if (!runtime || runtime.disposed || runtime.sessionId !== sessionId) return
+
+  runtime.stopResizeObserver?.()
+  runtime.stopResizeObserver = null
+  runtime.container?.classList.remove('terminal-surface-restoring')
+  runtime.container = null
+  runtime.term.blur()
+  getTerminalParkingContainer().appendChild(runtime.wrapper)
+}
+
+export function disposeTerminalRuntime(sessionId: string): void {
+  const runtime = terminalRuntimes.get(sessionId)
+  if (!runtime || runtime.disposed) return
+  runtime.term.dispose()
 }
 
 function installWebglRenderer(term: Terminal): void {
@@ -472,6 +552,23 @@ export async function createTerminal(
   options: CreateTerminalOptions = {},
 ): Promise<Terminal> {
   const finishCreate = startRendererSpan('terminal:create')
+  const existingRuntime = terminalRuntimes.get(sessionId)
+  if (existingRuntime && !existingRuntime.disposed) {
+    try {
+      existingRuntime.onTitle = options.onTitle
+      existingRuntime.onArchived = options.onArchived
+      existingRuntime.onAttach = options.onAttach
+      attachTerminalRuntime(existingRuntime, container)
+      if (existingRuntime.attachResult) options.onAttach?.(existingRuntime.attachResult)
+      if (existingRuntime.archived) options.onArchived?.()
+      await revealTerminalAfterStableRender(container, existingRuntime.term)
+      markRendererEvent('terminal:runtime-reattached')
+      return existingRuntime.term
+    } finally {
+      finishCreate()
+    }
+  }
+
   // Step 1: Load terminal fonts before starting the shell. The PTY must be
   // spawned at the fitted terminal size, otherwise shell prompts with right-side content
   // render against the initial 80x24 size and leave stale fragments after pane splits.
@@ -525,13 +622,30 @@ export async function createTerminal(
     }
 
     container.classList.add('terminal-surface-restoring')
+    const wrapper = createTerminalWrapper()
+    container.replaceChildren(wrapper)
     const finishOpen = startRendererSpan('terminal:xterm-open')
     try {
-      term.open(container)
+      term.open(wrapper)
     } finally {
       finishOpen()
     }
     installWebglRenderer(term)
+    const runtime: TerminalRuntime = {
+      sessionId,
+      term,
+      wrapper,
+      container,
+      stopResizeObserver: null,
+      archived: false,
+      attachResult: null,
+      disposed: false,
+      onTitle: options.onTitle,
+      onArchived: options.onArchived,
+      onAttach: options.onAttach,
+    }
+    terminalRuntimes.set(sessionId, runtime)
+    terminalRuntimeByTerminal.set(term, runtime)
   } catch (err) {
     finishCreate()
     console.error('[terminal] term.open() threw:', err)
@@ -545,16 +659,23 @@ export async function createTerminal(
     throw new Error('Terminal failed to initialize')
   }
   const openedTerm = term
+  const runtime = terminalRuntimes.get(sessionId)
+  if (!runtime || runtime.term !== openedTerm) {
+    finishCreate()
+    openedTerm.dispose()
+    throw new Error(`Terminal runtime was not registered for ${sessionId}`)
+  }
+  const activeRuntime = runtime
 
   // Step 4: Wire IPC
   updateStatus('Wiring IPC...')
 
   const outputWriter = createBatchedTerminalWriter(openedTerm)
   terminalDiagnosticsRegistry().set(sessionId, () => outputWriter.diagnostics())
-  const titleSubscription = options.onTitle ? openedTerm.onTitleChange(options.onTitle) : null
-  const unsubSessionTitle = options.onTitle
-    ? window.electronAPI.onSessionTitle(sessionId, options.onTitle)
-    : null
+  const titleSubscription = openedTerm.onTitleChange((title) => runtime.onTitle?.(title))
+  const unsubSessionTitle = window.electronAPI.onSessionTitle(sessionId, (title) => {
+    runtime.onTitle?.(title)
+  })
   let stopResizeObserver: (() => void) | null = null
   let archived = false
   let bufferingStartupOutput = true
@@ -630,17 +751,25 @@ export async function createTerminal(
     pendingStartupSnapshot = frame
   })
 
-  let applyingReplayResize = false
+  let pendingSessionFitFrame: number | null = null
+  function scheduleSessionFit() {
+    if (pendingSessionFitFrame !== null) return
+    pendingSessionFitFrame = window.requestAnimationFrame(() => {
+      pendingSessionFitFrame = null
+      if (archived) return
+      const currentContainer = activeRuntime.container
+      if (!currentContainer) return
+      fitTerminalToContainer(currentContainer, openedTerm)
+      forceTerminalRender(openedTerm)
+    })
+  }
+
   const unsubSessionResize = window.electronAPI.onSessionResize(sessionId, (cols, rows) => {
     if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols <= 0 || rows <= 0) return
-    if (cols === term.cols && rows === term.rows) return
-
-    applyingReplayResize = true
-    try {
-      term.resize(Math.floor(cols), Math.floor(rows))
-    } finally {
-      applyingReplayResize = false
-    }
+    // The visible terminal size is owned by the pane/container. Daemon resize frames are useful
+    // for session history and other subscribers, but applying historical Pi resize frames directly
+    // here fights xterm's fit addon during chat/sidebar resizing and leaves stale canvas rows.
+    scheduleSessionFit()
   })
 
   // Terminal input → PTY (no debug overhead)
@@ -656,21 +785,51 @@ export async function createTerminal(
 
   let pendingResize: { cols: number; rows: number } | null = null
   let resizeFrame: number | null = null
+  let resizeSettleTimer: ReturnType<typeof setTimeout> | null = null
 
-  term.onResize(({ cols, rows }: { cols: number; rows: number }) => {
-    if (applyingReplayResize) return
+  function clearResizeSettleTimer() {
+    if (resizeSettleTimer === null) return
+    clearTimeout(resizeSettleTimer)
+    resizeSettleTimer = null
+  }
 
-    pendingResize = { cols, rows }
+  function flushPendingPtyResize() {
+    const nextResize = pendingResize
+    pendingResize = null
+    if (nextResize && !archived) {
+      window.electronAPI.resizeSession(sessionId, nextResize.cols, nextResize.rows)
+    }
+  }
+
+  function schedulePtyResizeFrame() {
     if (resizeFrame !== null) return
-
     resizeFrame = window.requestAnimationFrame(() => {
       resizeFrame = null
-      const nextResize = pendingResize
-      pendingResize = null
-      if (nextResize && !archived) {
-        window.electronAPI.resizeSession(sessionId, nextResize.cols, nextResize.rows)
-      }
+      flushPendingPtyResize()
     })
+  }
+
+  function scheduleSettledPtyResize() {
+    clearResizeSettleTimer()
+    resizeSettleTimer = setTimeout(() => {
+      resizeSettleTimer = null
+      if (resizeFrame !== null) {
+        window.cancelAnimationFrame(resizeFrame)
+        resizeFrame = null
+      }
+      flushPendingPtyResize()
+    }, PTY_RESIZE_SETTLE_DELAY_MS)
+  }
+
+  term.onResize(({ cols, rows }: { cols: number; rows: number }) => {
+    pendingResize = { cols, rows }
+    if (document.body.classList.contains('sidebar-resizing')) {
+      scheduleSettledPtyResize()
+      return
+    }
+
+    clearResizeSettleTimer()
+    schedulePtyResizeFrame()
   })
 
   const unsubSessionError = window.electronAPI.onSessionError(sessionId, (error: string) => {
@@ -704,18 +863,17 @@ export async function createTerminal(
         cols: term.cols,
         rows: term.rows,
         cwd: options.cwd,
+        argv: options.argv ? [...options.argv] : undefined,
       })
       .finally(finishAttach)
     didAttachSession = true
+    runtime.attachResult = attachedSession
     if (attachedSession.archived) {
       archived = true
-      options.onArchived?.()
+      runtime.archived = true
+      runtime.onArchived?.()
     }
-    options.onAttach?.(attachedSession)
-    const initialPtySize = { cols: attachedSession.cols, rows: attachedSession.rows }
-    if (initialPtySize.cols !== term.cols || initialPtySize.rows !== term.rows) {
-      term.resize(initialPtySize.cols, initialPtySize.rows)
-    }
+    runtime.onAttach?.(attachedSession)
     fitTerminalToContainer(container, term)
     // Startup output can arrive between attach:ok and the final fit above. Writing it before the
     // final resize makes the renderer preserve/reflow the early shell prompt at the wrong origin,
@@ -751,6 +909,12 @@ export async function createTerminal(
     if (didAttachSession) {
       await window.electronAPI.detachSession(sessionId).catch(() => {})
     }
+    runtime.disposed = true
+    runtime.stopResizeObserver?.()
+    runtime.stopResizeObserver = null
+    runtime.container = null
+    if (terminalRuntimes.get(sessionId) === runtime) terminalRuntimes.delete(sessionId)
+    terminalRuntimeByTerminal.delete(term)
     term.dispose()
     container.classList.remove('terminal-surface-restoring')
     renderTerminalError(container, err)
@@ -758,13 +922,21 @@ export async function createTerminal(
   }
 
   stopResizeObserver = observeTerminalResize(container, term)
+  runtime.stopResizeObserver = stopResizeObserver
 
   // Cleanup
   const originalDispose = term.dispose.bind(term)
   term.dispose = () => {
+    if (runtime.disposed) return
+    runtime.disposed = true
     if (resizeFrame !== null) {
       window.cancelAnimationFrame(resizeFrame)
       resizeFrame = null
+    }
+    clearResizeSettleTimer()
+    if (pendingSessionFitFrame !== null) {
+      window.cancelAnimationFrame(pendingSessionFitFrame)
+      pendingSessionFitFrame = null
     }
     pendingResize = null
     unsubSessionOutput()
@@ -777,12 +949,17 @@ export async function createTerminal(
     outputWriter.dispose()
     terminalDiagnosticsRegistry().delete(sessionId)
     void window.electronAPI.detachSession(sessionId)
-    stopResizeObserver?.()
+    runtime.stopResizeObserver?.()
+    if (runtime.stopResizeObserver !== stopResizeObserver) stopResizeObserver?.()
     stopResizeObserver = null
+    runtime.stopResizeObserver = null
     terminalFitAddons.delete(term)
     terminalSearchAddons.delete(term)
     terminalWebglAddons.delete(term)
-    container.classList.remove('terminal-surface-restoring')
+    runtime.container?.classList.remove('terminal-surface-restoring')
+    runtime.container = null
+    if (terminalRuntimes.get(sessionId) === runtime) terminalRuntimes.delete(sessionId)
+    terminalRuntimeByTerminal.delete(term)
     originalDispose()
   }
 

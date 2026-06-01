@@ -1,5 +1,6 @@
 const std = @import("std");
 const cleanup = @import("../cleanup.zig");
+const db = @import("../db.zig");
 const event_log = @import("../event_log.zig");
 const pty = @import("../pty.zig");
 const rpc = @import("../rpc.zig");
@@ -363,4 +364,76 @@ pub fn handleConfigurePersistenceLocked(self: anytype, allocator: std.mem.Alloca
         .persistence_enabled = self.persistence.enabled,
         .persist_input = self.persistence.persist_input,
     });
+}
+
+pub fn handlePiThreadListLocked(self: anytype, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
+    const database = if (self.database) |*database| database else return piThreadListResponseJsonAlloc(allocator, request.requestId(), &.{});
+
+    const rows = try database.listPiThreads(allocator, .{
+        .workspace_id = request.requestWorkspaceId(),
+        .worktree_id = request.requestWorktreeId(),
+        .root_path = request.requestRootPath(),
+    });
+    defer {
+        for (rows) |*row| row.deinit(allocator);
+        allocator.free(rows);
+    }
+
+    const responses = try allocator.alloc(rpc.PiThreadResponse, rows.len);
+    defer allocator.free(responses);
+    const resume_argvs = try allocator.alloc(util.ParsedArgv, rows.len);
+    defer {
+        for (resume_argvs) |*resume_argv| resume_argv.deinit();
+        allocator.free(resume_argvs);
+    }
+    @memset(resume_argvs, .{});
+
+    for (rows, 0..) |row, index| {
+        if (row.resume_argv_json) |resume_argv_json| {
+            resume_argvs[index] = util.parseArgvJson(allocator, resume_argv_json) catch .{};
+        }
+        responses[index] = piThreadResponseFromRow(row, resume_argvs[index].items());
+    }
+
+    return piThreadListResponseJsonAlloc(allocator, request.requestId(), responses);
+}
+
+fn piThreadResponseFromRow(row: db.PiThreadRow, resume_argv: []const []const u8) rpc.PiThreadResponse {
+    return .{
+        .id = row.id,
+        .terminal_session_id = row.terminal_session_id,
+        .terminal_id = row.terminal_id,
+        .workspace_id = row.workspace_id,
+        .worktree_id = row.worktree_id,
+        .cwd = row.cwd,
+        .terminal_status = row.terminal_status,
+        .agent_status = row.agent_status,
+        .native_session_id = row.native_session_id,
+        .resume_argv = if (resume_argv.len > 0) resume_argv else null,
+        .title = row.title,
+        .last_seq = row.last_seq,
+        .last_activity_at = row.last_activity_at,
+    };
+}
+
+fn piThreadListResponseJsonAlloc(
+    allocator: std.mem.Allocator,
+    request_id: ?[]const u8,
+    pi_threads: []const rpc.PiThreadResponse,
+) ![]u8 {
+    const Response = struct {
+        id: ?[]const u8 = null,
+        ok: bool,
+        pi_threads: []const rpc.PiThreadResponse,
+    };
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+
+    try out.writer.print("{f}\n", .{std.json.fmt(Response{
+        .id = request_id,
+        .ok = true,
+        .pi_threads = pi_threads,
+    }, .{})});
+    return out.toOwnedSlice();
 }

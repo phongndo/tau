@@ -1,10 +1,10 @@
 import type { Terminal } from '@xterm/xterm'
 import { useEffect, useRef, useState } from 'react'
 import { FiChevronDown, FiChevronUp, FiSearch, FiX } from 'react-icons/fi'
-import type { AttachSessionResult } from '@tau/shared/taud-protocol'
 import {
   clearTerminalSearch,
   createTerminal,
+  detachTerminalSurface,
   forceTerminalRender,
   onTerminalSearchResults,
   searchTerminalBuffer,
@@ -17,26 +17,8 @@ type TerminalError = {
   detail?: string
 }
 
-type ResumeNotice = {
-  label: string
-  detail: string
-}
-
-function resumeNoticeFromAttach(result: AttachSessionResult): ResumeNotice | null {
-  if (result.attachMode === 'agent-resume') {
-    const provider = result.agentProvider ? `${result.agentProvider} ` : ''
-    const nativeId = result.nativeSessionId ? ` (${result.nativeSessionId})` : ''
-    return {
-      label: 'Agent resumed',
-      detail: `Started ${provider}via native resume${nativeId}.`,
-    }
-  }
-
-  if (result.attachMode === 'command-resume') {
-    return null
-  }
-
-  return null
+function isPiArgv(argv: readonly string[] | undefined): boolean {
+  return argv?.[0] === 'pi'
 }
 
 function renderAfterWindowShown(terminal: Terminal, isCurrent: () => boolean): () => void {
@@ -78,6 +60,7 @@ export function TerminalPane({
   workspaceId,
   worktreeId,
   cwd,
+  argv,
   isActive,
   focusToken,
   searchToken,
@@ -90,6 +73,7 @@ export function TerminalPane({
   workspaceId?: string
   worktreeId?: string
   cwd?: string
+  argv?: readonly string[]
   isActive: boolean
   focusToken: number
   searchToken: number
@@ -106,8 +90,8 @@ export function TerminalPane({
   const terminalReadyRef = useRef(false)
   const lastOpenedSearchTokenRef = useRef(0)
   const [terminalError, setTerminalError] = useState<TerminalError | null>(null)
+  const [isOpening, setIsOpening] = useState(true)
   const [isArchived, setIsArchived] = useState(false)
-  const [resumeNotice, setResumeNotice] = useState<ResumeNotice | null>(null)
   const [searchVisible, setSearchVisible] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResult, setSearchResult] = useState({ resultIndex: -1, resultCount: 0 })
@@ -143,14 +127,15 @@ export function TerminalPane({
 
       try {
         setTerminalError(null)
+        setIsOpening(true)
         setIsArchived(false)
-        setResumeNotice(null)
         onArchiveStateChangeRef.current?.(false)
         const terminal = await createTerminal(surface, sessionId, {
           terminalId,
           workspaceId,
           worktreeId,
           cwd: cwdRef.current,
+          argv,
           onTitle: (title) => onTitleChangeRef.current?.(title),
           onArchived: () => {
             if (!disposed) {
@@ -158,17 +143,15 @@ export function TerminalPane({
               onArchiveStateChangeRef.current?.(true)
             }
           },
-          onAttach: (result) => {
-            if (!disposed) setResumeNotice(resumeNoticeFromAttach(result))
-          },
         })
         if (disposed) {
-          terminal.dispose()
+          detachTerminalSurface(sessionId, terminal)
           return
         }
 
         terminalRef.current = terminal
         terminalReadyRef.current = true
+        setIsOpening(false)
         searchResultsSubscription = onTerminalSearchResults(terminal, (result) => {
           if (!disposed) setSearchResult(result)
         })
@@ -189,6 +172,7 @@ export function TerminalPane({
         }
         const message = err instanceof Error ? err.message : String(err)
         console.error('[renderer] Failed:', err)
+        setIsOpening(false)
         setTerminalError({
           title: 'Failed to initialize terminal',
           message,
@@ -205,10 +189,10 @@ export function TerminalPane({
       cleanupWindowRender?.()
       searchResultsSubscription?.dispose()
       terminalReadyRef.current = false
-      terminalRef.current?.dispose()
+      detachTerminalSurface(sessionId, terminalRef.current)
       terminalRef.current = null
     }
-  }, [sessionId, terminalId, workspaceId, worktreeId])
+  }, [sessionId, terminalId, workspaceId, worktreeId, argv])
 
   useEffect(() => {
     const terminal = terminalRef.current
@@ -284,6 +268,12 @@ export function TerminalPane({
       }
     >
       <div className="terminal-surface" ref={surfaceRef} />
+      {isOpening && !terminalError && !isArchived ? (
+        <div className="terminal-opening" aria-live="polite">
+          <span className="terminal-opening-dot" aria-hidden="true" />
+          <span>{isPiArgv(argv) ? 'Opening Pi' : 'Opening terminal'}</span>
+        </div>
+      ) : null}
       {searchVisible && !isArchived && !terminalError ? (
         <form
           className="terminal-search-panel"
@@ -356,12 +346,6 @@ export function TerminalPane({
           <button type="button" onClick={onRestartSession} disabled={!onRestartSession}>
             Start fresh shell
           </button>
-        </div>
-      ) : null}
-      {resumeNotice && !isArchived && !terminalError ? (
-        <div className="terminal-resume-banner">
-          <span className="terminal-resume-label">{resumeNotice.label}</span>
-          <span className="terminal-resume-detail">{resumeNotice.detail}</span>
         </div>
       ) : null}
     </div>

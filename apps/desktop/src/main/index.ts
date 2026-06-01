@@ -49,7 +49,9 @@ import {
   type SettingsData,
 } from '@tau/shared/session'
 import {
+  PiThreadListInputSchema,
   TaudLifecycleRecoveryInputSchema,
+  type PiThreadListInput,
   type TaudLifecycleRecoveryInput,
 } from '@tau/shared/taud-protocol'
 import {
@@ -566,6 +568,17 @@ ipcMain.handle('worktree:remove', async (event, input: unknown) => {
   if (response.ok && workspaceId) ensureGitStateWatcher().refreshWorkspaceSoon(workspaceId)
   return response
 })
+
+ipcMain.handle('pi-thread:list', (event, input: unknown) =>
+  runTaudWorkspaceRequest(event, (client) => {
+    const data: PiThreadListInput = decodeWorkspaceIpcInput(
+      PiThreadListInputSchema,
+      input ?? {},
+      'invalid-workspace',
+    )
+    return client.listPiThreads(data)
+  }),
+)
 
 ipcMain.handle('layout:read', async (event) => {
   if (event.sender !== mainWindow?.webContents) return null

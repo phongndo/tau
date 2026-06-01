@@ -35,6 +35,7 @@ pub const RequestType = enum {
     worktree_handoff,
     worktree_refresh,
     worktree_reorder,
+    pi_thread_list,
     ping,
     unknown,
 
@@ -123,6 +124,11 @@ pub const RequestType = enum {
         if (std.mem.eql(u8, text, "worktree.reorder")) return .worktree_reorder;
         if (std.mem.eql(u8, text, "worktree:reorder")) return .worktree_reorder;
         if (std.mem.eql(u8, text, "worktree-reorder")) return .worktree_reorder;
+        if (std.mem.eql(u8, text, "pi.thread.list")) return .pi_thread_list;
+        if (std.mem.eql(u8, text, "pi:thread:list")) return .pi_thread_list;
+        if (std.mem.eql(u8, text, "pi-thread-list")) return .pi_thread_list;
+        if (std.mem.eql(u8, text, "pi.sessions")) return .pi_thread_list;
+        if (std.mem.eql(u8, text, "pi-sessions")) return .pi_thread_list;
         if (std.mem.eql(u8, text, "ping")) return .ping;
         return .unknown;
     }
@@ -360,6 +366,22 @@ pub const StreamDiagnostics = struct {
     pending_output_truncated_bytes_total: u64 = 0,
 };
 
+pub const PiThreadResponse = struct {
+    id: []const u8,
+    terminal_session_id: []const u8,
+    terminal_id: []const u8,
+    workspace_id: ?[]const u8 = null,
+    worktree_id: ?[]const u8 = null,
+    cwd: ?[]const u8 = null,
+    terminal_status: []const u8,
+    agent_status: []const u8,
+    native_session_id: ?[]const u8 = null,
+    resume_argv: ?[]const []const u8 = null,
+    title: ?[]const u8 = null,
+    last_seq: u64,
+    last_activity_at: ?[]const u8 = null,
+};
+
 pub const ControlDiagnostics = struct {
     request_count: u64 = 0,
     failure_count: u64 = 0,
@@ -378,6 +400,7 @@ pub const control_capabilities = [_][]const u8{
     "workspaces-v1",
     "worktrees-v1",
     "persistence-v1",
+    "pi-threads-v1",
 };
 
 pub fn responseJsonAlloc(allocator: std.mem.Allocator, response: ControlResponse) ![]u8 {

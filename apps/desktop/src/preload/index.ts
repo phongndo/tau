@@ -14,6 +14,7 @@ import {
 import type { AppCommand } from '@tau/shared/app-command'
 import type { PaneLayoutData, SettingsData } from '@tau/shared/session'
 import {
+  PiThreadListInputSchema,
   TaudLifecycleDiagnosticsSchema,
   TaudLifecycleRecoveryInputSchema,
 } from '@tau/shared/taud-protocol'
@@ -27,6 +28,8 @@ import type {
   CurrentScreenSnapshotFrame,
   ExitInfo,
   OutputFrame,
+  PiThread,
+  PiThreadListInput,
   TaudLifecycleDiagnostics,
   TaudLifecycleRecoveryInput,
 } from '@tau/shared/taud-protocol'
@@ -733,6 +736,7 @@ const electronAPI = {
       cols,
       rows,
       ...(trimmedCwd.length > 0 ? { cwd: trimmedCwd } : {}),
+      ...(input.argv && input.argv.length > 0 ? { argv: [...input.argv] } : {}),
     })
     const size = state.size ?? (await state.promise)
     return {
@@ -749,6 +753,7 @@ const electronAPI = {
 
   detachSession(sessionId: string): Promise<void> {
     if (typeof sessionId !== 'string' || sessionId.length === 0) return Promise.resolve()
+    rejectAndClearSessionState(sessionId, new Error(`Session ${sessionId} detached before ready`))
     queuePtyMessage({ type: 'detach', sessionId })
     return Promise.resolve()
   },
@@ -1086,6 +1091,15 @@ const electronAPI = {
       WorktreeRemoveInputSchema,
       'invalid-worktree',
     ) as Promise<WorkspaceIpcResponse<void>>
+  },
+
+  listPiThreads(input: PiThreadListInput = {}): Promise<WorkspaceIpcResponse<readonly PiThread[]>> {
+    return invokeWorkspaceDaemon(
+      'pi-thread:list',
+      input,
+      PiThreadListInputSchema,
+      'invalid-workspace',
+    ) as Promise<WorkspaceIpcResponse<readonly PiThread[]>>
   },
 
   readLayout(): Promise<PaneLayoutData | null> {
