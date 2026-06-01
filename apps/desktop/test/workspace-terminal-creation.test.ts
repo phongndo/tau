@@ -258,7 +258,7 @@ test('persisted layout excludes Pi thread projections', () => {
   assert.equal(layout.activePaneId, null)
 })
 
-test('imported daemon Pi threads without native metadata are not auto-selected', () => {
+test('selecting a workspace falls back to imported daemon Pi threads', () => {
   resetStore()
 
   const thread: PiThread = {
@@ -281,6 +281,23 @@ test('imported daemon Pi threads without native metadata are not auto-selected',
   const state = useTauStore.getState()
   assert.equal(state.tabs.length, 1)
   assert.equal(state.tabs[0]?.id, 'tab-pi-session-pi')
+  assert.equal(state.activeTabId, 'tab-pi-session-pi')
+  assert.equal(state.activePaneId, 'pane-pi-session-pi')
+})
+
+test('closeTab can close locally created Pi threads', () => {
+  resetStore()
+
+  useTauStore.getState().addWorkspace(workspace('workspace-a'))
+  useTauStore.getState().newTab('workspace-a')
+  const tabId = useTauStore.getState().tabs[0]?.id
+  assert.ok(tabId)
+
+  useTauStore.getState().closeTab(tabId)
+
+  const state = useTauStore.getState()
+  assert.equal(state.tabs.length, 0)
+  assert.equal(state.panes.length, 0)
   assert.equal(state.activeTabId, null)
   assert.equal(state.activePaneId, null)
 })

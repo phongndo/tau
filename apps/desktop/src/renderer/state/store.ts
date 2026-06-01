@@ -557,7 +557,7 @@ function reorderWorkspaceTabs(tabs: Tab[], workspaceId: string): Tab[] {
 function closeTabState(state: TauState, tabId: string): Partial<TauState> {
   const tab = state.tabs.find((candidate) => candidate.id === tabId)
   if (!tab) return {}
-  if (isPiThreadTab(tab, state.panes)) return {}
+  if (isImportedPiThreadTab(tab, state.panes)) return {}
 
   const paneIds = new Set(getPaneIdsInLayout(tab.layout))
   const nextTabs = reorderWorkspaceTabs(
@@ -640,6 +640,12 @@ function selectWorkspaceTabState(state: TauState, workspaceId: string): Partial<
     workspaceTabs.find((tab) => tab.id === state.activeTabId) ??
     getPreferredWorkspaceTab(
       nonImportedWorkspaceTabs,
+      state.workspaces,
+      workspaceId,
+      state.lastActiveLocalTabId,
+    ) ??
+    getPreferredWorkspaceTab(
+      workspaceTabs,
       state.workspaces,
       workspaceId,
       state.lastActiveLocalTabId,

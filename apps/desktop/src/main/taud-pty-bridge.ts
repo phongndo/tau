@@ -175,8 +175,9 @@ export class TaudPtyBridge {
   private port: MessagePortMain | null = null
   private readonly sessions = new Map<string, BridgeSession>()
   private readonly supersededAttachStreams = new WeakSet<TaudSessionStream>()
-  private readonly openingSessionIds = new Set<string>()
-  private readonly detachedBeforeReadySessionIds = new Set<string>()
+  private readonly sessionAttachGenerations = new Map<string, number>()
+  private readonly openingSessionGenerations = new Map<string, number>()
+  private readonly detachedBeforeReadySessionGenerations = new Map<string, number>()
   private readonly cleanupTimer: ReturnType<typeof setInterval>
   private messagesPostedTotal = 0
   private dataMessagesPostedTotal = 0
@@ -338,8 +339,9 @@ export class TaudPtyBridge {
       worktreeId?: string
     },
   ): Promise<void> {
-    this.detachedBeforeReadySessionIds.delete(sessionId)
-    this.openingSessionIds.add(sessionId)
+    const attachGeneration = (this.sessionAttachGenerations.get(sessionId) ?? 0) + 1
+    this.sessionAttachGenerations.set(sessionId, attachGeneration)
+    this.openingSessionGenerations.set(sessionId, attachGeneration)
     const workspaceId = options.workspaceId
     let readyPosted = false
     try {
@@ -366,7 +368,7 @@ export class TaudPtyBridge {
       let attachMode: AttachSessionMode = 'live'
       if (options.forceCreate) {
         await this.createShellSession(sessionId, terminalId, cols, rows, cwd, sessionOptions)
-        this.throwIfDetachedBeforeReady(sessionId)
+        this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
         attachMode = 'fresh'
         ;({ response: attachResponse, stream } = await this.client.attachSession({
           sessionId,
@@ -377,10 +379,10 @@ export class TaudPtyBridge {
           rows,
           cwd,
         }))
-        if (this.detachedBeforeReadySessionIds.has(sessionId)) {
+        if (this.wasDetachedBeforeReady(sessionId, attachGeneration)) {
           stream.close()
           await this.client.detachSession(sessionId).catch(() => {})
-          this.throwIfDetachedBeforeReady(sessionId)
+          this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
         }
       } else {
         try {
@@ -393,15 +395,15 @@ export class TaudPtyBridge {
             workspaceId,
             worktreeId: options.worktreeId,
           }))
-          if (this.detachedBeforeReadySessionIds.has(sessionId)) {
+          if (this.wasDetachedBeforeReady(sessionId, attachGeneration)) {
             stream.close()
             await this.client.detachSession(sessionId).catch(() => {})
-            this.throwIfDetachedBeforeReady(sessionId)
+            this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
           }
         } catch (error) {
           if (!isNotFoundError(error)) throw error
           await this.createShellSession(sessionId, terminalId, cols, rows, cwd, sessionOptions)
-          this.throwIfDetachedBeforeReady(sessionId)
+          this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
           attachMode = 'fresh'
           ;({ response: attachResponse, stream } = await this.client.attachSession({
             sessionId,
@@ -412,10 +414,10 @@ export class TaudPtyBridge {
             rows,
             cwd,
           }))
-          if (this.detachedBeforeReadySessionIds.has(sessionId)) {
+          if (this.wasDetachedBeforeReady(sessionId, attachGeneration)) {
             stream.close()
             await this.client.detachSession(sessionId).catch(() => {})
-            this.throwIfDetachedBeforeReady(sessionId)
+            this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
           }
         }
       }
@@ -452,13 +454,20 @@ export class TaudPtyBridge {
         this.closeSessionStream(sessionId)
         throw error
       }
-      this.throwIfDetachedBeforeReady(sessionId)
+      this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
       const size = responseSize(attachResponse, { cols, rows })
       this.postReady(sessionId, size, responseSeq(attachResponse), session)
       readyPosted = true
     } finally {
-      this.openingSessionIds.delete(sessionId)
-      if (!readyPosted) this.detachedBeforeReadySessionIds.delete(sessionId)
+      if (this.openingSessionGenerations.get(sessionId) === attachGeneration) {
+        this.openingSessionGenerations.delete(sessionId)
+      }
+      if (
+        !readyPosted &&
+        this.detachedBeforeReadySessionGenerations.get(sessionId) === attachGeneration
+      ) {
+        this.detachedBeforeReadySessionGenerations.delete(sessionId)
+      }
     }
   }
 
@@ -559,10 +568,11 @@ export class TaudPtyBridge {
   }
 
   private async detachSession(sessionId: string): Promise<void> {
-    if (this.openingSessionIds.has(sessionId)) {
-      this.detachedBeforeReadySessionIds.add(sessionId)
+    const openingGeneration = this.openingSessionGenerations.get(sessionId)
+    if (openingGeneration !== undefined) {
+      this.detachedBeforeReadySessionGenerations.set(sessionId, openingGeneration)
     } else {
-      this.detachedBeforeReadySessionIds.delete(sessionId)
+      this.detachedBeforeReadySessionGenerations.delete(sessionId)
     }
     this.closeSessionStream(sessionId)
     await this.client.detachSession(sessionId).catch(() => {})
@@ -578,7 +588,9 @@ export class TaudPtyBridge {
   }
 
   private async killSession(sessionId: string): Promise<void> {
-    this.detachedBeforeReadySessionIds.delete(sessionId)
+    this.sessionAttachGenerations.delete(sessionId)
+    this.openingSessionGenerations.delete(sessionId)
+    this.detachedBeforeReadySessionGenerations.delete(sessionId)
     this.closeSessionStream(sessionId)
     const session = this.sessions.get(sessionId)
     if (session) this.stopProcessTitlePolling(session)
@@ -586,9 +598,13 @@ export class TaudPtyBridge {
     await this.client.killSession(sessionId).catch(() => {})
   }
 
-  private throwIfDetachedBeforeReady(sessionId: string): void {
-    if (!this.detachedBeforeReadySessionIds.has(sessionId)) return
-    this.detachedBeforeReadySessionIds.delete(sessionId)
+  private wasDetachedBeforeReady(sessionId: string, attachGeneration: number): boolean {
+    return this.detachedBeforeReadySessionGenerations.get(sessionId) === attachGeneration
+  }
+
+  private throwIfDetachedBeforeReady(sessionId: string, attachGeneration: number): void {
+    if (!this.wasDetachedBeforeReady(sessionId, attachGeneration)) return
+    this.detachedBeforeReadySessionGenerations.delete(sessionId)
     throw new Error(`Session ${sessionId} detached before ready`)
   }
 
