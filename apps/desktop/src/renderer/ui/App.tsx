@@ -38,7 +38,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Mosaic, type MosaicNode, type MosaicProps } from 'react-mosaic-component'
+import { Mosaic, type MosaicProps } from 'react-mosaic-component'
 import { FileDiff } from '@pierre/diffs/react'
 import {
   createFileTreeIconResolver,
@@ -51,6 +51,7 @@ import type { AppCommand } from '@tau/shared/app-command'
 import type { PaneLayoutData } from '@tau/shared/session'
 import {
   type Pane,
+  type MosaicLayoutNode,
   type ReorderPlacement,
   selectPaneLayoutData,
   type Tab,
@@ -324,41 +325,102 @@ function ChangedFileIcon({ path }: { path: string }) {
   )
 }
 
-function layoutContainsPane(layout: MosaicNode<string>, paneId: string): boolean {
+type MosaicSplitLayoutNode = Extract<MosaicLayoutNode, { type: 'split' }>
+type MosaicTabsLayoutNode = Extract<MosaicLayoutNode, { type: 'tabs' }>
+
+function isSplitNode(layout: MosaicLayoutNode): layout is MosaicSplitLayoutNode {
+  return typeof layout === 'object' && layout !== null && layout.type === 'split'
+}
+
+function isTabsNode(layout: MosaicLayoutNode): layout is MosaicTabsLayoutNode {
+  return typeof layout === 'object' && layout !== null && layout.type === 'tabs'
+}
+
+function equalSplitPercentages(count: number): number[] {
+  if (count <= 0) return []
+  const percentage = 100 / count
+  return Array.from({ length: count }, () => percentage)
+}
+
+function splitPercentagesForLayout(layout: MosaicSplitLayoutNode): number[] {
+  const values = layout.splitPercentages
+  const count = layout.children.length
+  if (!values || values.length !== count) return equalSplitPercentages(count)
+
+  const percentages = values.map((value) => (Number.isFinite(value) ? Math.max(0, value) : 0))
+  const total = percentages.reduce((sum, value) => sum + value, 0)
+  if (total <= 0) return equalSplitPercentages(count)
+
+  return percentages.map((value) => (value / total) * 100)
+}
+
+function activeTabId(layout: MosaicTabsLayoutNode): string | null {
+  return layout.tabs[layout.activeTabIndex] ?? layout.tabs[0] ?? null
+}
+
+function paneIdsInLayout(layout: MosaicLayoutNode): string[] {
+  if (typeof layout === 'string') return [layout]
+  if (isSplitNode(layout)) return layout.children.flatMap(paneIdsInLayout)
+  if (isTabsNode(layout)) return [...layout.tabs]
+  return []
+}
+
+function layoutContainsPane(layout: MosaicLayoutNode, paneId: string): boolean {
   if (typeof layout === 'string') return layout === paneId
-  return layoutContainsPane(layout.first, paneId) || layoutContainsPane(layout.second, paneId)
+  if (isSplitNode(layout)) return layout.children.some((child) => layoutContainsPane(child, paneId))
+  if (isTabsNode(layout)) return layout.tabs.includes(paneId)
+  return false
 }
 
-function getFirstPaneId(layout: MosaicNode<string>): string | null {
+function getFirstPaneId(layout: MosaicLayoutNode): string | null {
   if (typeof layout === 'string') return layout
-  return getFirstPaneId(layout.first)
+  if (isSplitNode(layout)) {
+    for (const child of layout.children) {
+      const paneId = getFirstPaneId(child)
+      if (paneId) return paneId
+    }
+    return null
+  }
+  if (isTabsNode(layout)) return activeTabId(layout)
+  return null
 }
 
-function getPaneCount(layout: MosaicNode<string>): number {
-  if (typeof layout === 'string') return 1
-  return getPaneCount(layout.first) + getPaneCount(layout.second)
+function getPaneCount(layout: MosaicLayoutNode): number {
+  return paneIdsInLayout(layout).length
 }
 
 function getPaneRects(
-  layout: MosaicNode<string>,
+  layout: MosaicLayoutNode,
   bounds: PaneBounds = { left: 0, top: 0, right: 100, bottom: 100 },
 ): PaneRect[] {
   if (typeof layout === 'string') return [{ id: layout, ...bounds }]
 
-  const split = (layout.splitPercentage ?? 50) / 100
-  if (layout.direction === 'row') {
-    const splitX = bounds.left + (bounds.right - bounds.left) * split
-    return [
-      ...getPaneRects(layout.first, { ...bounds, right: splitX }),
-      ...getPaneRects(layout.second, { ...bounds, left: splitX }),
-    ]
+  if (isTabsNode(layout)) {
+    const paneId = activeTabId(layout)
+    return paneId ? [{ id: paneId, ...bounds }] : []
   }
 
-  const splitY = bounds.top + (bounds.bottom - bounds.top) * split
-  return [
-    ...getPaneRects(layout.first, { ...bounds, bottom: splitY }),
-    ...getPaneRects(layout.second, { ...bounds, top: splitY }),
-  ]
+  if (!isSplitNode(layout)) return []
+
+  const percentages = splitPercentagesForLayout(layout)
+  let offset = layout.direction === 'row' ? bounds.left : bounds.top
+  const extent =
+    layout.direction === 'row' ? bounds.right - bounds.left : bounds.bottom - bounds.top
+
+  return layout.children.flatMap((child, index) => {
+    const nextOffset =
+      index === layout.children.length - 1
+        ? layout.direction === 'row'
+          ? bounds.right
+          : bounds.bottom
+        : offset + extent * ((percentages[index] ?? 0) / 100)
+    const childBounds =
+      layout.direction === 'row'
+        ? { ...bounds, left: offset, right: nextOffset }
+        : { ...bounds, top: offset, bottom: nextOffset }
+    offset = nextOffset
+    return getPaneRects(child, childBounds)
+  })
 }
 
 function borderLineClassName(isActive: boolean): string {
@@ -369,14 +431,17 @@ function borderLineClassName(isActive: boolean): string {
 }
 
 function getTwoPaneBorderLines(
-  layout: MosaicNode<string>,
+  layout: MosaicLayoutNode,
   activePaneId: string,
 ): ActivePaneBorderLine[] {
-  if (typeof layout === 'string') return []
+  if (!isSplitNode(layout) || layout.children.length !== 2) return []
 
-  const splitPercentage = layout.splitPercentage ?? 50
-  const firstIsActive = layoutContainsPane(layout.first, activePaneId)
-  const secondIsActive = layoutContainsPane(layout.second, activePaneId)
+  const [first, second] = layout.children
+  if (!first || !second) return []
+
+  const splitPercentage = splitPercentagesForLayout(layout)[0] ?? 50
+  const firstIsActive = layoutContainsPane(first, activePaneId)
+  const secondIsActive = layoutContainsPane(second, activePaneId)
   if (!firstIsActive && !secondIsActive) return []
 
   // Tmux-style split ownership: for a side-by-side split, the top half of the
@@ -430,7 +495,7 @@ function getTwoPaneBorderLines(
 }
 
 function getMultiPaneBorderLines(
-  layout: MosaicNode<string>,
+  layout: MosaicLayoutNode,
   activePaneId: string,
 ): ActivePaneBorderLine[] {
   const rect = getPaneRects(layout).find((candidate) => candidate.id === activePaneId)
@@ -479,13 +544,15 @@ function getMultiPaneBorderLines(
 }
 
 function getActivePaneBorderLines(
-  layout: MosaicNode<string> | null,
+  layout: MosaicLayoutNode | null,
   activePaneId: string | null,
 ): ActivePaneBorderLine[] {
   if (!layout || !activePaneId) return []
-  return getPaneCount(layout) === 2
-    ? getTwoPaneBorderLines(layout, activePaneId)
-    : getMultiPaneBorderLines(layout, activePaneId)
+  if (getPaneCount(layout) === 2) {
+    const twoPaneLines = getTwoPaneBorderLines(layout, activePaneId)
+    if (twoPaneLines.length > 0) return twoPaneLines
+  }
+  return getMultiPaneBorderLines(layout, activePaneId)
 }
 
 function workspaceNameFromPath(projectPath: string): string {
@@ -1350,13 +1417,15 @@ const SearchDialog = memo(function SearchDialog({
   const hasResults = projectMatches.length > 0 || threadMatches.length > 0
 
   return (
-    <div className="search-dialog-host" role="presentation" onMouseDown={onClose}>
-      <dialog
-        open
-        className="search-dialog"
-        aria-label="Search projects and threads"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
+    <div className="search-dialog-host">
+      <button
+        type="button"
+        className="search-dialog-backdrop"
+        aria-label="Close search dialog"
+        tabIndex={-1}
+        onMouseDown={onClose}
+      />
+      <dialog open className="search-dialog" aria-label="Search projects and threads">
         <div className="search-dialog-input-row">
           <FiSearch size={16} aria-hidden="true" />
           <input
@@ -3088,24 +3157,24 @@ const PaneGrid = memo(function PaneGrid({
   activePaneId: string | null
   terminalFocusTokens: ReadonlyMap<string, number>
   terminalSearchTokens: ReadonlyMap<string, number>
-  onLayoutRelease(tabId: string, layout: MosaicNode<string> | null): void
+  onLayoutRelease(tabId: string, layout: MosaicLayoutNode | null): void
   onSelectPane(paneId: string): void
   onPaneTitle(paneId: string, title: string): void
   onRestartPaneSession(paneId: string): void
   onPaneArchiveState(paneId: string, archived: boolean): void
 }) {
-  const [draftLayout, setDraftLayout] = useState<MosaicNode<string> | null>(tab.layout)
+  const [draftLayout, setDraftLayout] = useState<MosaicLayoutNode | null>(tab.layout)
 
   useEffect(() => {
     setDraftLayout(tab.layout)
   }, [tab.layout])
 
-  const handleLayoutChange = useCallback((layout: MosaicNode<string> | null) => {
+  const handleLayoutChange = useCallback((layout: MosaicLayoutNode | null) => {
     setDraftLayout(layout)
   }, [])
 
   const handleLayoutRelease = useCallback(
-    (layout: MosaicNode<string> | null) => {
+    (layout: MosaicLayoutNode | null) => {
       setDraftLayout(layout)
       onLayoutRelease(tab.id, layout)
     },

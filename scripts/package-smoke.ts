@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { accessSync, constants, mkdtempSync, rmSync, statSync } from 'node:fs'
+import { accessSync, constants, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +11,7 @@ const electronPath = require('electron') as string
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const desktopRoot = resolve(repoRoot, 'apps/desktop')
+const sourceAdaptersRoot = resolve(repoRoot, 'apps/daemon/adapters')
 const outRoot = resolve(desktopRoot, 'out')
 const taudPath = resolve(outRoot, 'bin', process.platform === 'win32' ? 'taud.exe' : 'taud')
 const adaptersRoot = resolve(outRoot, 'adapters')
@@ -64,13 +65,31 @@ function assertExecutable(path: string, label: string): void {
   }
 }
 
+function sourceAdapterFiles(): string[] {
+  let entries: string[]
+  try {
+    entries = readdirSync(sourceAdaptersRoot)
+  } catch {
+    fail(`taud adapter source directory is missing: ${sourceAdaptersRoot}`)
+  }
+
+  const adapters = entries
+    .filter(
+      (entry) => entry.endsWith('.ts') && statSync(resolve(sourceAdaptersRoot, entry)).isFile(),
+    )
+    .sort()
+
+  if (adapters.length === 0) fail(`no taud adapters found in ${sourceAdaptersRoot}`)
+  return adapters
+}
+
 function assertPackageLayout(): void {
   assertFile(resolve(outRoot, 'main/index.js'), 'main bundle')
   assertFile(resolve(outRoot, 'preload/index.mjs'), 'preload bundle')
   assertFile(resolve(outRoot, 'renderer/index.html'), 'renderer entrypoint')
   assertExecutable(taudPath, 'taud binary')
 
-  for (const adapter of ['claude.ts', 'codex.ts', 'pi.ts']) {
+  for (const adapter of sourceAdapterFiles()) {
     assertFile(resolve(adaptersRoot, adapter), `taud adapter ${adapter}`)
   }
 }

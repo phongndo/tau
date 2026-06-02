@@ -1,4 +1,9 @@
-import type { MosaicDirection, MosaicNode, MosaicParent } from 'react-mosaic-component'
+import type {
+  MosaicDirection,
+  MosaicNode,
+  MosaicSplitNode,
+  MosaicTabsNode,
+} from 'react-mosaic-component'
 import { Schema } from 'effect'
 import { create } from 'zustand'
 import type { PaneFocusDirection } from '@tau/shared/app-command'
@@ -313,21 +318,66 @@ function createChangesTab(workspaceId: string, order: number): { tab: Tab; pane:
   }
 }
 
-function isParentNode(node: MosaicLayoutNode): node is MosaicParent<string> {
-  return typeof node === 'object' && node !== null
-}
-
 function getWorkspaceTabs(tabs: Tab[], workspaceId: string): Tab[] {
   return tabs.filter((tab) => tab.workspaceId === workspaceId).sort((a, b) => a.order - b.order)
 }
 
+function isSplitNode(node: MosaicLayoutNode): node is MosaicSplitNode<string> {
+  return typeof node === 'object' && node !== null && node.type === 'split'
+}
+
+function isTabsNode(node: MosaicLayoutNode): node is MosaicTabsNode<string> {
+  return typeof node === 'object' && node !== null && node.type === 'tabs'
+}
+
+function equalSplitPercentages(count: number): number[] {
+  if (count <= 0) return []
+  const percentage = 100 / count
+  return Array.from({ length: count }, () => percentage)
+}
+
+function normalizeSplitPercentages(
+  values: readonly unknown[] | undefined,
+  count: number,
+): number[] {
+  if (count <= 0) return []
+  if (!values || values.length !== count) return equalSplitPercentages(count)
+
+  const percentages = values.map((value) =>
+    typeof value === 'number' ? Math.max(0, finiteNumber(value, 0)) : 0,
+  )
+  const total = percentages.reduce((sum, value) => sum + value, 0)
+  if (total <= 0) return equalSplitPercentages(count)
+
+  return percentages.map((value) => (value / total) * 100)
+}
+
+function splitPercentagesForLayout(layout: MosaicSplitNode<string>): number[] {
+  return normalizeSplitPercentages(layout.splitPercentages, layout.children.length)
+}
+
+function activeTabId(layout: MosaicTabsNode<string>): string | null {
+  return layout.tabs[layout.activeTabIndex] ?? layout.tabs[0] ?? null
+}
+
 function getPaneIdsInLayout(layout: MosaicLayoutNode): string[] {
   if (typeof layout === 'string') return [layout]
-  return [layout.first, layout.second].flatMap(getPaneIdsInLayout)
+  if (isSplitNode(layout)) return layout.children.flatMap(getPaneIdsInLayout)
+  if (isTabsNode(layout)) return [...layout.tabs]
+  return []
 }
 
 function getFirstPaneId(layout: MosaicLayoutNode): string | null {
-  return getPaneIdsInLayout(layout)[0] ?? null
+  if (typeof layout === 'string') return layout
+  if (isSplitNode(layout)) {
+    for (const child of layout.children) {
+      const paneId = getFirstPaneId(child)
+      if (paneId) return paneId
+    }
+    return null
+  }
+  if (isTabsNode(layout)) return activeTabId(layout)
+  return null
 }
 
 function getPreferredPaneId(tab: Tab): string | null {
@@ -403,20 +453,32 @@ type PaneRect = {
 function getPaneRects(layout: MosaicLayoutNode, bounds: Omit<PaneRect, 'id'>): PaneRect[] {
   if (typeof layout === 'string') return [{ id: layout, ...bounds }]
 
-  const split = (layout.splitPercentage ?? 50) / 100
-  if (layout.direction === 'row') {
-    const splitX = bounds.left + (bounds.right - bounds.left) * split
-    return [
-      ...getPaneRects(layout.first, { ...bounds, right: splitX }),
-      ...getPaneRects(layout.second, { ...bounds, left: splitX }),
-    ]
+  if (isTabsNode(layout)) {
+    const paneId = activeTabId(layout)
+    return paneId ? [{ id: paneId, ...bounds }] : []
   }
 
-  const splitY = bounds.top + (bounds.bottom - bounds.top) * split
-  return [
-    ...getPaneRects(layout.first, { ...bounds, bottom: splitY }),
-    ...getPaneRects(layout.second, { ...bounds, top: splitY }),
-  ]
+  if (!isSplitNode(layout)) return []
+
+  const percentages = splitPercentagesForLayout(layout)
+  let offset = layout.direction === 'row' ? bounds.left : bounds.top
+  const extent =
+    layout.direction === 'row' ? bounds.right - bounds.left : bounds.bottom - bounds.top
+
+  return layout.children.flatMap((child, index) => {
+    const nextOffset =
+      index === layout.children.length - 1
+        ? layout.direction === 'row'
+          ? bounds.right
+          : bounds.bottom
+        : offset + extent * ((percentages[index] ?? 0) / 100)
+    const childBounds =
+      layout.direction === 'row'
+        ? { ...bounds, left: offset, right: nextOffset }
+        : { ...bounds, top: offset, bottom: nextOffset }
+    offset = nextOffset
+    return getPaneRects(child, childBounds)
+  })
 }
 
 function getRectCenter(rect: PaneRect): { x: number; y: number } {
@@ -500,20 +562,30 @@ function splitLayoutNode(
 ): MosaicLayoutNode {
   if (layout === paneId) {
     return {
+      type: 'split',
       direction,
-      first: paneId,
-      second: newPaneId,
-      splitPercentage: 50,
+      children: [paneId, newPaneId],
+      splitPercentages: [50, 50],
     }
   }
 
   if (typeof layout === 'string') return layout
 
-  if (isParentNode(layout)) {
+  if (isTabsNode(layout) && layout.tabs.includes(paneId)) {
+    return {
+      type: 'split',
+      direction,
+      children: [layout, newPaneId],
+      splitPercentages: [50, 50],
+    }
+  }
+
+  if (isSplitNode(layout)) {
     return {
       ...layout,
-      first: splitLayoutNode(layout.first, paneId, newPaneId, direction),
-      second: splitLayoutNode(layout.second, paneId, newPaneId, direction),
+      children: layout.children.map((child) =>
+        splitLayoutNode(child, paneId, newPaneId, direction),
+      ),
     }
   }
 
@@ -527,20 +599,45 @@ function removePaneFromLayout(
   if (layout === paneId) return { layout: null, removed: true }
   if (typeof layout === 'string') return { layout, removed: false }
 
-  if (isParentNode(layout)) {
-    const first = removePaneFromLayout(layout.first, paneId)
-    const second = removePaneFromLayout(layout.second, paneId)
-    const removed = first.removed || second.removed
-    if (!removed) return { layout, removed: false }
-    if (!first.layout && !second.layout) return { layout: null, removed: true }
-    if (!first.layout) return { layout: second.layout, removed: true }
-    if (!second.layout) return { layout: first.layout, removed: true }
+  if (isTabsNode(layout)) {
+    const tabs = layout.tabs.filter((tab) => tab !== paneId)
+    if (tabs.length === layout.tabs.length) return { layout, removed: false }
+    if (tabs.length === 0) return { layout: null, removed: true }
+    if (tabs.length === 1) return { layout: tabs[0]!, removed: true }
 
     return {
       layout: {
         ...layout,
-        first: first.layout,
-        second: second.layout,
+        tabs,
+        activeTabIndex: Math.min(layout.activeTabIndex, tabs.length - 1),
+      },
+      removed: true,
+    }
+  }
+
+  if (isSplitNode(layout)) {
+    const percentages = splitPercentagesForLayout(layout)
+    const children: MosaicLayoutNode[] = []
+    const childPercentages: number[] = []
+    let removed = false
+
+    layout.children.forEach((child, index) => {
+      const result = removePaneFromLayout(child, paneId)
+      removed = removed || result.removed
+      if (!result.layout) return
+      children.push(result.layout)
+      childPercentages.push(percentages[index] ?? 0)
+    })
+
+    if (!removed) return { layout, removed: false }
+    if (children.length === 0) return { layout: null, removed: true }
+    if (children.length === 1) return { layout: children[0]!, removed: true }
+
+    return {
+      layout: {
+        ...layout,
+        children,
+        splitPercentages: normalizeSplitPercentages(childPercentages, children.length),
       },
       removed: true,
     }
@@ -725,6 +822,64 @@ function decodePersistedLayout(
   if (typeof layout === 'string') return paneIdsForTab.has(layout) ? layout : null
   if (!isRecord(layout)) return null
 
+  if (layout.type === 'tabs') {
+    if (!Array.isArray(layout.tabs)) return null
+
+    const tabs = layout.tabs.filter(
+      (tab): tab is string => typeof tab === 'string' && paneIdsForTab.has(tab),
+    )
+    if (tabs.length === 0) return null
+    if (tabs.length === 1) return tabs[0]!
+
+    const activeTabIndex = Math.min(
+      tabs.length - 1,
+      Math.max(
+        0,
+        Math.trunc(
+          typeof layout.activeTabIndex === 'number' ? finiteNumber(layout.activeTabIndex, 0) : 0,
+        ),
+      ),
+    )
+
+    return {
+      type: 'tabs',
+      tabs,
+      activeTabIndex,
+    }
+  }
+
+  if (layout.type === 'split') {
+    const direction = layout.direction
+    if (direction !== 'row' && direction !== 'column') return null
+    if (!Array.isArray(layout.children)) return null
+
+    const rawPercentages = Array.isArray(layout.splitPercentages)
+      ? layout.splitPercentages
+      : undefined
+    const children: MosaicLayoutNode[] = []
+    const childPercentages: unknown[] = []
+
+    layout.children.forEach((child, index) => {
+      const decodedChild = decodePersistedLayout(child, paneIdsForTab)
+      if (!decodedChild) return
+      children.push(decodedChild)
+      if (rawPercentages) childPercentages.push(rawPercentages[index])
+    })
+
+    if (children.length === 0) return null
+    if (children.length === 1) return children[0]!
+
+    return {
+      type: 'split',
+      direction,
+      children,
+      splitPercentages: normalizeSplitPercentages(
+        rawPercentages ? childPercentages : undefined,
+        children.length,
+      ),
+    }
+  }
+
   const direction = layout.direction
   if (direction !== 'row' && direction !== 'column') return null
 
@@ -733,12 +888,15 @@ function decodePersistedLayout(
   if (!first || !second) return first ?? second
 
   return {
+    type: 'split',
     direction,
-    first,
-    second,
-    splitPercentage: clampSplitPercentage(
-      typeof layout.splitPercentage === 'number' ? layout.splitPercentage : undefined,
-    ),
+    children: [first, second],
+    splitPercentages: (() => {
+      const splitPercentage = clampSplitPercentage(
+        typeof layout.splitPercentage === 'number' ? layout.splitPercentage : undefined,
+      )
+      return [splitPercentage, 100 - splitPercentage]
+    })(),
   }
 }
 

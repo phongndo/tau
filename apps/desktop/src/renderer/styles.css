@@ -1376,8 +1376,19 @@ body {
   backdrop-filter: blur(3px);
 }
 
+.search-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .search-dialog {
   position: relative;
+  z-index: 1;
   inset: auto;
   width: min(720px, calc(100vw - 48px));
   max-height: min(620px, calc(100vh - 120px));
