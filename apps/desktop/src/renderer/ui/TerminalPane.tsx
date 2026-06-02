@@ -1,5 +1,5 @@
 import type { Terminal } from '@xterm/xterm'
-import { useEffect, useRef, useState } from 'react'
+import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { FiChevronDown, FiChevronUp, FiSearch, FiX } from 'react-icons/fi'
 import {
   clearTerminalSearch,
@@ -259,6 +259,14 @@ export function TerminalPane({
     setSearchResult({ resultIndex: -1, resultCount: 0 })
   }
 
+  function handleSearchControlKeyDown(event: KeyboardEvent<HTMLElement>) {
+    event.stopPropagation()
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeSearch()
+    }
+  }
+
   const activeSearchIndex = searchResult.resultIndex >= 0 ? searchResult.resultIndex + 1 : 0
 
   return (
@@ -277,17 +285,9 @@ export function TerminalPane({
       {searchVisible && !isArchived && !terminalError ? (
         <form
           className="terminal-search-panel"
-          onPointerDown={(event) => event.stopPropagation()}
           onSubmit={(event) => {
             event.preventDefault()
             runSearch(searchQuery, 'next')
-          }}
-          onKeyDown={(event) => {
-            event.stopPropagation()
-            if (event.key === 'Escape') {
-              event.preventDefault()
-              closeSearch()
-            }
           }}
         >
           <FiSearch size={13} aria-hidden="true" />
@@ -297,6 +297,7 @@ export function TerminalPane({
             value={searchQuery}
             placeholder="Find"
             spellCheck={false}
+            onKeyDown={handleSearchControlKeyDown}
             onChange={(event) => {
               const nextQuery = event.target.value
               setSearchQuery(nextQuery)
@@ -310,6 +311,7 @@ export function TerminalPane({
             type="button"
             aria-label="Previous match"
             title="Previous match"
+            onKeyDown={handleSearchControlKeyDown}
             onClick={() => runSearch(searchQuery, 'previous')}
           >
             <FiChevronUp size={14} />
@@ -318,6 +320,7 @@ export function TerminalPane({
             type="button"
             aria-label="Next match"
             title="Next match"
+            onKeyDown={handleSearchControlKeyDown}
             onClick={() => runSearch(searchQuery, 'next')}
           >
             <FiChevronDown size={14} />
@@ -326,6 +329,7 @@ export function TerminalPane({
             type="button"
             aria-label="Close search"
             title="Close search"
+            onKeyDown={handleSearchControlKeyDown}
             onClick={closeSearch}
           >
             <FiX size={14} />
