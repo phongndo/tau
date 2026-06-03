@@ -1,9 +1,4 @@
-import type {
-  MosaicDirection,
-  MosaicNode,
-  MosaicSplitNode,
-  MosaicTabsNode,
-} from 'react-mosaic-component'
+import type { MosaicDirection } from 'react-mosaic-component'
 import { Schema } from 'effect'
 import { create } from 'zustand'
 import type { PaneFocusDirection } from '@tau/shared/app-command'
@@ -11,6 +6,21 @@ import type { PaneLayoutData } from '@tau/shared/session'
 import type { PiThread } from '@tau/shared/taud-protocol'
 import { type WorkspaceWorktree, WorkspaceWorktreeSchema } from '@tau/shared/workspace'
 import { sanitizeTerminalTitle } from '../osc-title'
+import {
+  activeTabId,
+  activeTabIndexForTabs,
+  getFirstPaneId,
+  getPaneIdsInLayout,
+  getPaneRects,
+  getVisiblePaneIdForPane,
+  isSplitNode,
+  isTabsNode,
+  layoutContainsPane,
+  normalizeSplitPercentages,
+  splitPercentagesForLayout,
+  type MosaicLayoutNode,
+  type PaneRect,
+} from './layout'
 
 export const LOCAL_WORKSPACE_ID = 'tau:local'
 export const WORKTREE_CONTEXT_PREFIX = 'worktree:'
@@ -96,7 +106,7 @@ export interface Tab {
   order: number
 }
 
-export type MosaicLayoutNode = MosaicNode<string>
+export type { MosaicLayoutNode } from './layout'
 
 export interface Pane {
   id: string
@@ -322,68 +332,12 @@ function getWorkspaceTabs(tabs: Tab[], workspaceId: string): Tab[] {
   return tabs.filter((tab) => tab.workspaceId === workspaceId).sort((a, b) => a.order - b.order)
 }
 
-function isSplitNode(node: MosaicLayoutNode): node is MosaicSplitNode<string> {
-  return typeof node === 'object' && node !== null && node.type === 'split'
-}
-
-function isTabsNode(node: MosaicLayoutNode): node is MosaicTabsNode<string> {
-  return typeof node === 'object' && node !== null && node.type === 'tabs'
-}
-
-function equalSplitPercentages(count: number): number[] {
-  if (count <= 0) return []
-  const percentage = 100 / count
-  return Array.from({ length: count }, () => percentage)
-}
-
-function normalizeSplitPercentages(
-  values: readonly unknown[] | undefined,
-  count: number,
-): number[] {
-  if (count <= 0) return []
-  if (!values || values.length !== count) return equalSplitPercentages(count)
-
-  const percentages = values.map((value) =>
-    typeof value === 'number' ? Math.max(0, finiteNumber(value, 0)) : 0,
-  )
-  const total = percentages.reduce((sum, value) => sum + value, 0)
-  if (total <= 0) return equalSplitPercentages(count)
-
-  return percentages.map((value) => (value / total) * 100)
-}
-
-function splitPercentagesForLayout(layout: MosaicSplitNode<string>): number[] {
-  return normalizeSplitPercentages(layout.splitPercentages, layout.children.length)
-}
-
-function activeTabId(layout: MosaicTabsNode<string>): string | null {
-  return layout.tabs[layout.activeTabIndex] ?? layout.tabs[0] ?? null
-}
-
-function getPaneIdsInLayout(layout: MosaicLayoutNode): string[] {
-  if (typeof layout === 'string') return [layout]
-  if (isSplitNode(layout)) return layout.children.flatMap(getPaneIdsInLayout)
-  if (isTabsNode(layout)) return [...layout.tabs]
-  return []
-}
-
-function getFirstPaneId(layout: MosaicLayoutNode): string | null {
-  if (typeof layout === 'string') return layout
-  if (isSplitNode(layout)) {
-    for (const child of layout.children) {
-      const paneId = getFirstPaneId(child)
-      if (paneId) return paneId
-    }
-    return null
-  }
-  if (isTabsNode(layout)) return activeTabId(layout)
-  return null
-}
-
 function getPreferredPaneId(tab: Tab): string | null {
-  return tab.lastActivePaneId && layoutContainsPane(tab.layout, tab.lastActivePaneId)
-    ? tab.lastActivePaneId
-    : getFirstPaneId(tab.layout)
+  if (tab.lastActivePaneId) {
+    const visiblePaneId = getVisiblePaneIdForPane(tab.layout, tab.lastActivePaneId)
+    if (visiblePaneId) return visiblePaneId
+  }
+  return getFirstPaneId(tab.layout)
 }
 
 function getPreferredWorkspaceTab(
@@ -440,45 +394,6 @@ function rememberTabPane(tabs: Tab[], tabId: string, paneId: string | null): Tab
   })
 
   return changed ? nextTabs : tabs
-}
-
-type PaneRect = {
-  id: string
-  left: number
-  top: number
-  right: number
-  bottom: number
-}
-
-function getPaneRects(layout: MosaicLayoutNode, bounds: Omit<PaneRect, 'id'>): PaneRect[] {
-  if (typeof layout === 'string') return [{ id: layout, ...bounds }]
-
-  if (isTabsNode(layout)) {
-    const paneId = activeTabId(layout)
-    return paneId ? [{ id: paneId, ...bounds }] : []
-  }
-
-  if (!isSplitNode(layout)) return []
-
-  const percentages = splitPercentagesForLayout(layout)
-  let offset = layout.direction === 'row' ? bounds.left : bounds.top
-  const extent =
-    layout.direction === 'row' ? bounds.right - bounds.left : bounds.bottom - bounds.top
-
-  return layout.children.flatMap((child, index) => {
-    const nextOffset =
-      index === layout.children.length - 1
-        ? layout.direction === 'row'
-          ? bounds.right
-          : bounds.bottom
-        : offset + extent * ((percentages[index] ?? 0) / 100)
-    const childBounds =
-      layout.direction === 'row'
-        ? { ...bounds, left: offset, right: nextOffset }
-        : { ...bounds, top: offset, bottom: nextOffset }
-    offset = nextOffset
-    return getPaneRects(child, childBounds)
-  })
 }
 
 function getRectCenter(rect: PaneRect): { x: number; y: number } {
@@ -550,10 +465,6 @@ function findPaneInDirection(
   return best?.id ?? null
 }
 
-function layoutContainsPane(layout: MosaicLayoutNode, paneId: string): boolean {
-  return getPaneIdsInLayout(layout).includes(paneId)
-}
-
 function splitLayoutNode(
   layout: MosaicLayoutNode,
   paneId: string,
@@ -595,23 +506,27 @@ function splitLayoutNode(
 function removePaneFromLayout(
   layout: MosaicLayoutNode,
   paneId: string,
-): { layout: MosaicLayoutNode | null; removed: boolean } {
-  if (layout === paneId) return { layout: null, removed: true }
+): { layout: MosaicLayoutNode | null; removed: boolean; replacementPaneId?: string | null } {
+  if (layout === paneId) return { layout: null, removed: true, replacementPaneId: null }
   if (typeof layout === 'string') return { layout, removed: false }
 
   if (isTabsNode(layout)) {
+    const activeId = activeTabId(layout)
     const tabs = layout.tabs.filter((tab) => tab !== paneId)
     if (tabs.length === layout.tabs.length) return { layout, removed: false }
     if (tabs.length === 0) return { layout: null, removed: true }
-    if (tabs.length === 1) return { layout: tabs[0]!, removed: true }
+    const activeTabIndex = activeTabIndexForTabs(tabs, activeId, layout.activeTabIndex)
+    const replacementPaneId = activeId === paneId ? (tabs[activeTabIndex] ?? null) : null
+    if (tabs.length === 1) return { layout: tabs[0]!, removed: true, replacementPaneId }
 
     return {
       layout: {
         ...layout,
         tabs,
-        activeTabIndex: Math.min(layout.activeTabIndex, tabs.length - 1),
+        activeTabIndex,
       },
       removed: true,
+      replacementPaneId,
     }
   }
 
@@ -620,18 +535,20 @@ function removePaneFromLayout(
     const children: MosaicLayoutNode[] = []
     const childPercentages: number[] = []
     let removed = false
+    let replacementPaneId: string | null | undefined
 
     layout.children.forEach((child, index) => {
       const result = removePaneFromLayout(child, paneId)
       removed = removed || result.removed
+      replacementPaneId ??= result.replacementPaneId
       if (!result.layout) return
       children.push(result.layout)
       childPercentages.push(percentages[index] ?? 0)
     })
 
     if (!removed) return { layout, removed: false }
-    if (children.length === 0) return { layout: null, removed: true }
-    if (children.length === 1) return { layout: children[0]!, removed: true }
+    if (children.length === 0) return { layout: null, removed: true, replacementPaneId }
+    if (children.length === 1) return { layout: children[0]!, removed: true, replacementPaneId }
 
     return {
       layout: {
@@ -640,6 +557,7 @@ function removePaneFromLayout(
         splitPercentages: normalizeSplitPercentages(childPercentages, children.length),
       },
       removed: true,
+      replacementPaneId,
     }
   }
 
@@ -713,7 +631,9 @@ function closePaneState(state: TauState, paneId: string): Partial<TauState> {
   const paneIdsInLayout = getPaneIdsInLayout(layout)
   const nextPaneIds = new Set(paneIdsInLayout)
   const activePaneId =
-    state.activePaneId === pane.id ? (paneIdsInLayout[0] ?? null) : state.activePaneId
+    state.activePaneId === pane.id
+      ? (result.replacementPaneId ?? getFirstPaneId(layout))
+      : state.activePaneId
   const lastActivePaneId =
     tab.lastActivePaneId === pane.id ? (activePaneId ?? undefined) : tab.lastActivePaneId
 
@@ -824,6 +744,8 @@ function decodePersistedLayout(
 
   if (layout.type === 'tabs') {
     if (!Array.isArray(layout.tabs)) return null
+    const rawActiveTabIndex = typeof layout.activeTabIndex === 'number' ? layout.activeTabIndex : 0
+    const rawActiveTabId = layout.tabs[Math.trunc(finiteNumber(rawActiveTabIndex, 0))]
 
     const tabs = layout.tabs.filter(
       (tab): tab is string => typeof tab === 'string' && paneIdsForTab.has(tab),
@@ -831,14 +753,10 @@ function decodePersistedLayout(
     if (tabs.length === 0) return null
     if (tabs.length === 1) return tabs[0]!
 
-    const activeTabIndex = Math.min(
-      tabs.length - 1,
-      Math.max(
-        0,
-        Math.trunc(
-          typeof layout.activeTabIndex === 'number' ? finiteNumber(layout.activeTabIndex, 0) : 0,
-        ),
-      ),
+    const activeTabIndex = activeTabIndexForTabs(
+      tabs,
+      typeof rawActiveTabId === 'string' ? rawActiveTabId : null,
+      rawActiveTabIndex,
     )
 
     return {
@@ -1420,15 +1338,19 @@ export const useTauStore = create<TauState>()((set) => ({
       if (!tab) return {}
 
       const paneIds = new Set(getPaneIdsInLayout(layout))
-      const firstPaneId = paneIds.values().next().value ?? null
+      const firstPaneId = getFirstPaneId(layout)
       const activePaneId =
-        state.activeTabId === tabId && (!state.activePaneId || !paneIds.has(state.activePaneId))
-          ? firstPaneId
+        state.activeTabId === tabId
+          ? state.activePaneId
+            ? (getVisiblePaneIdForPane(layout, state.activePaneId) ?? firstPaneId)
+            : firstPaneId
           : state.activePaneId
       const lastActivePaneId =
-        tab.lastActivePaneId && paneIds.has(tab.lastActivePaneId)
-          ? tab.lastActivePaneId
-          : (firstPaneId ?? undefined)
+        state.activeTabId === tabId
+          ? (activePaneId ?? undefined)
+          : tab.lastActivePaneId && paneIds.has(tab.lastActivePaneId)
+            ? tab.lastActivePaneId
+            : (firstPaneId ?? undefined)
 
       return {
         tabs: state.tabs.map((candidate) =>

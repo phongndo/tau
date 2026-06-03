@@ -51,7 +51,6 @@ import type { AppCommand } from '@tau/shared/app-command'
 import type { PaneLayoutData } from '@tau/shared/session'
 import {
   type Pane,
-  type MosaicLayoutNode,
   type ReorderPlacement,
   selectPaneLayoutData,
   type Tab,
@@ -59,6 +58,16 @@ import {
   type Workspace,
   worktreeContextId,
 } from '../state/store'
+import {
+  getFirstPaneId,
+  getPaneCount,
+  getPaneRects,
+  getVisiblePaneIdForPane,
+  isSplitNode,
+  layoutContainsPane,
+  splitPercentagesForLayout,
+  type MosaicLayoutNode,
+} from '../state/layout'
 import { sanitizeTerminalTitle } from '../osc-title'
 import { runRendererEffect } from '../runtime'
 import { WorkspaceMetadataCache } from '../workspace-service'
@@ -202,17 +211,6 @@ type ActivePaneBorderLine = {
   style: CSSProperties
 }
 
-type PaneBounds = {
-  left: number
-  top: number
-  right: number
-  bottom: number
-}
-
-type PaneRect = PaneBounds & {
-  id: string
-}
-
 type RightSidebarView = 'files' | 'changes'
 type DiffViewMode = 'unified' | 'split'
 type ChangedFilesViewMode = 'tree' | 'folders'
@@ -323,104 +321,6 @@ function ChangedFileIcon({ path }: { path: string }) {
       <use href={`#${icon.name}`} />
     </svg>
   )
-}
-
-type MosaicSplitLayoutNode = Extract<MosaicLayoutNode, { type: 'split' }>
-type MosaicTabsLayoutNode = Extract<MosaicLayoutNode, { type: 'tabs' }>
-
-function isSplitNode(layout: MosaicLayoutNode): layout is MosaicSplitLayoutNode {
-  return typeof layout === 'object' && layout !== null && layout.type === 'split'
-}
-
-function isTabsNode(layout: MosaicLayoutNode): layout is MosaicTabsLayoutNode {
-  return typeof layout === 'object' && layout !== null && layout.type === 'tabs'
-}
-
-function equalSplitPercentages(count: number): number[] {
-  if (count <= 0) return []
-  const percentage = 100 / count
-  return Array.from({ length: count }, () => percentage)
-}
-
-function splitPercentagesForLayout(layout: MosaicSplitLayoutNode): number[] {
-  const values = layout.splitPercentages
-  const count = layout.children.length
-  if (!values || values.length !== count) return equalSplitPercentages(count)
-
-  const percentages = values.map((value) => (Number.isFinite(value) ? Math.max(0, value) : 0))
-  const total = percentages.reduce((sum, value) => sum + value, 0)
-  if (total <= 0) return equalSplitPercentages(count)
-
-  return percentages.map((value) => (value / total) * 100)
-}
-
-function activeTabId(layout: MosaicTabsLayoutNode): string | null {
-  return layout.tabs[layout.activeTabIndex] ?? layout.tabs[0] ?? null
-}
-
-function paneIdsInLayout(layout: MosaicLayoutNode): string[] {
-  if (typeof layout === 'string') return [layout]
-  if (isSplitNode(layout)) return layout.children.flatMap(paneIdsInLayout)
-  if (isTabsNode(layout)) return [...layout.tabs]
-  return []
-}
-
-function layoutContainsPane(layout: MosaicLayoutNode, paneId: string): boolean {
-  if (typeof layout === 'string') return layout === paneId
-  if (isSplitNode(layout)) return layout.children.some((child) => layoutContainsPane(child, paneId))
-  if (isTabsNode(layout)) return layout.tabs.includes(paneId)
-  return false
-}
-
-function getFirstPaneId(layout: MosaicLayoutNode): string | null {
-  if (typeof layout === 'string') return layout
-  if (isSplitNode(layout)) {
-    for (const child of layout.children) {
-      const paneId = getFirstPaneId(child)
-      if (paneId) return paneId
-    }
-    return null
-  }
-  if (isTabsNode(layout)) return activeTabId(layout)
-  return null
-}
-
-function getPaneCount(layout: MosaicLayoutNode): number {
-  return paneIdsInLayout(layout).length
-}
-
-function getPaneRects(
-  layout: MosaicLayoutNode,
-  bounds: PaneBounds = { left: 0, top: 0, right: 100, bottom: 100 },
-): PaneRect[] {
-  if (typeof layout === 'string') return [{ id: layout, ...bounds }]
-
-  if (isTabsNode(layout)) {
-    const paneId = activeTabId(layout)
-    return paneId ? [{ id: paneId, ...bounds }] : []
-  }
-
-  if (!isSplitNode(layout)) return []
-
-  const percentages = splitPercentagesForLayout(layout)
-  let offset = layout.direction === 'row' ? bounds.left : bounds.top
-  const extent =
-    layout.direction === 'row' ? bounds.right - bounds.left : bounds.bottom - bounds.top
-
-  return layout.children.flatMap((child, index) => {
-    const nextOffset =
-      index === layout.children.length - 1
-        ? layout.direction === 'row'
-          ? bounds.right
-          : bounds.bottom
-        : offset + extent * ((percentages[index] ?? 0) / 100)
-    const childBounds =
-      layout.direction === 'row'
-        ? { ...bounds, left: offset, right: nextOffset }
-        : { ...bounds, top: offset, bottom: nextOffset }
-    offset = nextOffset
-    return getPaneRects(child, childBounds)
-  })
 }
 
 function borderLineClassName(isActive: boolean): string {
@@ -3169,16 +3069,30 @@ const PaneGrid = memo(function PaneGrid({
     setDraftLayout(tab.layout)
   }, [tab.layout])
 
-  const handleLayoutChange = useCallback((layout: MosaicLayoutNode | null) => {
-    setDraftLayout(layout)
-  }, [])
+  const syncActivePaneForLayout = useCallback(
+    (layout: MosaicLayoutNode | null) => {
+      if (!layout || !activePaneId) return
+      const visiblePaneId = getVisiblePaneIdForPane(layout, activePaneId)
+      if (visiblePaneId && visiblePaneId !== activePaneId) onSelectPane(visiblePaneId)
+    },
+    [activePaneId, onSelectPane],
+  )
+
+  const handleLayoutChange = useCallback(
+    (layout: MosaicLayoutNode | null) => {
+      setDraftLayout(layout)
+      syncActivePaneForLayout(layout)
+    },
+    [syncActivePaneForLayout],
+  )
 
   const handleLayoutRelease = useCallback(
     (layout: MosaicLayoutNode | null) => {
       setDraftLayout(layout)
+      syncActivePaneForLayout(layout)
       onLayoutRelease(tab.id, layout)
     },
-    [onLayoutRelease, tab.id],
+    [onLayoutRelease, syncActivePaneForLayout, tab.id],
   )
 
   const activePaneBorderLines = useMemo(

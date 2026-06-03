@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PiThread } from '@tau/shared/taud-protocol'
-import { selectPaneLayoutData, useTauStore, type Workspace } from '../src/renderer/state/store'
+import {
+  selectPaneLayoutData,
+  useTauStore,
+  type MosaicLayoutNode,
+  type Pane,
+  type Workspace,
+} from '../src/renderer/state/store'
 
 function resetStore(): void {
   useTauStore.setState({
@@ -24,6 +30,36 @@ function workspace(id: string): Workspace {
     projectPath: `/tmp/${id}`,
     order: 0,
   }
+}
+
+function pane(id: string, tabId = 'tab-a'): Pane {
+  return {
+    id,
+    terminalId: `term-${id}`,
+    tabId,
+    type: 'changes',
+    name: id,
+  }
+}
+
+function setManualTab(layout: MosaicLayoutNode, activePaneId: string | null): void {
+  useTauStore.setState({
+    workspaces: [workspace('workspace-a')],
+    activeWorkspaceId: 'workspace-a',
+    tabs: [
+      {
+        id: 'tab-a',
+        workspaceId: 'workspace-a',
+        name: 'tab-a',
+        layout,
+        lastActivePaneId: activePaneId ?? undefined,
+        order: 0,
+      },
+    ],
+    panes: [pane('pane-a'), pane('pane-b'), pane('pane-c')],
+    activeTabId: 'tab-a',
+    activePaneId,
+  })
 }
 
 test('adding a workspace selects it without creating a thread', () => {
@@ -376,4 +412,81 @@ test('selecting a workspace with no tabs does not create a thread', () => {
   assert.equal(state.activePaneId, null)
   assert.equal(state.tabs.length, 1)
   assert.equal(state.panes.length, 1)
+})
+
+test('tab layout changes keep the selected pane visible', () => {
+  resetStore()
+  setManualTab({ type: 'tabs', tabs: ['pane-a', 'pane-b'], activeTabIndex: 0 }, 'pane-a')
+
+  useTauStore
+    .getState()
+    .setTabLayout('tab-a', { type: 'tabs', tabs: ['pane-a', 'pane-b'], activeTabIndex: 1 })
+
+  const state = useTauStore.getState()
+  assert.equal(state.activePaneId, 'pane-b')
+  assert.equal(state.tabs[0]?.lastActivePaneId, 'pane-b')
+})
+
+test('closing a tabbed pane preserves the selected tab by pane id', () => {
+  resetStore()
+  setManualTab(
+    {
+      type: 'split',
+      direction: 'row',
+      children: ['pane-a', { type: 'tabs', tabs: ['pane-b', 'pane-c'], activeTabIndex: 0 }],
+      splitPercentages: [50, 50],
+    },
+    'pane-b',
+  )
+
+  useTauStore.getState().closePane('pane-b')
+
+  const state = useTauStore.getState()
+  assert.deepEqual(state.tabs[0]?.layout, {
+    type: 'split',
+    direction: 'row',
+    children: ['pane-a', 'pane-c'],
+    splitPercentages: [50, 50],
+  })
+  assert.equal(state.activePaneId, 'pane-c')
+})
+
+test('layout hydration preserves active tabs by pane id after filtering', () => {
+  resetStore()
+
+  useTauStore.getState().hydrateLayout({
+    version: 2,
+    workspaces: [workspace('workspace-a')],
+    activeWorkspaceId: 'workspace-a',
+    lastActiveLocalTabId: null,
+    tabs: [
+      {
+        id: 'tab-a',
+        workspaceId: 'workspace-a',
+        name: 'tab-a',
+        layout: {
+          type: 'tabs',
+          tabs: ['pane-stale', 'pane-b', 'pane-c'],
+          activeTabIndex: 1,
+        },
+        lastActivePaneId: 'pane-b',
+        order: 0,
+      },
+    ],
+    panes: [pane('pane-b'), pane('pane-c')],
+    activeTabId: 'tab-a',
+    activePaneId: 'pane-b',
+    sidebarExpanded: true,
+    sidebarWidth: 240,
+    rightSidebarExpanded: false,
+    rightSidebarWidth: 240,
+  })
+
+  const state = useTauStore.getState()
+  assert.deepEqual(state.tabs[0]?.layout, {
+    type: 'tabs',
+    tabs: ['pane-b', 'pane-c'],
+    activeTabIndex: 0,
+  })
+  assert.equal(state.activePaneId, 'pane-b')
 })

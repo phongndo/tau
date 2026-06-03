@@ -74,9 +74,15 @@ function sourceAdapterFiles(): string[] {
   }
 
   const adapters = entries
-    .filter(
-      (entry) => entry.endsWith('.ts') && statSync(resolve(sourceAdaptersRoot, entry)).isFile(),
-    )
+    .filter((entry) => {
+      if (!entry.endsWith('.ts')) return false
+      const adapterPath = resolve(sourceAdaptersRoot, entry)
+      try {
+        return statSync(adapterPath).isFile()
+      } catch {
+        fail(`failed to read taud adapter source file: ${adapterPath}`)
+      }
+    })
     .sort()
 
   if (adapters.length === 0) fail(`no taud adapters found in ${sourceAdaptersRoot}`)
