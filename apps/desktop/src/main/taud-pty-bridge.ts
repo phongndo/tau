@@ -1,10 +1,7 @@
 import { Schema } from 'effect'
 import type { MessagePortMain } from 'electron'
-import { StringDecoder } from 'node:string_decoder'
 import {
-  AgentStatusSchema,
   TaudStreamFrameKind,
-  type AgentStatus,
   type AttachSessionMode,
 } from '@tau/shared/taud-protocol'
 import { defaultSettings, readSettings } from './settings-store'
@@ -17,11 +14,15 @@ import {
 import type { SettingsData } from '@tau/shared/session'
 import { TaudClient, type TaudControlResponse, type TaudSessionStream } from './taud-client'
 import { decodeTaudExitPayload, decodeTaudResizePayload } from './taud-stream'
-import { processTitleFromShell, readProcessTitle } from './process-title'
 
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 const ATTACH_STREAM_READY_TIMEOUT_MS = 500
-const PROCESS_TITLE_POLL_INTERVAL_MS = 1000
+/** Bound MessagePort backlog so a stalled renderer cannot grow main-process memory without limit. */
+const SESSION_CHANNEL_MAX_UNACKED_FRAMES = 512
+const SESSION_CHANNEL_MAX_UNACKED_BYTES = 4 * 1024 * 1024
+const SESSION_CHANNEL_MAX_QUEUE_AGE_MS = 10_000
+/** Convert legacy number[] input in bounded chunks instead of dropping large pastes. */
+const SESSION_INPUT_ARRAY_CHUNK_BYTES = 64 * 1024
 
 export type TaudPtyBridgeOptions = {
   readonly client?: TaudClient
@@ -30,23 +31,39 @@ export type TaudPtyBridgeOptions = {
 
 type BridgeSession = {
   stream: TaudSessionStream | null
-  decoder: StringDecoder
   cols: number
   rows: number
   archived: boolean
   attachMode: AttachSessionMode
-  agentProvider?: string
-  nativeSessionId?: string | null
-  rootPid: number
-  fallbackTitle: string
-  processTitle: string | null
-  processTitlePoll: ReturnType<typeof setInterval> | null
-  processTitleInFlight: boolean
+}
+
+type SessionChannelPendingFrame = {
+  seq: number
+  bytes: number
+  at: number
+}
+
+type SessionChannel = {
+  port: MessagePortMain
+  lastSentSeq: number
+  lastAckSeq: number
+  lastSentAt: number
+  lastAckAt: number
+  unackedBytes: number
+  oldestUnackedAt: number
+  pendingFrames: SessionChannelPendingFrame[]
+  backpressured: boolean
 }
 
 function decodeClientMessage(message: unknown): PtyClientMessage | null {
   const decoded = Schema.decodeUnknownOption(PtyClientMessageSchema)(message)
   return decoded._tag === 'Some' ? decoded.value : null
+}
+
+function markMainTerminalReceipt(): void {
+  if (typeof performance === 'undefined' || typeof performance.mark !== 'function') return
+  performance.clearMarks('tau:terminal:main-receipt')
+  performance.mark('tau:terminal:main-receipt')
 }
 
 function normalizeError(error: unknown): Error {
@@ -105,8 +122,6 @@ function defaultShellArgv(defaultShell?: string): string[] {
 
 function responseAttachMode(response: TaudControlResponse): AttachSessionMode {
   switch (response.attach_kind) {
-    case 'agent-resume':
-      return 'agent-resume'
     case 'command-resume':
       return 'command-resume'
     case 'fresh':
@@ -114,17 +129,6 @@ function responseAttachMode(response: TaudControlResponse): AttachSessionMode {
     case 'live':
     default:
       return 'live'
-  }
-}
-
-function decodeAgentStatus(payload: Buffer): AgentStatus | null {
-  try {
-    const decoded = Schema.decodeUnknownOption(AgentStatusSchema)(
-      JSON.parse(payload.toString('utf8')),
-    )
-    return decoded._tag === 'Some' ? decoded.value : null
-  } catch {
-    return null
   }
 }
 
@@ -174,6 +178,7 @@ export class TaudPtyBridge {
   private readonly defaultShell?: string
   private port: MessagePortMain | null = null
   private readonly sessions = new Map<string, BridgeSession>()
+  private readonly sessionChannels = new Map<string, SessionChannel>()
   private readonly supersededAttachStreams = new WeakSet<TaudSessionStream>()
   private readonly sessionAttachGenerations = new Map<string, number>()
   private readonly openingSessionGenerations = new Map<string, number>()
@@ -240,15 +245,86 @@ export class TaudPtyBridge {
     clearInterval(this.cleanupTimer)
     this.detachAllStreams()
     this.sessions.clear()
+    for (const channel of this.sessionChannels.values()) channel.port.close()
+    this.sessionChannels.clear()
     this.port?.close()
     this.port = null
     if (this.ownsClient) void this.client.dispose()
+  }
+
+  connectSessionPort(sessionId: string, port: MessagePortMain): void {
+    if (!sanitizeId(sessionId)) {
+      port.close()
+      return
+    }
+    this.sessionChannels.get(sessionId)?.port.close()
+    const channel: SessionChannel = {
+      port,
+      lastSentSeq: 0,
+      lastAckSeq: 0,
+      lastSentAt: 0,
+      lastAckAt: 0,
+      unackedBytes: 0,
+      oldestUnackedAt: 0,
+      pendingFrames: [],
+      backpressured: false,
+    }
+    this.sessionChannels.set(sessionId, channel)
+    port.on('message', (event) => {
+      const data = event.data
+      if (data instanceof ArrayBuffer) {
+        if (data.byteLength > 0) this.sessions.get(sessionId)?.stream?.writeInput(new Uint8Array(data))
+        return
+      }
+      if (ArrayBuffer.isView(data)) {
+        if (data.byteLength > 0) {
+          this.sessions
+            .get(sessionId)
+            ?.stream?.writeInput(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))
+        }
+        return
+      }
+      if (!data || typeof data !== 'object') return
+      const message = data as { type?: unknown; seq?: unknown; data?: unknown }
+      if (message.type === 'input') {
+        this.writeSessionInputPayload(sessionId, message.data)
+        return
+      }
+      if (message.type === 'ack' && typeof message.seq === 'number' && Number.isSafeInteger(message.seq)) {
+        this.acknowledgeSessionChannel(sessionId, channel, message.seq)
+        return
+      }
+      if (message.type === 'resync') {
+        this.resetSessionChannelBacklog(channel)
+        const session = this.sessions.get(sessionId)
+        if (!session) return
+        void this.openSession(sessionId, sessionId, session.cols, session.rows, undefined, {
+          forceCreate: false,
+        }).catch((error) => this.postError(sessionId, normalizeError(error).message))
+      }
+    })
+    port.on('close', () => {
+      if (this.sessionChannels.get(sessionId) === channel) this.sessionChannels.delete(sessionId)
+    })
+    port.start()
   }
 
   getDiagnostics(): TaudPtyBridgeDiagnostics {
     let activeStreams = 0
     for (const session of this.sessions.values()) {
       if (session.stream) activeStreams += 1
+    }
+    let maxUnacknowledgedSeq = 0
+    let maxQueueAgeMs = 0
+    const now = Date.now()
+    for (const channel of this.sessionChannels.values()) {
+      maxUnacknowledgedSeq = Math.max(
+        maxUnacknowledgedSeq,
+        Math.max(0, channel.lastSentSeq - channel.lastAckSeq),
+      )
+      if (channel.lastSentSeq > channel.lastAckSeq && channel.oldestUnackedAt > 0) {
+        maxQueueAgeMs = Math.max(maxQueueAgeMs, now - channel.oldestUnackedAt)
+      }
     }
 
     return {
@@ -262,6 +338,9 @@ export class TaudPtyBridge {
       snapshotBytesPostedTotal: this.snapshotBytesPostedTotal,
       messagesDroppedNoPortTotal: this.messagesDroppedNoPortTotal,
       postFailuresTotal: this.postFailuresTotal,
+      sessionChannels: this.sessionChannels.size,
+      maxUnacknowledgedSeq,
+      maxQueueAgeMs,
       ...(this.lastMessageType ? { lastMessageType: this.lastMessageType } : {}),
       ...(this.lastDataChars !== undefined ? { lastDataChars: this.lastDataChars } : {}),
       ...(this.lastPostedAt !== undefined ? { lastPostedAt: this.lastPostedAt } : {}),
@@ -285,8 +364,6 @@ export class TaudPtyBridge {
           {
             forceCreate: true,
             argv: sanitizeArgv(message.argv),
-            workspaceId: sanitizeId(message.workspaceId),
-            worktreeId: sanitizeId(message.worktreeId),
           },
         )
         break
@@ -301,8 +378,6 @@ export class TaudPtyBridge {
           {
             forceCreate: false,
             argv: sanitizeArgv(message.argv),
-            workspaceId: sanitizeId(message.workspaceId),
-            worktreeId: sanitizeId(message.worktreeId),
           },
         )
         break
@@ -335,20 +410,14 @@ export class TaudPtyBridge {
     options: {
       forceCreate: boolean
       argv?: readonly string[]
-      workspaceId?: string
-      worktreeId?: string
     },
   ): Promise<void> {
     const attachGeneration = (this.sessionAttachGenerations.get(sessionId) ?? 0) + 1
     this.sessionAttachGenerations.set(sessionId, attachGeneration)
     this.openingSessionGenerations.set(sessionId, attachGeneration)
-    const workspaceId = options.workspaceId
     let readyPosted = false
     try {
-      if (!workspaceId) {
-        throw new Error('Terminal sessions require a workspace')
-      }
-      const sessionOptions = { argv: options.argv, workspaceId, worktreeId: options.worktreeId }
+      const sessionOptions = { argv: options.argv }
 
       const existing = this.sessions.get(sessionId)
       if (existing?.stream) {
@@ -373,8 +442,6 @@ export class TaudPtyBridge {
         ;({ response: attachResponse, stream } = await this.client.attachSession({
           sessionId,
           terminalId,
-          workspaceId,
-          worktreeId: options.worktreeId,
           cols,
           rows,
           cwd,
@@ -392,8 +459,6 @@ export class TaudPtyBridge {
             cols,
             rows,
             cwd,
-            workspaceId,
-            worktreeId: options.worktreeId,
           }))
           if (this.wasDetachedBeforeReady(sessionId, attachGeneration)) {
             stream.close()
@@ -408,8 +473,6 @@ export class TaudPtyBridge {
           ;({ response: attachResponse, stream } = await this.client.attachSession({
             sessionId,
             terminalId,
-            workspaceId,
-            worktreeId: options.worktreeId,
             cols,
             rows,
             cwd,
@@ -426,22 +489,13 @@ export class TaudPtyBridge {
       const archived = false
       const session: BridgeSession = {
         stream,
-        decoder: new StringDecoder('utf8'),
         cols,
         rows,
         archived,
         attachMode,
-        agentProvider: attachResponse.agent_provider,
-        nativeSessionId: attachResponse.native_session_id,
-        rootPid: typeof attachResponse.pid === 'number' ? attachResponse.pid : 0,
-        fallbackTitle: processTitleFromShell(this.defaultShell),
-        processTitle: null,
-        processTitlePoll: null,
-        processTitleInFlight: false,
       }
       this.sessions.set(sessionId, session)
       this.wireStream(sessionId, session, stream)
-      this.startProcessTitlePolling(sessionId, session)
       const attachReady = waitForAttachStreamReady(stream)
       stream.start()
       try {
@@ -477,13 +531,11 @@ export class TaudPtyBridge {
     cols: number,
     rows: number,
     cwd: string | undefined,
-    options: { argv?: readonly string[]; workspaceId: string; worktreeId?: string },
+    options: { argv?: readonly string[] },
   ): Promise<TaudControlResponse> {
     return this.client.createSession({
       sessionId,
       terminalId,
-      workspaceId: options.workspaceId,
-      worktreeId: options.worktreeId,
       cols,
       rows,
       cwd,
@@ -500,8 +552,8 @@ export class TaudPtyBridge {
 
       switch (frame.kind) {
         case TaudStreamFrameKind.Output: {
-          const data = session.decoder.write(frame.payload)
-          if (data.length > 0) this.postData(sessionId, data, frame.seq)
+          markMainTerminalReceipt()
+          if (frame.payload.length > 0) this.postData(sessionId, frame.payload, frame.seq)
           break
         }
         case TaudStreamFrameKind.Resize: {
@@ -521,24 +573,13 @@ export class TaudPtyBridge {
         }
         case TaudStreamFrameKind.Snapshot: {
           if (session.archived) return
-          this.post({
-            type: 'snapshot',
-            sessionId,
-            dataBase64: frame.payload.toString('base64'),
-            seq: frame.seq,
-            live: true,
-          })
+          this.postSnapshot(sessionId, frame.payload, frame.seq)
           break
         }
         case TaudStreamFrameKind.Exit: {
           const exit = decodeTaudExitPayload(frame.payload) ?? { exitCode: -1 }
           this.post({ type: 'exit', sessionId, info: exit })
           this.closeSessionStream(sessionId)
-          break
-        }
-        case TaudStreamFrameKind.Agent: {
-          const status = decodeAgentStatus(frame.payload)
-          if (status) this.post({ type: 'agent', sessionId, status })
           break
         }
       }
@@ -575,12 +616,13 @@ export class TaudPtyBridge {
       this.detachedBeforeReadySessionGenerations.delete(sessionId)
     }
     this.closeSessionStream(sessionId)
+    this.sessionChannels.get(sessionId)?.port.close()
+    this.sessionChannels.delete(sessionId)
     await this.client.detachSession(sessionId).catch(() => {})
   }
 
   private detachAllStreams(): void {
     for (const [sessionId, session] of this.sessions) {
-      this.stopProcessTitlePolling(session)
       session.stream?.close()
       session.stream = null
       void this.client.detachSession(sessionId).catch(() => {})
@@ -592,9 +634,9 @@ export class TaudPtyBridge {
     this.openingSessionGenerations.delete(sessionId)
     this.detachedBeforeReadySessionGenerations.delete(sessionId)
     this.closeSessionStream(sessionId)
-    const session = this.sessions.get(sessionId)
-    if (session) this.stopProcessTitlePolling(session)
     this.sessions.delete(sessionId)
+    this.sessionChannels.get(sessionId)?.port.close()
+    this.sessionChannels.delete(sessionId)
     await this.client.killSession(sessionId).catch(() => {})
   }
 
@@ -613,7 +655,6 @@ export class TaudPtyBridge {
     if (!session?.stream) return
     const stream = session.stream
     session.stream = null
-    this.stopProcessTitlePolling(session)
     stream.close()
   }
 
@@ -654,7 +695,7 @@ export class TaudPtyBridge {
     sessionId: string,
     size: { cols: number; rows: number },
     seq: number,
-    session: Pick<BridgeSession, 'archived' | 'attachMode' | 'agentProvider' | 'nativeSessionId'>,
+    session: Pick<BridgeSession, 'archived' | 'attachMode'>,
   ): void {
     this.post({
       type: 'ready',
@@ -663,58 +704,154 @@ export class TaudPtyBridge {
       seq,
       ...(session.archived ? { archived: session.archived } : {}),
       attachMode: session.attachMode,
-      ...(session.agentProvider ? { agentProvider: session.agentProvider } : {}),
-      ...(session.nativeSessionId !== undefined
-        ? { nativeSessionId: session.nativeSessionId }
-        : {}),
     })
   }
 
-  private postData(sessionId: string, data: string, seq: number): void {
-    this.post({ type: 'data', sessionId, data, seq })
-  }
-
-  private startProcessTitlePolling(sessionId: string, session: BridgeSession): void {
-    this.stopProcessTitlePolling(session)
-    this.updateProcessTitle(sessionId, session)
-    session.processTitlePoll = setInterval(() => {
-      this.updateProcessTitle(sessionId, session)
-    }, PROCESS_TITLE_POLL_INTERVAL_MS)
-    session.processTitlePoll.unref?.()
-  }
-
-  private stopProcessTitlePolling(session: BridgeSession): void {
-    if (session.processTitlePoll) {
-      clearInterval(session.processTitlePoll)
-      session.processTitlePoll = null
-    }
-  }
-
-  private updateProcessTitle(sessionId: string, session: BridgeSession): void {
-    if (this.sessions.get(sessionId) !== session || !session.stream) {
-      this.stopProcessTitlePolling(session)
+  private writeSessionInputPayload(sessionId: string, payload: unknown): void {
+    const stream = this.sessions.get(sessionId)?.stream
+    if (!stream) return
+    if (payload instanceof ArrayBuffer) {
+      if (payload.byteLength > 0) stream.writeInput(new Uint8Array(payload))
       return
     }
-    if (session.processTitleInFlight) return
-    session.processTitleInFlight = true
+    if (ArrayBuffer.isView(payload)) {
+      if (payload.byteLength > 0) {
+        stream.writeInput(new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength))
+      }
+      return
+    }
+    if (!Array.isArray(payload) || payload.length === 0) return
 
-    void readProcessTitle(session.rootPid, session.fallbackTitle)
-      .then((title) => {
-        if (this.sessions.get(sessionId) !== session || !session.stream) {
-          this.stopProcessTitlePolling(session)
-          return
-        }
-        if (title.length === 0) {
-          return
-        }
-        if (session.processTitle === title) return
-        session.processTitle = title
-        this.post({ type: 'title', sessionId, title })
-      })
-      .catch(() => {})
-      .finally(() => {
-        session.processTitleInFlight = false
-      })
+    // Legacy number[] path (contextBridge-safe). Accept any size by converting in chunks;
+    // never silently drop large pastes.
+    for (let offset = 0; offset < payload.length; offset += SESSION_INPUT_ARRAY_CHUNK_BYTES) {
+      const end = Math.min(offset + SESSION_INPUT_ARRAY_CHUNK_BYTES, payload.length)
+      const bytes = new Uint8Array(end - offset)
+      for (let index = offset, out = 0; index < end; index += 1, out += 1) {
+        const value = payload[index]
+        if (!Number.isInteger(value) || value < 0 || value > 255) return
+        bytes[out] = value
+      }
+      stream.writeInput(bytes)
+    }
+  }
+
+  private postData(sessionId: string, data: Uint8Array, seq: number): void {
+    this.postBinary(sessionId, 'output', data, seq)
+  }
+
+  private postSnapshot(sessionId: string, data: Uint8Array, seq: number): void {
+    this.postBinary(sessionId, 'snapshot', data, seq)
+  }
+
+  private resetSessionChannelBacklog(channel: SessionChannel): void {
+    channel.unackedBytes = 0
+    channel.oldestUnackedAt = 0
+    channel.pendingFrames.length = 0
+    channel.backpressured = false
+  }
+
+  private channelBacklogExceeded(channel: SessionChannel, nextBytes: number): boolean {
+    // Always allow a single in-flight frame so a large snapshot can land and so
+    // backpressure can always be cleared by a later ack (never hard-stuck).
+    if (channel.pendingFrames.length === 0) return false
+    if (channel.pendingFrames.length >= SESSION_CHANNEL_MAX_UNACKED_FRAMES) return true
+    if (channel.unackedBytes + nextBytes > SESSION_CHANNEL_MAX_UNACKED_BYTES) return true
+    if (
+      channel.oldestUnackedAt > 0 &&
+      Date.now() - channel.oldestUnackedAt > SESSION_CHANNEL_MAX_QUEUE_AGE_MS
+    ) {
+      return true
+    }
+    return false
+  }
+
+  private tripSessionChannelBackpressure(sessionId: string, channel: SessionChannel): void {
+    if (!channel.backpressured) {
+      channel.backpressured = true
+      console.warn(
+        `[taud-bridge] session ${sessionId} MessagePort backlog exceeded; pausing stream until renderer catches up`,
+      )
+    }
+    this.closeSessionStream(sessionId)
+  }
+
+  private acknowledgeSessionChannel(sessionId: string, channel: SessionChannel, seq: number): void {
+    channel.lastAckSeq = Math.max(channel.lastAckSeq, seq)
+    channel.lastAckAt = Date.now()
+
+    while (channel.pendingFrames.length > 0 && channel.pendingFrames[0]!.seq <= channel.lastAckSeq) {
+      const frame = channel.pendingFrames.shift()!
+      channel.unackedBytes = Math.max(0, channel.unackedBytes - frame.bytes)
+    }
+    if (channel.pendingFrames.length === 0) {
+      channel.unackedBytes = 0
+      channel.oldestUnackedAt = 0
+    } else {
+      channel.oldestUnackedAt = channel.pendingFrames[0]!.at
+    }
+
+    if (!channel.backpressured) return
+    if (channel.lastAckSeq < channel.lastSentSeq || channel.pendingFrames.length > 0) return
+
+    this.resetSessionChannelBacklog(channel)
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    void this.openSession(sessionId, sessionId, session.cols, session.rows, undefined, {
+      forceCreate: false,
+    }).catch((error) => this.postError(sessionId, normalizeError(error).message))
+  }
+
+  private postBinary(
+    sessionId: string,
+    type: 'output' | 'snapshot',
+    data: Uint8Array,
+    seq: number,
+  ): void {
+    const channel = this.sessionChannels.get(sessionId)
+    if (!channel) {
+      this.messagesDroppedNoPortTotal += 1
+      this.closeSessionStream(sessionId)
+      return
+    }
+    if (channel.backpressured) {
+      this.closeSessionStream(sessionId)
+      return
+    }
+    const byteLength = data.byteLength
+    if (this.channelBacklogExceeded(channel, byteLength)) {
+      this.tripSessionChannelBackpressure(sessionId, channel)
+      return
+    }
+    // Exact-sized owned copy so we can transfer the buffer without retaining a view into `data`.
+    const bytes = Uint8Array.from(data)
+    try {
+      // MessagePortMain typings only list port transfer, but Chromium accepts ArrayBuffer transferables.
+      channel.port.postMessage({ type, seq, data: bytes.buffer }, [bytes.buffer] as unknown as MessagePortMain[])
+      channel.lastSentSeq = Math.max(channel.lastSentSeq, seq)
+      channel.lastSentAt = Date.now()
+      channel.unackedBytes += byteLength
+      channel.pendingFrames.push({ seq, bytes: byteLength, at: channel.lastSentAt })
+      if (channel.oldestUnackedAt === 0) channel.oldestUnackedAt = channel.lastSentAt
+      this.messagesPostedTotal += 1
+      this.lastMessageType = type
+      this.lastPostedAt = channel.lastSentAt
+      if (type === 'output') {
+        this.dataMessagesPostedTotal += 1
+        this.dataCharsPostedTotal += byteLength
+        this.lastDataChars = byteLength
+      } else {
+        this.snapshotMessagesPostedTotal += 1
+        this.snapshotBytesPostedTotal += byteLength
+      }
+    } catch (error) {
+      this.postFailuresTotal += 1
+      this.lastFailureAt = Date.now()
+      this.lastError = normalizeError(error).message
+      channel.port.close()
+      this.sessionChannels.delete(sessionId)
+      this.closeSessionStream(sessionId)
+    }
   }
 
   private postError(sessionId: string, error: string): void {

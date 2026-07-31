@@ -30,15 +30,13 @@ import type {
   OutputFrame,
 } from '@tau/shared/taud-protocol'
 import {
-  createBatchedTerminalWriter,
+  createSequencedTerminalWriter,
   type TerminalOutputWriterDiagnostics,
 } from './terminal-output-writer'
 import { markRendererEvent, startRendererSpan } from './trace'
 
 type CreateTerminalOptions = {
   readonly terminalId?: string
-  readonly workspaceId?: string
-  readonly worktreeId?: string
   readonly cwd?: string
   readonly argv?: readonly string[]
   readonly onTitle?: (title: string) => void
@@ -72,13 +70,11 @@ const THEME = {
 }
 
 const terminalFontFamily =
-  '"SF Mono", Menlo, Monaco, "JetBrains Mono", "JetBrainsMono Nerd Font Mono", "Tau Symbols Nerd Font Mono", "Symbols Nerd Font Mono", monospace'
+  '"SF Mono", Menlo, Monaco, "JetBrains Mono", monospace'
 
 const SIDEBAR_RESIZE_FIT_DELAY_MS = 80
 const PTY_RESIZE_SETTLE_DELAY_MS = 120
 const STARTUP_OUTPUT_BUFFER_MAX_CHARS = 1024 * 1024
-const tauSymbolsFontFamily = 'Tau Symbols Nerd Font Mono'
-const tauSymbolsFontProbe = '\ue0a0\uf07b\ue7a8'
 const warnedSnapshotBackends = new Set<string>()
 
 const MIN_TERMINAL_COLS = 2
@@ -99,18 +95,27 @@ type TerminalRuntime = {
   archived: boolean
   attachResult: AttachSessionResult | null
   disposed: boolean
+  lastUsedAt: number
   onTitle?: (title: string) => void
   onArchived?: () => void
   onAttach?: (result: AttachSessionResult) => void
 }
-
-let terminalFontsLoad: Promise<void> | null = null
 
 const terminalFitAddons = new WeakMap<Terminal, FitAddon>()
 const terminalSearchAddons = new WeakMap<Terminal, SearchAddon>()
 const terminalWebglAddons = new WeakMap<Terminal, WebglAddon>()
 const terminalRuntimes = new Map<string, TerminalRuntime>()
 const terminalRuntimeByTerminal = new WeakMap<Terminal, TerminalRuntime>()
+const HIDDEN_TERMINAL_RUNTIME_LIMIT = 4
+
+function enforceHiddenTerminalRuntimeBudget(): void {
+  const hidden = [...terminalRuntimes.values()]
+    .filter((runtime) => !runtime.disposed && runtime.container === null)
+    .sort((left, right) => left.lastUsedAt - right.lastUsedAt)
+  while (hidden.length > HIDDEN_TERMINAL_RUNTIME_LIMIT) {
+    hidden.shift()?.term.dispose()
+  }
+}
 
 function updateStatus(msg: string) {
   if (window.location.protocol !== 'file:') {
@@ -119,38 +124,7 @@ function updateStatus(msg: string) {
 }
 
 async function loadTerminalFonts(): Promise<void> {
-  if (!('fonts' in document) || typeof FontFace === 'undefined') return
-
-  terminalFontsLoad ??= (async () => {
-    const source = new URL('fonts/nerd-fonts/SymbolsNerdFontMono-Regular.ttf', window.location.href)
-      .href
-    const descriptor = `14px "${tauSymbolsFontFamily}"`
-    let tauSymbolsFontFace = Array.from(document.fonts).find(
-      (fontFace) => fontFace.family === tauSymbolsFontFamily,
-    )
-
-    if (!tauSymbolsFontFace) {
-      tauSymbolsFontFace = new FontFace(tauSymbolsFontFamily, `url(${source})`, {
-        style: 'normal',
-        weight: '400',
-        display: 'block',
-      })
-
-      document.fonts.add(tauSymbolsFontFace)
-    }
-
-    await tauSymbolsFontFace.load()
-    await document.fonts.load(descriptor, tauSymbolsFontProbe)
-
-    if (tauSymbolsFontFace.status !== 'loaded') {
-      console.warn(`[terminal] bundled Nerd Font status: ${tauSymbolsFontFace.status}`)
-    }
-  })().catch((error) => {
-    terminalFontsLoad = null
-    console.warn('[terminal] failed to load bundled Nerd Font:', error)
-  })
-
-  return terminalFontsLoad
+  // Core uses system monospace fonts only; icon fonts belong in optional UI extensions.
 }
 
 function renderTerminalError(container: HTMLElement, err: unknown) {
@@ -230,22 +204,13 @@ function fitTerminalToContainer(container: HTMLElement, term: Terminal): boolean
   return true
 }
 
-function base64ToBytes(dataBase64: string): Uint8Array {
-  const binary = atob(dataBase64)
-  const bytes = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index++) {
-    bytes[index] = binary.charCodeAt(index)
-  }
-  return bytes
-}
-
 function warnUnsupportedSnapshotBackend(backendName: string) {
   if (warnedSnapshotBackends.has(backendName)) return
   warnedSnapshotBackends.add(backendName)
   console.warn(`[terminal] current-screen snapshot backend is not renderable yet: ${backendName}`)
 }
 
-function writeAndRefresh(term: Terminal, data: string): Promise<void> {
+function writeAndRefresh(term: Terminal, data: string | Uint8Array): Promise<void> {
   return new Promise((resolve) => {
     term.write(data, () => {
       forceTerminalRender(term)
@@ -261,7 +226,7 @@ async function tryApplyCurrentScreenSnapshot(
   if (frame.live === false) return 0
 
   try {
-    const envelope = decodeCurrentScreenSnapshot(base64ToBytes(frame.dataBase64))
+    const envelope = decodeCurrentScreenSnapshot(frame.data)
     if (isGhosttyNativeCurrentScreenSnapshot(envelope)) {
       const snapshot = decodeGhosttyNativeCurrentScreenSnapshotPayload(envelope.payload)
       if (snapshot.cols !== envelope.cols || snapshot.rows !== envelope.rows) return 0
@@ -400,6 +365,7 @@ function attachTerminalRuntime(runtime: TerminalRuntime, container: HTMLElement)
     container.replaceChildren(runtime.wrapper)
   }
   runtime.container = container
+  runtime.lastUsedAt = Date.now()
   container.classList.add('terminal-surface-restoring')
 
   fitTerminalToContainer(container, runtime.term)
@@ -415,8 +381,10 @@ export function detachTerminalSurface(sessionId: string, term?: Terminal | null)
   runtime.stopResizeObserver = null
   runtime.container?.classList.remove('terminal-surface-restoring')
   runtime.container = null
+  runtime.lastUsedAt = Date.now()
   runtime.term.blur()
   getTerminalParkingContainer().appendChild(runtime.wrapper)
+  enforceHiddenTerminalRuntimeBudget()
 }
 
 export function disposeTerminalRuntime(sessionId: string): void {
@@ -526,14 +494,6 @@ export function onTerminalSearchResults(
   return terminalSearchAddons.get(term)?.onDidChangeResults(callback) ?? null
 }
 
-function binaryStringToBytes(data: string): Uint8Array {
-  const bytes = new Uint8Array(data.length)
-  for (let index = 0; index < data.length; index++) {
-    bytes[index] = data.charCodeAt(index) & 0xff
-  }
-  return bytes
-}
-
 export function setTerminalCursorVisible(term: Terminal, visible: boolean) {
   term.options = {
     cursorInactiveStyle: visible ? 'outline' : 'none',
@@ -640,6 +600,7 @@ export async function createTerminal(
       archived: false,
       attachResult: null,
       disposed: false,
+      lastUsedAt: Date.now(),
       onTitle: options.onTitle,
       onArchived: options.onArchived,
       onAttach: options.onAttach,
@@ -670,7 +631,14 @@ export async function createTerminal(
   // Step 4: Wire IPC
   updateStatus('Wiring IPC...')
 
-  const outputWriter = createBatchedTerminalWriter(openedTerm)
+  const outputWriter = createSequencedTerminalWriter(openedTerm, {
+    onApplied: (seq) => {
+      markRendererEvent('terminal:xterm-write-complete')
+      window.requestAnimationFrame(() => markRendererEvent('terminal:render-complete'))
+      window.electronAPI.acknowledgeSessionOutput(sessionId, seq)
+    },
+    onResync: (seq) => window.electronAPI.requestSessionResync(sessionId, seq),
+  })
   terminalDiagnosticsRegistry().set(sessionId, () => outputWriter.diagnostics())
   const titleSubscription = openedTerm.onTitleChange((title) => runtime.onTitle?.(title))
   const unsubSessionTitle = window.electronAPI.onSessionTitle(sessionId, (title) => {
@@ -679,7 +647,8 @@ export async function createTerminal(
   let stopResizeObserver: (() => void) | null = null
   let archived = false
   let bufferingStartupOutput = true
-  let bufferedStartupChars = 0
+  let bufferedStartupBytes = 0
+  let startupNeedsResync = false
   let pendingStartupSnapshot: CurrentScreenSnapshotFrame | null = null
   let suppressOutputThroughSeq = 0
   const bufferedStartupOutput: OutputFrame[] = []
@@ -687,53 +656,41 @@ export async function createTerminal(
   await nextAnimationFrame()
   fitTerminalToContainer(container, term)
 
-  function writePtyData(data: string) {
-    outputWriter.write(data)
-  }
-
-  async function writePtyDataAndWait(data: string): Promise<void> {
-    await outputWriter.drain()
-    await writeAndRefresh(openedTerm, data)
+  function writePtyFrame(frame: OutputFrame) {
+    outputWriter.write(frame.data, frame.seq)
   }
 
   function bufferStartupFrame(frame: OutputFrame) {
-    if (frame.data.length === 0) return
+    if (frame.data.byteLength === 0) return
+    if (bufferedStartupBytes + frame.data.byteLength > STARTUP_OUTPUT_BUFFER_MAX_CHARS) {
+      bufferedStartupOutput.length = 0
+      bufferedStartupBytes = 0
+      startupNeedsResync = true
+      return
+    }
     bufferedStartupOutput.push(frame)
-    bufferedStartupChars += frame.data.length
-
-    while (
-      bufferedStartupChars > STARTUP_OUTPUT_BUFFER_MAX_CHARS &&
-      bufferedStartupOutput.length > 1
-    ) {
-      bufferedStartupChars -= bufferedStartupOutput.shift()?.data.length ?? 0
-    }
-
-    if (
-      bufferedStartupChars > STARTUP_OUTPUT_BUFFER_MAX_CHARS &&
-      bufferedStartupOutput.length === 1
-    ) {
-      bufferedStartupOutput[0] = {
-        ...bufferedStartupOutput[0]!,
-        data: bufferedStartupOutput[0]!.data.slice(-STARTUP_OUTPUT_BUFFER_MAX_CHARS),
-      }
-      bufferedStartupChars = bufferedStartupOutput[0]!.data.length
-    }
+    bufferedStartupBytes += frame.data.byteLength
   }
 
   async function flushStartupOutput(skipThroughSeq: number): Promise<void> {
     bufferingStartupOutput = false
-    if (bufferedStartupOutput.length === 0) return
-
-    const data = bufferedStartupOutput
-      .filter((frame) => frame.seq <= 0 || frame.seq > skipThroughSeq)
-      .map((frame) => frame.data)
-      .join('')
+    if (startupNeedsResync) {
+      bufferedStartupOutput.length = 0
+      bufferedStartupBytes = 0
+      window.electronAPI.requestSessionResync(sessionId, skipThroughSeq)
+      return
+    }
+    const frames = bufferedStartupOutput.filter(
+      (frame) => frame.seq <= 0 || frame.seq > skipThroughSeq,
+    )
     bufferedStartupOutput.length = 0
-    bufferedStartupChars = 0
-    if (data.length > 0) await writePtyDataAndWait(data)
+    bufferedStartupBytes = 0
+    for (const frame of frames) outputWriter.write(frame.data, frame.seq)
+    await outputWriter.drain()
   }
 
   const unsubSessionOutput = window.electronAPI.onSessionOutput(sessionId, (frame) => {
+    markRendererEvent('terminal:renderer-receipt')
     if (suppressOutputThroughSeq > 0 && frame.seq > 0 && frame.seq <= suppressOutputThroughSeq) {
       return
     }
@@ -743,12 +700,46 @@ export async function createTerminal(
       return
     }
 
-    writePtyData(frame.data)
+    writePtyFrame(frame)
   })
 
+  let resyncSnapshotFailures = 0
+  async function applyLiveResyncSnapshot(frame: CurrentScreenSnapshotFrame): Promise<void> {
+    if (archived || activeRuntime.disposed) return
+    if (activeRuntime.container) {
+      fitTerminalToContainer(activeRuntime.container, openedTerm)
+    }
+    // Hold gap-filling output only for the duration of the apply attempt. markApplied / permanent
+    // suppression happen only after the snapshot actually renders.
+    const previousSuppress = suppressOutputThroughSeq
+    if (frame.seq > 0) {
+      suppressOutputThroughSeq = Math.max(suppressOutputThroughSeq, frame.seq)
+    }
+    const appliedSeq = await tryApplyCurrentScreenSnapshot(openedTerm, frame)
+    if (appliedSeq <= 0 || activeRuntime.disposed || archived) {
+      suppressOutputThroughSeq = previousSuppress
+      resyncSnapshotFailures += 1
+      if (resyncSnapshotFailures <= 3) {
+        console.warn('[terminal] resync snapshot could not be applied; requesting another snapshot')
+        window.electronAPI.requestSessionResync(sessionId, previousSuppress)
+      }
+      return
+    }
+    resyncSnapshotFailures = 0
+    suppressOutputThroughSeq = Math.max(previousSuppress, appliedSeq)
+    outputWriter.markApplied(appliedSeq)
+    window.electronAPI.acknowledgeSessionOutput(sessionId, appliedSeq)
+    forceTerminalRender(openedTerm)
+  }
+
   const unsubSessionSnapshot = window.electronAPI.onSessionSnapshot(sessionId, (frame) => {
-    if (!bufferingStartupOutput || archived) return
-    pendingStartupSnapshot = frame
+    if (archived) return
+    if (bufferingStartupOutput) {
+      pendingStartupSnapshot = frame
+      return
+    }
+    // Overflow / backpressure resync: bridge reattaches and sends a current-screen snapshot.
+    void applyLiveResyncSnapshot(frame)
   })
 
   let pendingSessionFitFrame: number | null = null
@@ -775,12 +766,12 @@ export async function createTerminal(
   // Terminal input → PTY (no debug overhead)
   term.onData((data: string) => {
     if (archived) return
-    window.electronAPI.writeSessionInput(sessionId, new TextEncoder().encode(data))
+    window.electronAPI.writeSessionInput(sessionId, data)
   })
 
   term.onBinary((data: string) => {
     if (archived) return
-    window.electronAPI.writeSessionInput(sessionId, binaryStringToBytes(data))
+    window.electronAPI.writeSessionInput(sessionId, data, 'binary')
   })
 
   let pendingResize: { cols: number; rows: number } | null = null
@@ -858,8 +849,6 @@ export async function createTerminal(
       .attachSession({
         sessionId,
         terminalId: options.terminalId,
-        workspaceId: options.workspaceId,
-        worktreeId: options.worktreeId,
         cols: term.cols,
         rows: term.rows,
         cwd: options.cwd,
@@ -888,6 +877,9 @@ export async function createTerminal(
     if (pendingStartupSnapshot) {
       if (!archived && attachedSession.attachMode !== 'fresh') {
         suppressOutputThroughSeq = await tryApplyCurrentScreenSnapshot(term, pendingStartupSnapshot)
+        if (suppressOutputThroughSeq > 0) {
+          window.electronAPI.acknowledgeSessionOutput(sessionId, suppressOutputThroughSeq)
+        }
       }
       pendingStartupSnapshot = null
     }

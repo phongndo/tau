@@ -2,10 +2,10 @@
   "name": "tau",
   "version": "1.0.0",
   "private": true,
-  "description": "A performance-first workspace terminal powered by Electron and xterm.js WebGL",
+  "description": "A performance-first, agent-extensible graphical terminal multiplexer powered by Electron, xterm.js, and taud",
   "keywords": [
     "electron",
-    "emulator",
+    "multiplexer",
     "terminal",
     "xterm"
   ],
@@ -36,11 +36,6 @@
     "bench:latency:budget": "pnpm --filter @tau/desktop bench:latency:budget",
     "bench:input-priority:budget": "pnpm --filter @tau/desktop bench:input-priority:budget",
     "bench:attach:budget": "pnpm --filter @tau/desktop bench:attach:budget",
-    "bench:workspace:budget": "pnpm --filter @tau/desktop bench:workspace:budget",
-    "bench:workspace:large": "pnpm --filter @tau/desktop bench:workspace:large",
-    "bench:workspace:large:budget": "pnpm --filter @tau/desktop bench:workspace:large:budget",
-    "bench:workspace:xl": "pnpm --filter @tau/desktop bench:workspace:xl",
-    "bench:workspace:xl:budget": "pnpm --filter @tau/desktop bench:workspace:xl:budget",
     "bench:soak": "pnpm --filter @tau/desktop bench:soak",
     "bench:soak:budget": "pnpm --filter @tau/desktop bench:soak:budget",
     "bench:renderer": "pnpm --filter @tau/desktop bench:renderer",
@@ -52,12 +47,6 @@
     "bench:app-trace:summary": "pnpm --filter @tau/desktop bench:app-trace:summary",
     "bench:terminal": "pnpm --filter @tau/desktop bench:terminal",
     "bench:terminal:budget": "pnpm --filter @tau/desktop bench:terminal:budget",
-    "bench:renderer-combined": "pnpm --filter @tau/desktop bench:renderer-combined",
-    "bench:renderer-combined:budget": "pnpm --filter @tau/desktop bench:renderer-combined:budget",
-    "bench:file-tree": "pnpm --filter @tau/desktop bench:file-tree",
-    "bench:file-tree:budget": "pnpm --filter @tau/desktop bench:file-tree:budget",
-    "bench:file-tree:xl": "pnpm --filter @tau/desktop bench:file-tree:xl",
-    "bench:file-tree:xl:budget": "pnpm --filter @tau/desktop bench:file-tree:xl:budget",
     "bench:taud:budget": "pnpm --filter @tau/desktop bench:taud:budget",
     "bench:reload:budget": "pnpm --filter @tau/desktop bench:reload:budget",
     "bench:ipc": "pnpm --filter @tau/desktop bench:ipc",
@@ -77,7 +66,8 @@
     "lint:fix": "pnpm --filter @tau/desktop --filter @tau/shared lint:fix",
     "check": "pnpm lint && pnpm fmt:check && pnpm tsc && pnpm test:persistence && pnpm zig:test",
     "check:fix": "pnpm lint:fix && pnpm fmt",
-    "tsc": "tsc --noEmit -p tsconfig.scripts.json && pnpm --filter @tau/desktop tsc"
+    "tsc": "tsc --noEmit -p tsconfig.scripts.json && pnpm --filter @tau/desktop tsc",
+    "report:artifacts": "tsx scripts/artifact-inventory.ts"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",

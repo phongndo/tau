@@ -5,21 +5,17 @@ const session = @import("../session.zig");
 pub const AttachKind = enum {
     live,
     command_resume,
-    agent_resume,
 
     pub fn text(self: AttachKind) []const u8 {
         return switch (self) {
             .live => "live",
             .command_resume => "command-resume",
-            .agent_resume => "agent-resume",
         };
     }
 };
 
 pub const SessionResponseMetadata = struct {
     attach_kind: AttachKind = .live,
-    agent_provider: ?[]const u8 = null,
-    native_session_id: ?[]const u8 = null,
 };
 
 pub fn sessionResponse(
@@ -39,8 +35,6 @@ pub fn sessionResponse(
         .rows = item.rows,
         .last_seq = item.last_seq,
         .attach_kind = metadata.attach_kind.text(),
-        .agent_provider = metadata.agent_provider,
-        .native_session_id = metadata.native_session_id,
     });
 }
 
@@ -85,7 +79,6 @@ test "session response matches shared golden fixture" {
     const item = try manager.create(.{
         .session_id = "session-fixture",
         .terminal_id = "terminal-fixture",
-        .workspace_id = "workspace-fixture",
         .cols = 80,
         .rows = 24,
         .cwd = "/tmp/tau",

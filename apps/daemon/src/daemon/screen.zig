@@ -116,6 +116,11 @@ pub fn sendCurrentScreenSnapshotToSubscriber(self: anytype, session_id: []const 
 
         const item = self.sessions.find(session_id) orelse return error.SessionNotFound;
         if (!util.isLiveAttachable(item)) return error.SessionNotAttached;
+        // The snapshot supersedes only whole presentation frames dropped while detached.
+        if (item.pending_requires_snapshot) {
+            item.clearPendingOutput(self.allocator);
+            item.pending_requires_snapshot = false;
+        }
         const snapshot_payload = (try item.currentScreenSnapshotAlloc(self.allocator)) orelse break :frame null;
         defer self.allocator.free(snapshot_payload);
 

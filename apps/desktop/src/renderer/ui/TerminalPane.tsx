@@ -1,6 +1,5 @@
 import type { Terminal } from '@xterm/xterm'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
-import { FiChevronDown, FiChevronUp, FiSearch, FiX } from 'react-icons/fi'
 import {
   clearTerminalSearch,
   createTerminal,
@@ -17,10 +16,6 @@ type TerminalError = {
   detail?: string
 }
 
-function isPiArgv(argv: readonly string[] | undefined): boolean {
-  return argv?.[0] === 'pi'
-}
-
 function renderAfterWindowShown(terminal: Terminal, isCurrent: () => boolean): () => void {
   let frame: number | null = null
   let timer: number | null = null
@@ -28,10 +23,6 @@ function renderAfterWindowShown(terminal: Terminal, isCurrent: () => boolean): (
 
   void window.electronAPI.signalReady().then(() => {
     if (cancelled || !isCurrent()) return
-
-    // Chromium can drop the initial canvas upload while the BrowserWindow is still hidden.
-    // Render again after main confirms the window has been shown so the first visible frame
-    // contains the shell prompt instead of a black canvas until the next input echo.
     forceTerminalRender(terminal)
     frame = window.requestAnimationFrame(() => {
       frame = null
@@ -57,8 +48,6 @@ function renderAfterWindowShown(terminal: Terminal, isCurrent: () => boolean): (
 export function TerminalPane({
   sessionId,
   terminalId,
-  workspaceId,
-  worktreeId,
   cwd,
   argv,
   isActive,
@@ -70,8 +59,6 @@ export function TerminalPane({
 }: {
   sessionId: string
   terminalId?: string
-  workspaceId?: string
-  worktreeId?: string
   cwd?: string
   argv?: readonly string[]
   isActive: boolean
@@ -132,8 +119,6 @@ export function TerminalPane({
         onArchiveStateChangeRef.current?.(false)
         const terminal = await createTerminal(surface, sessionId, {
           terminalId,
-          workspaceId,
-          worktreeId,
           cwd: cwdRef.current,
           argv,
           onTitle: (title) => onTitleChangeRef.current?.(title),
@@ -177,7 +162,6 @@ export function TerminalPane({
           title: 'Failed to initialize terminal',
           message,
         })
-        // Do not leave the BrowserWindow hidden if terminal initialization failed.
         if (isActive) void window.electronAPI.signalReady()
       }
     }
@@ -192,7 +176,7 @@ export function TerminalPane({
       detachTerminalSurface(sessionId, terminalRef.current)
       terminalRef.current = null
     }
-  }, [sessionId, terminalId, workspaceId, worktreeId, argv])
+  }, [sessionId, terminalId, argv])
 
   useEffect(() => {
     const terminal = terminalRef.current
@@ -279,7 +263,7 @@ export function TerminalPane({
       {isOpening && !terminalError && !isArchived ? (
         <div className="terminal-opening" aria-live="polite">
           <span className="terminal-opening-dot" aria-hidden="true" />
-          <span>{isPiArgv(argv) ? 'Opening Pi' : 'Opening terminal'}</span>
+          <span>Opening terminal</span>
         </div>
       ) : null}
       {searchVisible && !isArchived && !terminalError ? (
@@ -290,7 +274,7 @@ export function TerminalPane({
             runSearch(searchQuery, 'next')
           }}
         >
-          <FiSearch size={13} aria-hidden="true" />
+          <span aria-hidden="true">⌕</span>
           <input
             ref={searchInputRef}
             aria-label="Find in terminal"
@@ -314,7 +298,7 @@ export function TerminalPane({
             onKeyDown={handleSearchControlKeyDown}
             onClick={() => runSearch(searchQuery, 'previous')}
           >
-            <FiChevronUp size={14} />
+            ↑
           </button>
           <button
             type="button"
@@ -323,7 +307,7 @@ export function TerminalPane({
             onKeyDown={handleSearchControlKeyDown}
             onClick={() => runSearch(searchQuery, 'next')}
           >
-            <FiChevronDown size={14} />
+            ↓
           </button>
           <button
             type="button"
@@ -332,7 +316,7 @@ export function TerminalPane({
             onKeyDown={handleSearchControlKeyDown}
             onClick={closeSearch}
           >
-            <FiX size={14} />
+            ×
           </button>
         </form>
       ) : null}

@@ -1,5 +1,6 @@
 import { Schema } from 'effect'
 
+/** Core terminal session lifecycle. Independent from pane identity. */
 export const TerminalSessionStatusSchema = Schema.Union([
   Schema.Literal('live'),
   Schema.Literal('detached'),
@@ -9,19 +10,16 @@ export const TerminalSessionStatusSchema = Schema.Union([
   Schema.Literal('killed'),
 ])
 
-export const AgentSessionStatusSchema = Schema.Union([
-  Schema.Literal('detected'),
-  Schema.Literal('running'),
-  Schema.Literal('resumable'),
-  Schema.Literal('resumed'),
-  Schema.Literal('unknown'),
-  Schema.Literal('ended'),
-])
+/** Neutral optional context — never a required project/worktree/thread. */
+export const SessionContextSchema = Schema.Struct({
+  cwd: Schema.optional(Schema.String),
+  profile: Schema.optional(Schema.String),
+  label: Schema.optional(Schema.String),
+})
 
 export const TerminalSessionMetadataSchema = Schema.Struct({
   id: Schema.String,
   terminalId: Schema.String,
-  workspaceId: Schema.optional(Schema.String),
   cwd: Schema.optional(Schema.String),
   argv: Schema.optional(Schema.Array(Schema.String)),
   status: TerminalSessionStatusSchema,
@@ -38,80 +36,42 @@ export const TerminalSessionMetadataSchema = Schema.Struct({
   endedAt: Schema.optional(Schema.String),
   exitCode: Schema.optional(Schema.Number),
   signal: Schema.optional(Schema.Number),
+  context: Schema.optional(SessionContextSchema),
 })
 
-export const AgentSessionMetadataSchema = Schema.Struct({
-  id: Schema.String,
-  terminalSessionId: Schema.String,
-  provider: Schema.String,
-  nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
-  originalArgv: Schema.optional(Schema.Array(Schema.String)),
-  resumeArgv: Schema.optional(Schema.Array(Schema.String)),
-  cwd: Schema.optional(Schema.String),
-  transcriptPath: Schema.optional(Schema.String),
-  model: Schema.optional(Schema.String),
-  title: Schema.optional(Schema.String),
-  status: AgentSessionStatusSchema,
-  lastActivityAt: Schema.optional(Schema.String),
-})
+/** Core pane surfaces are terminal-only until the extension pane contract exists. */
+export const PaneTypeSchema = Schema.Literal('terminal')
 
-export const WorkspaceLayoutSchema = Schema.Struct({
+export const PaneLayoutSchema = Schema.Struct({
   id: Schema.String,
+  terminalId: Schema.String,
+  tabId: Schema.String,
+  type: PaneTypeSchema,
   name: Schema.String,
-  projectPath: Schema.NullOr(Schema.String),
-  branch: Schema.optional(Schema.String),
-  worktrees: Schema.optional(Schema.Array(Schema.Unknown)),
-  lastActiveTabId: Schema.optional(Schema.String),
-  order: Schema.Number,
+  cwd: Schema.optional(Schema.String),
+  argv: Schema.optional(Schema.Array(Schema.String)),
+  lastSessionId: Schema.optional(Schema.String),
 })
 
 export const TabLayoutSchema = Schema.Struct({
   id: Schema.String,
-  workspaceId: Schema.String,
   name: Schema.String,
   layout: Schema.Unknown,
   lastActivePaneId: Schema.optional(Schema.String),
   order: Schema.Number,
 })
 
-export const PaneLayoutSchema = Schema.Struct({
-  id: Schema.String,
-  terminalId: Schema.String,
-  tabId: Schema.String,
-  type: Schema.Union([
-    Schema.Literal('terminal'),
-    Schema.Literal('webview'),
-    Schema.Literal('changes'),
-  ]),
-  name: Schema.String,
-  cwd: Schema.optional(Schema.String),
-  agentProvider: Schema.optional(Schema.Literal('pi')),
-  argv: Schema.optional(Schema.Array(Schema.String)),
-  status: Schema.optional(
-    Schema.Union([
-      Schema.Literal('idle'),
-      Schema.Literal('working'),
-      Schema.Literal('permission'),
-      Schema.Literal('review'),
-      Schema.Literal('archived'),
-    ]),
-  ),
-  lastSessionId: Schema.optional(Schema.String),
-})
-
+/**
+ * Persisted mux layout projection.
+ * Version 2 drops workspaces/sidebars/agent fields. Older layouts are discarded.
+ */
 export const PaneLayoutDataSchema = Schema.Struct({
   version: Schema.Number,
-  workspaces: Schema.Array(WorkspaceLayoutSchema),
-  activeWorkspaceId: Schema.NullOr(Schema.String),
-  lastActiveLocalTabId: Schema.optional(Schema.NullOr(Schema.String)),
   tabs: Schema.Array(TabLayoutSchema),
   panes: Schema.Array(PaneLayoutSchema),
   activeTabId: Schema.NullOr(Schema.String),
   activePaneId: Schema.NullOr(Schema.String),
-  sidebarExpanded: Schema.Boolean,
-  sidebarWidth: Schema.Number,
-  rightSidebarExpanded: Schema.optional(Schema.Boolean),
-  rightSidebarWidth: Schema.optional(Schema.Number),
+  graphRev: Schema.optional(Schema.Number),
 })
 
 export const SettingsDataSchema = Schema.Struct({
@@ -127,8 +87,12 @@ export const SettingsDataSchema = Schema.Struct({
 })
 
 export type TerminalSessionStatus = Schema.Schema.Type<typeof TerminalSessionStatusSchema>
-export type AgentSessionStatus = Schema.Schema.Type<typeof AgentSessionStatusSchema>
+export type SessionContext = Schema.Schema.Type<typeof SessionContextSchema>
 export type TerminalSessionMetadata = Schema.Schema.Type<typeof TerminalSessionMetadataSchema>
-export type AgentSessionMetadata = Schema.Schema.Type<typeof AgentSessionMetadataSchema>
+export type PaneType = Schema.Schema.Type<typeof PaneTypeSchema>
+export type PaneLayout = Schema.Schema.Type<typeof PaneLayoutSchema>
+export type TabLayout = Schema.Schema.Type<typeof TabLayoutSchema>
 export type PaneLayoutData = Schema.Schema.Type<typeof PaneLayoutDataSchema>
 export type SettingsData = Schema.Schema.Type<typeof SettingsDataSchema>
+
+export const PANE_LAYOUT_VERSION = 2

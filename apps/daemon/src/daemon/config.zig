@@ -5,7 +5,8 @@ pub const Config = struct {
     database_path: []const u8,
     run_dir: []const u8,
     sessions_dir: []const u8,
-    adapters_dir: []const u8,
+    graph_path: []const u8,
+    graph_previous_path: []const u8,
     socket_path: []const u8,
     pid_path: []const u8,
 
@@ -18,8 +19,10 @@ pub const Config = struct {
         errdefer allocator.free(run_dir);
         const sessions_dir = try std.fs.path.join(allocator, &.{ root_dir, "sessions" });
         errdefer allocator.free(sessions_dir);
-        const adapters_dir = try adapterDirFromEnvOrDefault(allocator, root_dir);
-        errdefer allocator.free(adapters_dir);
+        const graph_path = try std.fs.path.join(allocator, &.{ root_dir, "mux-graph-v1.json" });
+        errdefer allocator.free(graph_path);
+        const graph_previous_path = try std.fs.path.join(allocator, &.{ root_dir, "mux-graph-v1.previous.json" });
+        errdefer allocator.free(graph_previous_path);
         const socket_path = try std.fs.path.join(allocator, &.{ run_dir, "taud.sock" });
         errdefer allocator.free(socket_path);
         const pid_path = try std.fs.path.join(allocator, &.{ run_dir, "taud.pid" });
@@ -29,7 +32,8 @@ pub const Config = struct {
             .database_path = database_path,
             .run_dir = run_dir,
             .sessions_dir = sessions_dir,
-            .adapters_dir = adapters_dir,
+            .graph_path = graph_path,
+            .graph_previous_path = graph_previous_path,
             .socket_path = socket_path,
             .pid_path = pid_path,
         };
@@ -40,32 +44,21 @@ pub const Config = struct {
         allocator.free(self.database_path);
         allocator.free(self.run_dir);
         allocator.free(self.sessions_dir);
-        allocator.free(self.adapters_dir);
+        allocator.free(self.graph_path);
+        allocator.free(self.graph_previous_path);
         allocator.free(self.socket_path);
         allocator.free(self.pid_path);
         self.* = undefined;
     }
 };
 
-fn adapterDirFromEnvOrDefault(allocator: std.mem.Allocator, root_dir: []const u8) ![]u8 {
-    const env_value = std.process.getEnvVarOwned(allocator, "TAUD_ADAPTER_DIR") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => null,
-        else => return err,
-    };
-    if (env_value) |value| {
-        if (value.len > 0) return value;
-        allocator.free(value);
-    }
-    return try std.fs.path.join(allocator, &.{ root_dir, "adapters" });
-}
-
 test "config derives tau paths from home" {
     var config = try Config.fromHome(std.testing.allocator, "/tmp/example-home");
     defer config.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("/tmp/example-home/.tau", config.root_dir);
-    try std.testing.expectEqualStrings("/tmp/example-home/.tau/adapters", config.adapters_dir);
     try std.testing.expectEqualStrings("/tmp/example-home/.tau/run/taud.sock", config.socket_path);
+    try std.testing.expectEqualStrings("/tmp/example-home/.tau/mux-graph-v1.json", config.graph_path);
 }
 
 fn configFromHomeForAllocationFailure(allocator: std.mem.Allocator) !void {

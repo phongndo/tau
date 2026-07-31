@@ -11,10 +11,8 @@ const electronPath = require('electron') as string
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const desktopRoot = resolve(repoRoot, 'apps/desktop')
-const sourceAdaptersRoot = resolve(repoRoot, 'apps/daemon/adapters')
 const outRoot = resolve(desktopRoot, 'out')
 const taudPath = resolve(outRoot, 'bin', process.platform === 'win32' ? 'taud.exe' : 'taud')
-const adaptersRoot = resolve(outRoot, 'adapters')
 
 function positiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name]
@@ -65,39 +63,12 @@ function assertExecutable(path: string, label: string): void {
   }
 }
 
-function sourceAdapterFiles(): string[] {
-  let entries: string[]
-  try {
-    entries = readdirSync(sourceAdaptersRoot)
-  } catch {
-    fail(`taud adapter source directory is missing: ${sourceAdaptersRoot}`)
-  }
-
-  const adapters = entries
-    .filter((entry) => {
-      if (!entry.endsWith('.ts')) return false
-      const adapterPath = resolve(sourceAdaptersRoot, entry)
-      try {
-        return statSync(adapterPath).isFile()
-      } catch {
-        fail(`failed to read taud adapter source file: ${adapterPath}`)
-      }
-    })
-    .sort()
-
-  if (adapters.length === 0) fail(`no taud adapters found in ${sourceAdaptersRoot}`)
-  return adapters
-}
-
 function assertPackageLayout(): void {
   assertFile(resolve(outRoot, 'main/index.js'), 'main bundle')
-  assertFile(resolve(outRoot, 'preload/index.mjs'), 'preload bundle')
+  assertFile(resolve(outRoot, 'preload/index.cjs'), 'preload bundle')
   assertFile(resolve(outRoot, 'renderer/index.html'), 'renderer entrypoint')
   assertExecutable(taudPath, 'taud binary')
 
-  for (const adapter of sourceAdapterFiles()) {
-    assertFile(resolve(adaptersRoot, adapter), `taud adapter ${adapter}`)
-  }
 }
 
 function runTaudCheck(): void {
@@ -108,7 +79,6 @@ function runTaudCheck(): void {
       env: {
         ...process.env,
         HOME: home,
-        TAUD_ADAPTER_DIR: adaptersRoot,
       },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -166,7 +136,6 @@ function runElectronLaunchSmoke(): Promise<void> {
         ...process.env,
         HOME: home,
         TAU_ELECTRON_SMOKE: '1',
-        TAUD_ADAPTER_DIR: adaptersRoot,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })

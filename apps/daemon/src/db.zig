@@ -2,21 +2,14 @@ const std = @import("std");
 const limits = @import("limits.zig");
 const sqlite = @import("sqlite");
 
-const assert = std.debug.assert;
-
 pub const event_log_refs_max = limits.db_event_log_refs_max;
 pub const search_results_max = limits.db_search_results_max;
 
-comptime {
-    assert(event_log_refs_max > 0);
-    assert(search_results_max > 0);
-}
-
-pub const migration_001_terminal_sessions =
-    \\CREATE TABLE terminal_sessions (
+/// Fresh mux-core schema. Workflow tables are intentionally absent.
+pub const migration_001_mux_sessions =
+    \\CREATE TABLE IF NOT EXISTS terminal_sessions (
     \\    id                 TEXT PRIMARY KEY,
     \\    terminal_id        TEXT NOT NULL,
-    \\    workspace_id       TEXT,
     \\    cwd                TEXT,
     \\    argv_json          TEXT,
     \\    status             TEXT NOT NULL CHECK(status IN (
@@ -42,146 +35,99 @@ pub const migration_001_terminal_sessions =
     \\    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
     \\    updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
     \\) STRICT;
-    \\CREATE INDEX idx_terminal_sessions_terminal ON terminal_sessions(terminal_id);
-    \\CREATE INDEX idx_terminal_sessions_workspace ON terminal_sessions(workspace_id);
-    \\CREATE INDEX idx_terminal_sessions_status ON terminal_sessions(status);
-    \\CREATE INDEX idx_terminal_sessions_activity ON terminal_sessions(last_activity_at);
-    \\CREATE TRIGGER update_terminal_sessions_updated_at
-    \\    AFTER UPDATE ON terminal_sessions
-    \\    BEGIN
-    \\        UPDATE terminal_sessions SET updated_at = datetime('now') WHERE id = NEW.id;
-    \\    END;
-;
-
-pub const migration_002_agent_sessions =
-    \\CREATE TABLE agent_sessions (
-    \\    id                  TEXT PRIMARY KEY,
-    \\    terminal_session_id TEXT NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
-    \\    provider            TEXT NOT NULL,
-    \\    native_session_id   TEXT,
-    \\    original_argv_json  TEXT,
-    \\    resume_argv_json    TEXT,
-    \\    cwd                 TEXT,
-    \\    transcript_path     TEXT,
-    \\    model               TEXT,
-    \\    title               TEXT,
-    \\    status              TEXT NOT NULL CHECK(status IN (
-    \\        'detected', 'running', 'resumable', 'resumed', 'unknown', 'ended'
-    \\    )),
-    \\    last_activity_at    TEXT,
-    \\    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-    \\    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
-    \\) STRICT;
-    \\CREATE INDEX idx_agent_sessions_terminal ON agent_sessions(terminal_session_id);
-    \\CREATE INDEX idx_agent_sessions_provider_native ON agent_sessions(provider, native_session_id);
-    \\CREATE INDEX idx_agent_sessions_status ON agent_sessions(status);
-    \\CREATE TRIGGER update_agent_sessions_updated_at
-    \\    AFTER UPDATE ON agent_sessions
-    \\    BEGIN
-    \\        UPDATE agent_sessions SET updated_at = datetime('now') WHERE id = NEW.id;
-    \\    END;
-;
-
-pub const migration_003_terminal_search =
-    \\CREATE VIRTUAL TABLE terminal_search USING fts5(
+    \\CREATE INDEX IF NOT EXISTS idx_terminal_sessions_terminal ON terminal_sessions(terminal_id);
+    \\CREATE INDEX IF NOT EXISTS idx_terminal_sessions_status ON terminal_sessions(status);
+    \\CREATE INDEX IF NOT EXISTS idx_terminal_sessions_activity ON terminal_sessions(last_activity_at);
+    \\CREATE VIRTUAL TABLE IF NOT EXISTS terminal_search USING fts5(
     \\    terminal_session_id UNINDEXED,
-    \\    workspace_id UNINDEXED,
     \\    title,
     \\    excerpt,
     \\    tokenize = 'unicode61'
     \\);
 ;
 
-pub const migration_004_workspace_worktrees =
-    \\CREATE TABLE workspaces (
-    \\    id TEXT PRIMARY KEY,
-    \\    name TEXT NOT NULL,
-    \\    root_path TEXT NOT NULL UNIQUE,
-    \\    git_common_dir TEXT,
-    \\    workspace_slug TEXT NOT NULL,
-    \\    default_branch TEXT,
-    \\    order_index INTEGER NOT NULL DEFAULT 0,
-    \\    last_active_tab_id TEXT,
-    \\    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    \\    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    \\    archived_at TEXT
-    \\) STRICT;
-    \\CREATE INDEX idx_workspaces_order ON workspaces(order_index);
-    \\CREATE TRIGGER update_workspaces_updated_at
-    \\    AFTER UPDATE ON workspaces
-    \\    BEGIN
-    \\        UPDATE workspaces SET updated_at = datetime('now') WHERE id = NEW.id;
-    \\    END;
-    \\CREATE TABLE worktrees (
-    \\    id TEXT PRIMARY KEY,
-    \\    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    \\    title TEXT,
-    \\    folder_name TEXT NOT NULL,
-    \\    path TEXT NOT NULL,
-    \\    branch TEXT NOT NULL,
-    \\    base_branch TEXT,
-    \\    target_branch TEXT,
-    \\    state TEXT NOT NULL CHECK(state IN (
-    \\        'creating', 'active', 'missing', 'removing', 'archived', 'error',
-    \\        'untracked'
+pub const migrations = [_][]const u8{migration_001_mux_sessions};
+
+/// Mux terminal_sessions body without IF NOT EXISTS — used when creating or rebuilding.
+const terminal_sessions_table_sql =
+    \\CREATE TABLE terminal_sessions (
+    \\    id                 TEXT PRIMARY KEY,
+    \\    terminal_id        TEXT NOT NULL,
+    \\    cwd                TEXT,
+    \\    argv_json          TEXT,
+    \\    status             TEXT NOT NULL CHECK(status IN (
+    \\        'live', 'detached', 'exited', 'crashed', 'archived', 'killed'
     \\    )),
-    \\    order_index INTEGER NOT NULL DEFAULT 0,
-    \\    last_active_tab_id TEXT,
-    \\    last_error TEXT,
-    \\    created_by TEXT NOT NULL DEFAULT 'tau',
-    \\    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    \\    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    \\    archived_at TEXT
+    \\    daemon_id          TEXT,
+    \\    pid                INTEGER,
+    \\    cols               INTEGER NOT NULL,
+    \\    rows               INTEGER NOT NULL,
+    \\    title              TEXT,
+    \\    event_log_path     TEXT NOT NULL,
+    \\    last_seq           INTEGER NOT NULL DEFAULT 0,
+    \\    snapshot_path      TEXT,
+    \\    snapshot_seq       INTEGER NOT NULL DEFAULT 0,
+    \\    snapshot_crc32     INTEGER,
+    \\    snapshot_size      INTEGER,
+    \\    scrollback_excerpt TEXT,
+    \\    started_at         TEXT NOT NULL,
+    \\    last_activity_at   TEXT,
+    \\    ended_at           TEXT,
+    \\    exit_code          INTEGER,
+    \\    signal             INTEGER,
+    \\    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    \\    updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
     \\) STRICT;
-    \\CREATE UNIQUE INDEX idx_worktrees_path ON worktrees(path) WHERE archived_at IS NULL;
-    \\CREATE UNIQUE INDEX idx_worktrees_workspace_folder ON worktrees(workspace_id, folder_name) WHERE archived_at IS NULL;
-    \\CREATE INDEX idx_worktrees_workspace_order ON worktrees(workspace_id, order_index);
-    \\CREATE INDEX idx_worktrees_state ON worktrees(state);
-    \\CREATE UNIQUE INDEX idx_worktrees_workspace_branch
-    \\    ON worktrees(workspace_id, branch)
-    \\    WHERE archived_at IS NULL;
-    \\CREATE TRIGGER update_worktrees_updated_at
-    \\    AFTER UPDATE ON worktrees
-    \\    BEGIN
-    \\        UPDATE worktrees SET updated_at = datetime('now') WHERE id = NEW.id;
-    \\    END;
-    \\ALTER TABLE terminal_sessions ADD COLUMN worktree_id TEXT REFERENCES worktrees(id);
-    \\CREATE INDEX idx_terminal_sessions_worktree ON terminal_sessions(worktree_id);
 ;
 
-pub const migration_005_worktree_branch_unique =
-    \\DROP INDEX IF EXISTS idx_worktrees_branch;
-    \\CREATE UNIQUE INDEX IF NOT EXISTS idx_worktrees_workspace_branch
-    \\    ON worktrees(workspace_id, branch)
-    \\    WHERE archived_at IS NULL;
+const terminal_sessions_indexes_sql =
+    \\CREATE INDEX IF NOT EXISTS idx_terminal_sessions_terminal ON terminal_sessions(terminal_id);
+    \\CREATE INDEX IF NOT EXISTS idx_terminal_sessions_status ON terminal_sessions(status);
+    \\CREATE INDEX IF NOT EXISTS idx_terminal_sessions_activity ON terminal_sessions(last_activity_at);
 ;
 
-pub const migrations = [_][]const u8{
-    migration_001_terminal_sessions,
-    migration_002_agent_sessions,
-    migration_003_terminal_search,
-    migration_004_workspace_worktrees,
-    migration_005_worktree_branch_unique,
-};
+const copy_terminal_sessions_from_pre_mux_sql =
+    \\INSERT INTO terminal_sessions (
+    \\    id, terminal_id, cwd, argv_json, status, daemon_id, pid,
+    \\    cols, rows, title, event_log_path, last_seq,
+    \\    snapshot_path, snapshot_seq, snapshot_crc32, snapshot_size,
+    \\    scrollback_excerpt, started_at, last_activity_at, ended_at,
+    \\    exit_code, signal, created_at, updated_at
+    \\)
+    \\SELECT
+    \\    id, terminal_id, cwd, argv_json, status, daemon_id, pid,
+    \\    cols, rows, title, event_log_path, last_seq,
+    \\    snapshot_path, snapshot_seq, snapshot_crc32, snapshot_size,
+    \\    scrollback_excerpt, started_at, last_activity_at, ended_at,
+    \\    exit_code, signal, created_at, updated_at
+    \\FROM terminal_sessions_pre_mux;
+;
 
 const create_migrations_table_sql =
-    \\CREATE TABLE IF NOT EXISTS schema_migrations (
+    \\CREATE TABLE IF NOT EXISTS mux_schema_migrations (
     \\    version INTEGER PRIMARY KEY,
     \\    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
     \\) STRICT;
 ;
 
+const ensure_terminal_search_sql =
+    \\CREATE VIRTUAL TABLE IF NOT EXISTS terminal_search USING fts5(
+    \\    terminal_session_id UNINDEXED,
+    \\    title,
+    \\    excerpt,
+    \\    tokenize = 'unicode61'
+    \\);
+;
+
 const upsert_terminal_session_sql =
     \\INSERT INTO terminal_sessions (
-    \\    id, terminal_id, workspace_id, worktree_id, cwd, argv_json, status, daemon_id, pid,
+    \\    id, terminal_id, cwd, argv_json, status, daemon_id, pid,
     \\    cols, rows, title, event_log_path, last_seq,
     \\    snapshot_path, snapshot_seq, snapshot_crc32, snapshot_size,
     \\    started_at, last_activity_at
-    \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     \\ON CONFLICT(id) DO UPDATE SET
     \\    terminal_id = excluded.terminal_id,
-    \\    workspace_id = excluded.workspace_id,
-    \\    worktree_id = excluded.worktree_id,
     \\    cwd = excluded.cwd,
     \\    argv_json = COALESCE(excluded.argv_json, terminal_sessions.argv_json),
     \\    status = excluded.status,
@@ -196,8 +142,7 @@ const upsert_terminal_session_sql =
     \\    snapshot_seq = CASE WHEN excluded.snapshot_path IS NULL THEN terminal_sessions.snapshot_seq ELSE excluded.snapshot_seq END,
     \\    snapshot_crc32 = CASE WHEN excluded.snapshot_path IS NULL THEN terminal_sessions.snapshot_crc32 ELSE excluded.snapshot_crc32 END,
     \\    snapshot_size = CASE WHEN excluded.snapshot_path IS NULL THEN terminal_sessions.snapshot_size ELSE excluded.snapshot_size END,
-    \\    last_activity_at = datetime('now')
-    \\;
+    \\    last_activity_at = datetime('now');
 ;
 
 const update_terminal_ended_sql =
@@ -209,20 +154,13 @@ const update_terminal_ended_sql =
 ;
 
 const find_terminal_by_id_sql =
-    \\SELECT id, terminal_id, workspace_id, worktree_id, cwd, argv_json, status,
-    \\       cols, rows, event_log_path, last_seq
-    \\FROM terminal_sessions
-    \\WHERE id = ?
-    \\LIMIT 1;
+    \\SELECT id, terminal_id, cwd, argv_json, status, cols, rows, event_log_path, last_seq
+    \\FROM terminal_sessions WHERE id = ? LIMIT 1;
 ;
 
 const find_terminal_by_terminal_id_sql =
-    \\SELECT id, terminal_id, workspace_id, worktree_id, cwd, argv_json, status,
-    \\       cols, rows, event_log_path, last_seq
-    \\FROM terminal_sessions
-    \\WHERE terminal_id = ?
-    \\ORDER BY updated_at DESC
-    \\LIMIT 1;
+    \\SELECT id, terminal_id, cwd, argv_json, status, cols, rows, event_log_path, last_seq
+    \\FROM terminal_sessions WHERE terminal_id = ? ORDER BY updated_at DESC LIMIT 1;
 ;
 
 const list_terminal_event_logs_sql =
@@ -231,12 +169,8 @@ const list_terminal_event_logs_sql =
 
 const clear_terminal_history_metadata_sql =
     \\UPDATE terminal_sessions
-    \\SET scrollback_excerpt = NULL,
-    \\    last_seq = 0,
-    \\    snapshot_path = NULL,
-    \\    snapshot_seq = 0,
-    \\    snapshot_crc32 = NULL,
-    \\    snapshot_size = NULL,
+    \\SET scrollback_excerpt = NULL, last_seq = 0, snapshot_path = NULL,
+    \\    snapshot_seq = 0, snapshot_crc32 = NULL, snapshot_size = NULL,
     \\    last_activity_at = datetime('now')
     \\WHERE id = ?;
 ;
@@ -244,264 +178,20 @@ const clear_terminal_history_metadata_sql =
 const delete_terminal_search_sql =
     \\DELETE FROM terminal_search WHERE terminal_session_id = ?;
 ;
-
 const delete_terminal_session_sql =
     \\DELETE FROM terminal_sessions WHERE id = ?;
 ;
-
-const upsert_agent_session_sql =
-    \\INSERT INTO agent_sessions (
-    \\    id, terminal_session_id, provider, native_session_id, original_argv_json,
-    \\    resume_argv_json, cwd, transcript_path, model, title, status, last_activity_at
-    \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    \\ON CONFLICT(id) DO UPDATE SET
-    \\    provider = excluded.provider,
-    \\    native_session_id = COALESCE(excluded.native_session_id, agent_sessions.native_session_id),
-    \\    original_argv_json = COALESCE(excluded.original_argv_json, agent_sessions.original_argv_json),
-    \\    resume_argv_json = COALESCE(excluded.resume_argv_json, agent_sessions.resume_argv_json),
-    \\    cwd = COALESCE(excluded.cwd, agent_sessions.cwd),
-    \\    transcript_path = COALESCE(excluded.transcript_path, agent_sessions.transcript_path),
-    \\    model = COALESCE(excluded.model, agent_sessions.model),
-    \\    title = COALESCE(excluded.title, agent_sessions.title),
-    \\    status = excluded.status,
-    \\    last_activity_at = datetime('now')
-    \\;
-;
-
-const find_agent_resume_by_terminal_sql =
-    \\SELECT id, provider, native_session_id, resume_argv_json, status
-    \\FROM agent_sessions
-    \\WHERE terminal_session_id = ?
-    \\  AND native_session_id IS NOT NULL
-    \\  AND resume_argv_json IS NOT NULL
-    \\  AND status IN ('detected', 'running', 'resumable', 'resumed')
-    \\ORDER BY updated_at DESC
-    \\LIMIT 1;
-;
-
-const list_pi_threads_sql =
-    \\SELECT
-    \\    a.id,
-    \\    a.terminal_session_id,
-    \\    t.terminal_id,
-    \\    t.workspace_id,
-    \\    t.worktree_id,
-    \\    COALESCE(a.cwd, t.cwd) AS cwd,
-    \\    t.status AS terminal_status,
-    \\    a.status AS agent_status,
-    \\    a.native_session_id,
-    \\    a.resume_argv_json,
-    \\    a.title,
-    \\    t.last_seq,
-    \\    COALESCE(a.last_activity_at, t.last_activity_at, a.updated_at, t.updated_at) AS last_activity_at
-    \\FROM agent_sessions a
-    \\JOIN terminal_sessions t ON t.id = a.terminal_session_id
-    \\LEFT JOIN workspaces w ON w.id = t.workspace_id
-    \\LEFT JOIN worktrees wt ON wt.id = t.worktree_id
-    \\WHERE a.provider = 'pi'
-    \\  AND (? IS NULL OR t.workspace_id = ?)
-    \\  AND (? IS NULL OR t.worktree_id = ?)
-    \\  AND (
-    \\      ? IS NULL
-    \\      OR w.root_path = ?
-    \\      OR wt.path = ?
-    \\      OR t.cwd = ?
-    \\      OR t.cwd LIKE ? ESCAPE '\'
-    \\  )
-    \\ORDER BY COALESCE(a.last_activity_at, t.last_activity_at, a.updated_at, t.updated_at) DESC
-    \\LIMIT ?;
-;
-
 const insert_terminal_search_sql =
-    \\INSERT INTO terminal_search (terminal_session_id, workspace_id, title, excerpt)
-    \\VALUES (?, ?, ?, ?);
+    \\INSERT INTO terminal_search (terminal_session_id, title, excerpt) VALUES (?, ?, ?);
 ;
-
 const search_terminal_excerpts_sql =
-    \\SELECT terminal_session_id, title, excerpt
-    \\FROM terminal_search
-    \\WHERE terminal_search MATCH ?
-    \\LIMIT ?;
-;
-
-const insert_workspace_sql =
-    \\INSERT INTO workspaces (
-    \\    id, name, root_path, git_common_dir, workspace_slug, default_branch,
-    \\    order_index, last_active_tab_id
-    \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-;
-
-const update_workspace_sql =
-    \\UPDATE workspaces
-    \\SET name = ?, git_common_dir = ?, workspace_slug = ?, default_branch = ?,
-    \\    order_index = ?, last_active_tab_id = ?
-    \\WHERE id = ?;
-;
-
-const reactivate_workspace_sql =
-    \\UPDATE workspaces
-    \\SET name = ?, git_common_dir = ?, workspace_slug = ?, default_branch = ?,
-    \\    order_index = ?, last_active_tab_id = ?, archived_at = NULL
-    \\WHERE id = ?;
-;
-
-const archive_workspace_sql =
-    \\UPDATE workspaces SET archived_at = datetime('now') WHERE id = ?;
-;
-
-const find_workspace_by_id_sql =
-    \\SELECT id, name, root_path, git_common_dir, workspace_slug, default_branch,
-    \\       order_index, last_active_tab_id, created_at, updated_at, archived_at
-    \\FROM workspaces WHERE id = ? LIMIT 1;
-;
-
-const find_workspace_by_root_sql =
-    \\SELECT id, name, root_path, git_common_dir, workspace_slug, default_branch,
-    \\       order_index, last_active_tab_id, created_at, updated_at, archived_at
-    \\FROM workspaces WHERE root_path = ? LIMIT 1;
-;
-
-const list_workspaces_sql =
-    \\SELECT id, name, root_path, git_common_dir, workspace_slug, default_branch,
-    \\       order_index, last_active_tab_id, created_at, updated_at, archived_at
-    \\FROM workspaces
-    \\WHERE archived_at IS NULL
-    \\ORDER BY order_index ASC, created_at ASC;
-;
-
-const count_workspaces_sql =
-    \\SELECT COUNT(*) FROM workspaces;
-;
-
-const next_workspace_order_sql =
-    \\SELECT COALESCE(MAX(order_index), -1) + 1 FROM workspaces WHERE archived_at IS NULL;
-;
-
-const reorder_workspace_sql =
-    \\UPDATE workspaces SET order_index = ? WHERE id = ?;
-;
-
-const insert_worktree_sql =
-    \\INSERT INTO worktrees (
-    \\    id, workspace_id, title, folder_name, path, branch, base_branch,
-    \\    target_branch, state, order_index, last_active_tab_id, last_error, created_by
-    \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-;
-
-const reactivate_worktree_sql =
-    \\UPDATE worktrees
-    \\SET workspace_id = ?, title = ?, folder_name = ?, path = ?, branch = ?,
-    \\    base_branch = ?, target_branch = ?, state = ?, order_index = ?,
-    \\    last_active_tab_id = ?, last_error = ?, created_by = ?, archived_at = NULL
-    \\WHERE id = ?;
-;
-
-const update_worktree_state_sql =
-    \\UPDATE worktrees
-    \\SET state = ?, last_error = ?
-    \\WHERE id = ?;
-;
-
-const update_worktree_git_sql =
-    \\UPDATE worktrees
-    \\SET branch = ?, state = ?, last_error = NULL, archived_at = NULL
-    \\WHERE id = ?;
-;
-
-const archive_worktree_sql =
-    \\UPDATE worktrees
-    \\SET state = 'archived', archived_at = datetime('now')
-    \\WHERE id = ?;
-;
-
-const archive_worktrees_for_workspace_sql =
-    \\UPDATE worktrees
-    \\SET state = 'archived', archived_at = datetime('now')
-    \\WHERE workspace_id = ? AND archived_at IS NULL;
-;
-
-const find_worktree_by_id_sql =
-    \\SELECT id, workspace_id, title, folder_name, path, branch, base_branch,
-    \\       target_branch, state, order_index, last_active_tab_id, last_error,
-    \\       created_by, created_at, updated_at, archived_at
-    \\FROM worktrees WHERE id = ? LIMIT 1;
-;
-
-const find_worktree_by_path_sql =
-    \\SELECT id, workspace_id, title, folder_name, path, branch, base_branch,
-    \\       target_branch, state, order_index, last_active_tab_id, last_error,
-    \\       created_by, created_at, updated_at, archived_at
-    \\FROM worktrees WHERE path = ? AND archived_at IS NULL LIMIT 1;
-;
-
-const find_archived_worktree_by_path_sql =
-    \\SELECT id, workspace_id, title, folder_name, path, branch, base_branch,
-    \\       target_branch, state, order_index, last_active_tab_id, last_error,
-    \\       created_by, created_at, updated_at, archived_at
-    \\FROM worktrees WHERE path = ? AND archived_at IS NOT NULL
-    \\ORDER BY updated_at DESC LIMIT 1;
-;
-
-const find_archived_worktree_by_folder_sql =
-    \\SELECT id, workspace_id, title, folder_name, path, branch, base_branch,
-    \\       target_branch, state, order_index, last_active_tab_id, last_error,
-    \\       created_by, created_at, updated_at, archived_at
-    \\FROM worktrees
-    \\WHERE workspace_id = ? AND folder_name = ? AND archived_at IS NOT NULL
-    \\ORDER BY updated_at DESC LIMIT 1;
-;
-
-const find_archived_worktree_by_branch_sql =
-    \\SELECT id, workspace_id, title, folder_name, path, branch, base_branch,
-    \\       target_branch, state, order_index, last_active_tab_id, last_error,
-    \\       created_by, created_at, updated_at, archived_at
-    \\FROM worktrees
-    \\WHERE workspace_id = ? AND branch = ? AND archived_at IS NOT NULL
-    \\ORDER BY updated_at DESC LIMIT 1;
-;
-
-const list_worktrees_for_workspace_sql =
-    \\SELECT id, workspace_id, title, folder_name, path, branch, base_branch,
-    \\       target_branch, state, order_index, last_active_tab_id, last_error,
-    \\       created_by, created_at, updated_at, archived_at
-    \\FROM worktrees
-    \\WHERE workspace_id = ? AND archived_at IS NULL
-    \\ORDER BY order_index ASC, created_at ASC;
-;
-
-const count_worktrees_sql =
-    \\SELECT COUNT(*) FROM worktrees;
-;
-
-const worktree_path_exists_sql =
-    \\SELECT 1 FROM worktrees WHERE path = ? AND archived_at IS NULL LIMIT 1;
-;
-
-const archived_worktree_path_exists_sql =
-    \\SELECT 1 FROM worktrees WHERE path = ? AND archived_at IS NOT NULL LIMIT 1;
-;
-
-const worktree_branch_exists_sql =
-    \\SELECT 1 FROM worktrees WHERE workspace_id = ? AND branch = ? AND archived_at IS NULL LIMIT 1;
-;
-
-const worktree_folder_exists_sql =
-    \\SELECT 1 FROM worktrees WHERE workspace_id = ? AND folder_name = ? AND archived_at IS NULL LIMIT 1;
-;
-
-const next_worktree_order_sql =
-    \\SELECT COALESCE(MAX(order_index), -1) + 1 FROM worktrees WHERE workspace_id = ? AND archived_at IS NULL;
-;
-
-const reorder_worktree_sql =
-    \\UPDATE worktrees SET order_index = ? WHERE id = ?;
+    \\SELECT terminal_session_id, title, excerpt FROM terminal_search
+    \\WHERE terminal_search MATCH ? LIMIT ?;
 ;
 
 pub const TerminalSessionRecord = struct {
     id: []const u8,
     terminal_id: []const u8,
-    workspace_id: ?[]const u8 = null,
-    worktree_id: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     argv_json: ?[]const u8 = null,
     status: []const u8,
@@ -531,8 +221,6 @@ pub const TerminalEndedRecord = struct {
 pub const TerminalSessionLookup = struct {
     id: []u8,
     terminal_id: []u8,
-    workspace_id: ?[]u8,
-    worktree_id: ?[]u8,
     cwd: ?[]u8,
     argv_json: ?[]u8,
     status: []u8,
@@ -544,8 +232,6 @@ pub const TerminalSessionLookup = struct {
     pub fn deinit(self: *TerminalSessionLookup, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.terminal_id);
-        if (self.workspace_id) |value| allocator.free(value);
-        if (self.worktree_id) |value| allocator.free(value);
         if (self.cwd) |value| allocator.free(value);
         if (self.argv_json) |value| allocator.free(value);
         allocator.free(self.status);
@@ -565,79 +251,8 @@ pub const TerminalEventLogRef = struct {
     }
 };
 
-pub const AgentSessionRecord = struct {
-    id: []const u8,
-    terminal_session_id: []const u8,
-    provider: []const u8,
-    native_session_id: ?[]const u8 = null,
-    original_argv_json: ?[]const u8 = null,
-    resume_argv_json: ?[]const u8 = null,
-    cwd: ?[]const u8 = null,
-    transcript_path: ?[]const u8 = null,
-    model: ?[]const u8 = null,
-    title: ?[]const u8 = null,
-    status: []const u8,
-};
-
-pub const AgentResumeLookup = struct {
-    id: []u8,
-    provider: []u8,
-    native_session_id: []u8,
-    resume_argv_json: []u8,
-    status: []u8,
-
-    pub fn deinit(self: *AgentResumeLookup, allocator: std.mem.Allocator) void {
-        allocator.free(self.id);
-        allocator.free(self.provider);
-        allocator.free(self.native_session_id);
-        allocator.free(self.resume_argv_json);
-        allocator.free(self.status);
-        self.* = undefined;
-    }
-};
-
-pub const PiThreadListFilter = struct {
-    workspace_id: ?[]const u8 = null,
-    worktree_id: ?[]const u8 = null,
-    root_path: ?[]const u8 = null,
-    limit: u32 = 100,
-};
-
-pub const PiThreadRow = struct {
-    id: []u8,
-    terminal_session_id: []u8,
-    terminal_id: []u8,
-    workspace_id: ?[]u8,
-    worktree_id: ?[]u8,
-    cwd: ?[]u8,
-    terminal_status: []u8,
-    agent_status: []u8,
-    native_session_id: ?[]u8,
-    resume_argv_json: ?[]u8,
-    title: ?[]u8,
-    last_seq: u64,
-    last_activity_at: ?[]u8,
-
-    pub fn deinit(self: *PiThreadRow, allocator: std.mem.Allocator) void {
-        allocator.free(self.id);
-        allocator.free(self.terminal_session_id);
-        allocator.free(self.terminal_id);
-        if (self.workspace_id) |value| allocator.free(value);
-        if (self.worktree_id) |value| allocator.free(value);
-        if (self.cwd) |value| allocator.free(value);
-        allocator.free(self.terminal_status);
-        allocator.free(self.agent_status);
-        if (self.native_session_id) |value| allocator.free(value);
-        if (self.resume_argv_json) |value| allocator.free(value);
-        if (self.title) |value| allocator.free(value);
-        if (self.last_activity_at) |value| allocator.free(value);
-        self.* = undefined;
-    }
-};
-
 pub const TerminalSearchRecord = struct {
     terminal_session_id: []const u8,
-    workspace_id: ?[]const u8 = null,
     title: ?[]const u8 = null,
     excerpt: []const u8,
 };
@@ -655,130 +270,6 @@ pub const TerminalSearchResult = struct {
     }
 };
 
-pub const WorkspaceRecord = struct {
-    id: []const u8,
-    name: []const u8,
-    root_path: []const u8,
-    git_common_dir: ?[]const u8 = null,
-    workspace_slug: []const u8,
-    default_branch: ?[]const u8 = null,
-    order_index: i64 = 0,
-    last_active_tab_id: ?[]const u8 = null,
-};
-
-pub const WorkspaceRow = struct {
-    id: []u8,
-    name: []u8,
-    root_path: []u8,
-    git_common_dir: ?[]u8,
-    workspace_slug: []u8,
-    default_branch: ?[]u8,
-    order_index: i64,
-    last_active_tab_id: ?[]u8,
-    created_at: []u8,
-    updated_at: []u8,
-    archived_at: ?[]u8,
-
-    pub fn deinit(self: *WorkspaceRow, allocator: std.mem.Allocator) void {
-        allocator.free(self.id);
-        allocator.free(self.name);
-        allocator.free(self.root_path);
-        if (self.git_common_dir) |value| allocator.free(value);
-        allocator.free(self.workspace_slug);
-        if (self.default_branch) |value| allocator.free(value);
-        if (self.last_active_tab_id) |value| allocator.free(value);
-        allocator.free(self.created_at);
-        allocator.free(self.updated_at);
-        if (self.archived_at) |value| allocator.free(value);
-        self.* = undefined;
-    }
-};
-
-pub const WorktreeRecord = struct {
-    id: []const u8,
-    workspace_id: []const u8,
-    title: ?[]const u8 = null,
-    folder_name: []const u8,
-    path: []const u8,
-    branch: []const u8,
-    base_branch: ?[]const u8 = null,
-    target_branch: ?[]const u8 = null,
-    state: []const u8,
-    order_index: i64 = 0,
-    last_active_tab_id: ?[]const u8 = null,
-    last_error: ?[]const u8 = null,
-    created_by: []const u8 = "tau",
-};
-
-pub const WorktreeRow = struct {
-    id: []u8,
-    workspace_id: []u8,
-    title: ?[]u8,
-    folder_name: []u8,
-    path: []u8,
-    branch: []u8,
-    base_branch: ?[]u8,
-    target_branch: ?[]u8,
-    state: []u8,
-    order_index: i64,
-    last_active_tab_id: ?[]u8,
-    last_error: ?[]u8,
-    created_by: []u8,
-    created_at: []u8,
-    updated_at: []u8,
-    archived_at: ?[]u8,
-
-    pub fn deinit(self: *WorktreeRow, allocator: std.mem.Allocator) void {
-        allocator.free(self.id);
-        allocator.free(self.workspace_id);
-        if (self.title) |value| allocator.free(value);
-        allocator.free(self.folder_name);
-        allocator.free(self.path);
-        allocator.free(self.branch);
-        if (self.base_branch) |value| allocator.free(value);
-        if (self.target_branch) |value| allocator.free(value);
-        allocator.free(self.state);
-        if (self.last_active_tab_id) |value| allocator.free(value);
-        if (self.last_error) |value| allocator.free(value);
-        allocator.free(self.created_by);
-        allocator.free(self.created_at);
-        allocator.free(self.updated_at);
-        if (self.archived_at) |value| allocator.free(value);
-        self.* = undefined;
-    }
-};
-
-fn normalizeFilterRootPathAlloc(allocator: std.mem.Allocator, root_path: ?[]const u8) !?[]u8 {
-    const value = root_path orelse return null;
-    const trimmed = std.mem.trim(u8, value, " \t\r\n");
-    if (trimmed.len == 0) return null;
-
-    var end = trimmed.len;
-    while (end > 1 and trimmed[end - 1] == '/') end -= 1;
-    return try allocator.dupe(u8, trimmed[0..end]);
-}
-
-fn sqliteLikeEscapeAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
-    var escaped: std.ArrayList(u8) = .empty;
-    errdefer escaped.deinit(allocator);
-
-    for (value) |byte| {
-        if (byte == '%' or byte == '_' or byte == '\\') {
-            try escaped.append(allocator, '\\');
-        }
-        try escaped.append(allocator, byte);
-    }
-
-    return escaped.toOwnedSlice(allocator);
-}
-
-fn rootPathLikePatternAlloc(allocator: std.mem.Allocator, root_path: ?[]const u8) !?[]u8 {
-    const value = root_path orelse return null;
-    const escaped = try sqliteLikeEscapeAlloc(allocator, value);
-    defer allocator.free(escaped);
-    return try std.fmt.allocPrint(allocator, "{s}/%", .{escaped});
-}
-
 pub const Database = struct {
     allocator: std.mem.Allocator,
     handle: sqlite.Db,
@@ -789,7 +280,6 @@ pub const Database = struct {
     pub fn open(allocator: std.mem.Allocator, path: []const u8) !Database {
         const path_z = try allocator.dupeZ(u8, path);
         defer allocator.free(path_z);
-
         var diags = sqlite.Diagnostics{};
         const handle = sqlite.Db.init(.{
             .mode = .{ .File = path_z },
@@ -800,29 +290,23 @@ pub const Database = struct {
             std.log.err("failed to open sqlite database {s}: {f}", .{ path, diags });
             return err;
         };
-
         return initOpened(allocator, handle);
     }
 
     pub fn openInMemory(allocator: std.mem.Allocator) !Database {
         var diags = sqlite.Diagnostics{};
-        const handle = sqlite.Db.init(.{
+        const handle = try sqlite.Db.init(.{
             .mode = .Memory,
             .open_flags = open_flags,
             .threading_mode = threading_mode,
             .diags = &diags,
-        }) catch |err| {
-            std.log.err("failed to open in-memory sqlite database: {f}", .{diags});
-            return err;
-        };
-
+        });
         return initOpened(allocator, handle);
     }
 
     fn initOpened(allocator: std.mem.Allocator, handle: sqlite.Db) !Database {
         var database = Database{ .allocator = allocator, .handle = handle };
         errdefer database.deinit();
-
         try database.configure();
         return database;
     }
@@ -834,44 +318,113 @@ pub const Database = struct {
 
     fn configure(self: *Database) !void {
         _ = try self.handle.one([32:0]u8, "PRAGMA journal_mode = WAL;", .{}, .{});
-        try self.handle.exec("PRAGMA foreign_keys = ON;", .{}, .{});
         _ = try self.handle.one(u32, "PRAGMA busy_timeout = 5000;", .{}, .{});
+        // Existing pre-mux databases are intentionally stripped in place; terminal rows/logs survive
+        // via ensureTerminalSessionsSchema() which rebuilds legacy terminal_sessions tables.
+        try self.handle.exec("PRAGMA foreign_keys = OFF;", .{}, .{});
+        try self.exec("DROP TABLE IF EXISTS terminal_search;");
+        try self.exec("DROP TABLE IF EXISTS agent_sessions;");
+        try self.exec("DROP TABLE IF EXISTS worktrees;");
+        try self.exec("DROP TABLE IF EXISTS workspaces;");
         try self.migrate();
+        try self.handle.exec("PRAGMA foreign_keys = ON;", .{}, .{});
     }
 
     pub fn migrate(self: *Database) !void {
         try self.exec(create_migrations_table_sql);
-        for (migrations, 0..) |migration, index| {
-            const version: i64 = @intCast(index + 1);
-            if (try self.hasMigration(version)) continue;
+        try self.ensureTerminalSessionsSchema();
+        try self.exec(ensure_terminal_search_sql);
+        try self.handle.exec(
+            "INSERT OR IGNORE INTO mux_schema_migrations(version) VALUES (1);",
+            .{},
+            .{},
+        );
+    }
 
-            try self.exec("BEGIN IMMEDIATE;");
-            self.exec(migration) catch |err| {
-                self.exec("ROLLBACK;") catch {};
-                return err;
-            };
-            self.markMigration(version) catch |err| {
-                self.exec("ROLLBACK;") catch {};
-                return err;
-            };
-            try self.exec("COMMIT;");
+    /// Create mux terminal_sessions, or rebuild a pre-mux table while copying compatible rows.
+    fn ensureTerminalSessionsSchema(self: *Database) !void {
+        const has_pre_mux = try self.tableExists("terminal_sessions_pre_mux");
+        if (has_pre_mux) {
+            // Prior open crashed mid-rebuild: pre_mux is the only complete copy — never drop it first.
+            try self.finishTerminalSessionsRebuildFromPreMux();
+            return;
         }
+
+        const has_main = try self.tableExists("terminal_sessions");
+        if (!has_main) {
+            try self.exec(terminal_sessions_table_sql);
+            try self.exec(terminal_sessions_indexes_sql);
+            return;
+        }
+
+        if (!try self.terminalSessionsNeedsRebuild()) {
+            try self.exec(terminal_sessions_indexes_sql);
+            return;
+        }
+
+        try self.rebuildTerminalSessionsFromLegacy();
+    }
+
+    fn rebuildTerminalSessionsFromLegacy(self: *Database) !void {
+        try self.exec("BEGIN IMMEDIATE;");
+        errdefer _ = self.exec("ROLLBACK;");
+        try self.exec("ALTER TABLE terminal_sessions RENAME TO terminal_sessions_pre_mux;");
+        try self.exec(terminal_sessions_table_sql);
+        try self.exec(copy_terminal_sessions_from_pre_mux_sql);
+        try self.exec("DROP TABLE terminal_sessions_pre_mux;");
+        try self.exec(terminal_sessions_indexes_sql);
+        try self.exec("COMMIT;");
+    }
+
+    fn finishTerminalSessionsRebuildFromPreMux(self: *Database) !void {
+        try self.exec("BEGIN IMMEDIATE;");
+        errdefer _ = self.exec("ROLLBACK;");
+        // Incomplete new table from a crash after rename/create — discard and rebuild from backup.
+        try self.exec("DROP TABLE IF EXISTS terminal_sessions;");
+        try self.exec(terminal_sessions_table_sql);
+        try self.exec(copy_terminal_sessions_from_pre_mux_sql);
+        try self.exec("DROP TABLE terminal_sessions_pre_mux;");
+        try self.exec(terminal_sessions_indexes_sql);
+        try self.exec("COMMIT;");
+    }
+
+    fn tableExists(self: *Database, comptime name: []const u8) !bool {
+        const count = try self.handle.one(
+            u64,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '" ++ name ++ "';",
+            .{},
+            .{},
+        );
+        return count > 0;
+    }
+
+    fn terminalSessionsNeedsRebuild(self: *Database) !bool {
+        // Pre-mux tables kept workflow columns that CREATE IF NOT EXISTS never removed. New upserts
+        // omit those fields and fail when they were NOT NULL / FK-backed on the retained schema.
+        const legacy_columns = try self.handle.one(
+            u64,
+            "SELECT COUNT(*) FROM pragma_table_info('terminal_sessions') WHERE name IN ('workspace_id', 'worktree_id');",
+            .{},
+            .{},
+        );
+        if (legacy_columns > 0) return true;
+
+        // Also rebuild if a required mux column is missing (partial / foreign schemas).
+        const required_columns = try self.handle.one(
+            u64,
+            "SELECT COUNT(*) FROM pragma_table_info('terminal_sessions') WHERE name IN ('terminal_id', 'event_log_path', 'last_seq', 'snapshot_path', 'snapshot_seq', 'started_at');",
+            .{},
+            .{},
+        );
+        return required_columns < 6;
     }
 
     pub fn recordTerminalSession(self: *Database, record: TerminalSessionRecord) !void {
         var stmt = try self.handle.prepareDynamic(upsert_terminal_session_sql);
         defer stmt.deinit();
-
-        const last_seq: i64 = @intCast(record.last_seq);
-        const snapshot_seq: i64 = @intCast(record.snapshot_seq);
-        const snapshot_crc32: ?i64 = if (record.snapshot_crc32) |value| @intCast(value) else null;
-        const snapshot_size: ?i64 = if (record.snapshot_size) |value| @intCast(value) else null;
-
         try stmt.exec(.{}, .{
             record.id,
             record.terminal_id,
-            record.workspace_id,
-            record.worktree_id,
             record.cwd,
             record.argv_json,
             record.status,
@@ -881,24 +434,22 @@ pub const Database = struct {
             record.rows,
             record.title,
             record.event_log_path,
-            last_seq,
+            @as(i64, @intCast(record.last_seq)),
             record.snapshot_path,
-            snapshot_seq,
-            snapshot_crc32,
-            snapshot_size,
+            @as(i64, @intCast(record.snapshot_seq)),
+            if (record.snapshot_crc32) |value| @as(i64, @intCast(value)) else null,
+            if (record.snapshot_size) |value| @as(i64, @intCast(value)) else null,
         });
     }
 
     pub fn recordTerminalEnded(self: *Database, record: TerminalEndedRecord) !void {
         var stmt = try self.handle.prepareDynamic(update_terminal_ended_sql);
         defer stmt.deinit();
-
-        const last_seq: i64 = @intCast(record.last_seq);
         try stmt.exec(.{}, .{
             record.status,
             record.cols,
             record.rows,
-            last_seq,
+            @as(i64, @intCast(record.last_seq)),
             record.exit_code,
             record.signal,
             record.id,
@@ -908,743 +459,309 @@ pub const Database = struct {
     pub fn findTerminalSessionById(self: *Database, allocator: std.mem.Allocator, id: []const u8) !?TerminalSessionLookup {
         var stmt = try self.handle.prepareDynamic(find_terminal_by_id_sql);
         defer stmt.deinit();
-        return try stmt.oneAlloc(TerminalSessionLookup, allocator, .{}, .{id});
+        return stmt.oneAlloc(TerminalSessionLookup, allocator, .{}, .{id});
     }
 
     pub fn findTerminalSessionByTerminalId(self: *Database, allocator: std.mem.Allocator, terminal_id: []const u8) !?TerminalSessionLookup {
         var stmt = try self.handle.prepareDynamic(find_terminal_by_terminal_id_sql);
         defer stmt.deinit();
-        return try stmt.oneAlloc(TerminalSessionLookup, allocator, .{}, .{terminal_id});
+        return stmt.oneAlloc(TerminalSessionLookup, allocator, .{}, .{terminal_id});
     }
 
     pub fn listTerminalEventLogs(self: *Database, allocator: std.mem.Allocator) ![]TerminalEventLogRef {
         var stmt = try self.handle.prepareDynamic(list_terminal_event_logs_sql);
         defer stmt.deinit();
         var iter = try stmt.iteratorAlloc(TerminalEventLogRef, allocator, .{});
-
         var refs: std.ArrayList(TerminalEventLogRef) = .empty;
         errdefer {
             for (refs.items) |*item| item.deinit(allocator);
             refs.deinit(allocator);
         }
-
         while (try iter.nextAlloc(allocator, .{})) |row_value| {
             var row = row_value;
             errdefer row.deinit(allocator);
             if (refs.items.len >= event_log_refs_max) return error.TooManyEventLogRefs;
             try refs.append(allocator, row);
         }
-
         return refs.toOwnedSlice(allocator);
     }
 
     pub fn clearTerminalHistoryMetadata(self: *Database, session_id: []const u8) !void {
-        {
-            var stmt = try self.handle.prepareDynamic(delete_terminal_search_sql);
-            defer stmt.deinit();
-            try stmt.exec(.{}, .{session_id});
-        }
-        {
-            var stmt = try self.handle.prepareDynamic(clear_terminal_history_metadata_sql);
-            defer stmt.deinit();
-            try stmt.exec(.{}, .{session_id});
-        }
+        try self.deleteSearch(session_id);
+        var stmt = try self.handle.prepareDynamic(clear_terminal_history_metadata_sql);
+        defer stmt.deinit();
+        try stmt.exec(.{}, .{session_id});
     }
 
     pub fn deleteTerminalSessionMetadata(self: *Database, session_id: []const u8) !void {
-        {
-            var stmt = try self.handle.prepareDynamic(delete_terminal_search_sql);
-            defer stmt.deinit();
-            try stmt.exec(.{}, .{session_id});
-        }
-        {
-            var stmt = try self.handle.prepareDynamic(delete_terminal_session_sql);
-            defer stmt.deinit();
-            try stmt.exec(.{}, .{session_id});
-        }
+        try self.deleteSearch(session_id);
+        var stmt = try self.handle.prepareDynamic(delete_terminal_session_sql);
+        defer stmt.deinit();
+        try stmt.exec(.{}, .{session_id});
     }
 
-    pub fn recordAgentSession(self: *Database, record: AgentSessionRecord) !void {
-        var stmt = try self.handle.prepareDynamic(upsert_agent_session_sql);
+    fn deleteSearch(self: *Database, session_id: []const u8) !void {
+        var stmt = try self.handle.prepareDynamic(delete_terminal_search_sql);
         defer stmt.deinit();
-
-        try stmt.exec(.{}, .{
-            record.id,
-            record.terminal_session_id,
-            record.provider,
-            record.native_session_id,
-            record.original_argv_json,
-            record.resume_argv_json,
-            record.cwd,
-            record.transcript_path,
-            record.model,
-            record.title,
-            record.status,
-        });
-    }
-
-    pub fn findAgentResumeForTerminal(self: *Database, allocator: std.mem.Allocator, terminal_session_id: []const u8) !?AgentResumeLookup {
-        var stmt = try self.handle.prepareDynamic(find_agent_resume_by_terminal_sql);
-        defer stmt.deinit();
-        return try stmt.oneAlloc(AgentResumeLookup, allocator, .{}, .{terminal_session_id});
-    }
-
-    pub fn listPiThreads(self: *Database, allocator: std.mem.Allocator, filter: PiThreadListFilter) ![]PiThreadRow {
-        if (filter.limit > search_results_max) return error.SearchLimitTooLarge;
-
-        const normalized_root_path = try normalizeFilterRootPathAlloc(allocator, filter.root_path);
-        defer if (normalized_root_path) |value| allocator.free(value);
-        const root_path_like = try rootPathLikePatternAlloc(allocator, normalized_root_path);
-        defer if (root_path_like) |value| allocator.free(value);
-
-        var stmt = try self.handle.prepareDynamic(list_pi_threads_sql);
-        defer stmt.deinit();
-        var iter = try stmt.iteratorAlloc(PiThreadRow, allocator, .{
-            filter.workspace_id,
-            filter.workspace_id,
-            filter.worktree_id,
-            filter.worktree_id,
-            normalized_root_path,
-            normalized_root_path,
-            normalized_root_path,
-            normalized_root_path,
-            root_path_like,
-            filter.limit,
-        });
-
-        var rows: std.ArrayList(PiThreadRow) = .empty;
-        errdefer {
-            for (rows.items) |*row| row.deinit(allocator);
-            rows.deinit(allocator);
-        }
-
-        while (try iter.nextAlloc(allocator, .{})) |row_value| {
-            var row = row_value;
-            errdefer row.deinit(allocator);
-            if (rows.items.len >= search_results_max) return error.TooManySearchResults;
-            try rows.append(allocator, row);
-        }
-
-        return rows.toOwnedSlice(allocator);
+        try stmt.exec(.{}, .{session_id});
     }
 
     pub fn recordTerminalSearch(self: *Database, record: TerminalSearchRecord) !void {
-        {
-            var stmt = try self.handle.prepareDynamic(delete_terminal_search_sql);
-            defer stmt.deinit();
-            try stmt.exec(.{}, .{record.terminal_session_id});
-        }
-        {
-            var stmt = try self.handle.prepareDynamic(insert_terminal_search_sql);
-            defer stmt.deinit();
-            try stmt.exec(.{}, .{
-                record.terminal_session_id,
-                record.workspace_id,
-                record.title,
-                record.excerpt,
-            });
-        }
+        try self.deleteSearch(record.terminal_session_id);
+        var stmt = try self.handle.prepareDynamic(insert_terminal_search_sql);
+        defer stmt.deinit();
+        try stmt.exec(.{}, .{ record.terminal_session_id, record.title, record.excerpt });
     }
 
     pub fn searchTerminalExcerpts(self: *Database, allocator: std.mem.Allocator, query: []const u8, limit: u32) ![]TerminalSearchResult {
         if (limit > search_results_max) return error.SearchLimitTooLarge;
-
         var stmt = try self.handle.prepareDynamic(search_terminal_excerpts_sql);
         defer stmt.deinit();
         var iter = try stmt.iteratorAlloc(TerminalSearchResult, allocator, .{ query, limit });
-
         var results: std.ArrayList(TerminalSearchResult) = .empty;
         errdefer {
             for (results.items) |*item| item.deinit(allocator);
             results.deinit(allocator);
         }
-
         while (try iter.nextAlloc(allocator, .{})) |row_value| {
             var row = row_value;
             errdefer row.deinit(allocator);
             if (results.items.len >= search_results_max) return error.TooManySearchResults;
             try results.append(allocator, row);
         }
-
         return results.toOwnedSlice(allocator);
     }
 
-    pub fn insertWorkspace(self: *Database, record: WorkspaceRecord) !void {
-        var stmt = try self.handle.prepareDynamic(insert_workspace_sql);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{
-            record.id,
-            record.name,
-            record.root_path,
-            record.git_common_dir,
-            record.workspace_slug,
-            record.default_branch,
-            record.order_index,
-            record.last_active_tab_id,
-        });
-    }
-
-    pub fn updateWorkspace(self: *Database, record: WorkspaceRecord) !void {
-        var stmt = try self.handle.prepareDynamic(update_workspace_sql);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{
-            record.name,
-            record.git_common_dir,
-            record.workspace_slug,
-            record.default_branch,
-            record.order_index,
-            record.last_active_tab_id,
-            record.id,
-        });
-    }
-
-    pub fn reactivateWorkspace(self: *Database, record: WorkspaceRecord) !void {
-        var stmt = try self.handle.prepareDynamic(reactivate_workspace_sql);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{
-            record.name,
-            record.git_common_dir,
-            record.workspace_slug,
-            record.default_branch,
-            record.order_index,
-            record.last_active_tab_id,
-            record.id,
-        });
-    }
-
-    pub fn archiveWorkspace(self: *Database, workspace_id: []const u8) !void {
-        var stmt = try self.handle.prepareDynamic(archive_workspace_sql);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{workspace_id});
-    }
-
-    pub fn findWorkspaceById(self: *Database, allocator: std.mem.Allocator, workspace_id: []const u8) !?WorkspaceRow {
-        var stmt = try self.handle.prepareDynamic(find_workspace_by_id_sql);
-        defer stmt.deinit();
-        return try stmt.oneAlloc(WorkspaceRow, allocator, .{}, .{workspace_id});
-    }
-
-    pub fn findWorkspaceByRoot(self: *Database, allocator: std.mem.Allocator, root_path: []const u8) !?WorkspaceRow {
-        var stmt = try self.handle.prepareDynamic(find_workspace_by_root_sql);
-        defer stmt.deinit();
-        return try stmt.oneAlloc(WorkspaceRow, allocator, .{}, .{root_path});
-    }
-
-    pub fn listWorkspaces(self: *Database, allocator: std.mem.Allocator) ![]WorkspaceRow {
-        var stmt = try self.handle.prepareDynamic(list_workspaces_sql);
-        defer stmt.deinit();
-        var iter = try stmt.iteratorAlloc(WorkspaceRow, allocator, .{});
-
-        var rows: std.ArrayList(WorkspaceRow) = .empty;
-        errdefer {
-            for (rows.items) |*row| row.deinit(allocator);
-            rows.deinit(allocator);
-        }
-
-        while (try iter.nextAlloc(allocator, .{})) |row_value| {
-            var row = row_value;
-            errdefer row.deinit(allocator);
-            try rows.append(allocator, row);
-        }
-
-        return rows.toOwnedSlice(allocator);
-    }
-
-    pub fn nextWorkspaceOrder(self: *Database) !i64 {
-        return (try self.handle.one(i64, next_workspace_order_sql, .{}, .{})) orelse error.SqliteUnexpectedNull;
-    }
-
-    pub fn reorderWorkspace(self: *Database, workspace_id: []const u8, order_index: i64) !void {
-        var stmt = try self.handle.prepareDynamic(reorder_workspace_sql);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{ order_index, workspace_id });
-    }
-
-    pub fn insertWorktree(self: *Database, record: WorktreeRecord) !void {
-        if (try self.findReusableArchivedWorktree(record)) |archived_row| {
-            var row = archived_row;
-            defer row.deinit(self.allocator);
-            try self.reactivateWorktree(row.id, record);
-            return;
-        }
-
-        var stmt = try self.handle.prepareDynamic(insert_worktree_sql);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{
-            record.id,
-            record.workspace_id,
-            record.title,
-            record.folder_name,
-            record.path,
-            record.branch,
-            record.base_branch,
-            record.target_branch,
-            record.state,
-            record.order_index,
-            record.last_active_tab_id,
-            record.last_error,
-            record.created_by,
-        });
-    }
-
-    fn reactivateWorktree(self: *Database, worktree_id: []const u8, record: WorktreeRecord) !void {
-        var stmt = try self.handle.prepareDynamic(reactivate_worktree_sql);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{
-            record.workspace_id,
-            record.title,
-            record.folder_name,
-            record.path,
-            record.branch,
-            record.base_branch,
-            record.target_branch,
-            record.state,
-            record.order_index,
-            record.last_active_tab_id,
-            record.last_error,
-            record.created_by,
-            worktree_id,
-        });
-    }
-
-    fn findReusableArchivedWorktree(self: *Database, record: WorktreeRecord) !?WorktreeRow {
-        if (try self.findArchivedWorktreeByPath(record.path)) |row| return row;
-        if (try self.findArchivedWorktreeByFolder(record.workspace_id, record.folder_name)) |row| return row;
-        return try self.findArchivedWorktreeByBranch(record.workspace_id, record.branch);
-    }
-
-    fn findArchivedWorktreeByPath(self: *Database, path: []const u8) !?WorktreeRow {
-        var stmt = try self.handle.prepareDynamic(find_archived_worktree_by_path_sql);
-        defer stmt.deinit();
-        return try stmt.oneAlloc(WorktreeRow, self.allocator, .{}, .{path});
-    }
-
-    fn findArchivedWorktreeByFolder(self: *Database, workspace_id: []const u8, folder_name: []const u8) !?WorktreeRow {
-        var stmt = try self.handle.prepareDynamic(find_archived_worktree_by_folder_sql);
-        defer stmt.deinit();
-        return try stmt.oneAlloc(WorktreeRow, self.allocator, .{}, .{ workspace_id, folder_name });
-    }
-
-    fn findArchivedWorktreeByBranch(self: *Database, workspace_id: []const u8, branch: []const u8) !?WorktreeRow {
-        var stmt = try self.handle.prepareDynamic(find_archived_worktree_by_branch_sql);
-        defer stmt.deinit();
-        return try stmt.oneAlloc(WorktreeRow, self.allocator, .{}, .{ workspace_id, branch });
-    }
-
-    pub fn updateWorktreeState(self: *Database, worktree_id: []const u8, state: []const u8, last_error: ?[]const u8) !void {
-        var stmt = try self.handle.prepareDynamic(update_worktree_state_sql);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{ state, last_error, worktree_id });
-    }
-
-    pub fn updateWorktreeGit(self: *Database, worktree_id: []const u8, branch: []const u8, state: []const u8) !void {
-        var stmt = try self.handle.prepareDynamic(update_worktree_git_sql);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{ branch, state, worktree_id });
-    }
-
-    pub fn archiveWorktree(self: *Database, worktree_id: []const u8) !void {
-        var stmt = try self.handle.prepareDynamic(archive_worktree_sql);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{worktree_id});
-    }
-
-    pub fn archiveWorktreesForWorkspace(self: *Database, workspace_id: []const u8) !void {
-        var stmt = try self.handle.prepareDynamic(archive_worktrees_for_workspace_sql);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{workspace_id});
-    }
-
-    pub fn findWorktreeById(self: *Database, allocator: std.mem.Allocator, worktree_id: []const u8) !?WorktreeRow {
-        var stmt = try self.handle.prepareDynamic(find_worktree_by_id_sql);
-        defer stmt.deinit();
-        return try stmt.oneAlloc(WorktreeRow, allocator, .{}, .{worktree_id});
-    }
-
-    pub fn findWorktreeByPath(self: *Database, allocator: std.mem.Allocator, path: []const u8) !?WorktreeRow {
-        var stmt = try self.handle.prepareDynamic(find_worktree_by_path_sql);
-        defer stmt.deinit();
-        return try stmt.oneAlloc(WorktreeRow, allocator, .{}, .{path});
-    }
-
-    pub fn listWorktreesForWorkspace(self: *Database, allocator: std.mem.Allocator, workspace_id: []const u8) ![]WorktreeRow {
-        var stmt = try self.handle.prepareDynamic(list_worktrees_for_workspace_sql);
-        defer stmt.deinit();
-        var iter = try stmt.iteratorAlloc(WorktreeRow, allocator, .{workspace_id});
-
-        var rows: std.ArrayList(WorktreeRow) = .empty;
-        errdefer {
-            for (rows.items) |*row| row.deinit(allocator);
-            rows.deinit(allocator);
-        }
-
-        while (try iter.nextAlloc(allocator, .{})) |row_value| {
-            var row = row_value;
-            errdefer row.deinit(allocator);
-            try rows.append(allocator, row);
-        }
-
-        return rows.toOwnedSlice(allocator);
-    }
-
-    pub fn nextWorktreeOrder(self: *Database, workspace_id: []const u8) !i64 {
-        var stmt = try self.handle.prepareDynamic(next_worktree_order_sql);
-        defer stmt.deinit();
-        return (try stmt.one(i64, .{}, .{workspace_id})) orelse error.SqliteUnexpectedNull;
-    }
-
-    pub fn reorderWorktree(self: *Database, worktree_id: []const u8, order_index: i64) !void {
-        var stmt = try self.handle.prepareDynamic(reorder_worktree_sql);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{ order_index, worktree_id });
-    }
-
-    pub fn worktreePathExists(self: *Database, path: []const u8) !bool {
-        var stmt = try self.handle.prepareDynamic(worktree_path_exists_sql);
-        defer stmt.deinit();
-        return (try stmt.one(u8, .{}, .{path})) != null;
-    }
-
-    pub fn archivedWorktreePathExists(self: *Database, path: []const u8) !bool {
-        var stmt = try self.handle.prepareDynamic(archived_worktree_path_exists_sql);
-        defer stmt.deinit();
-        return (try stmt.one(u8, .{}, .{path})) != null;
-    }
-
-    pub fn worktreeBranchExists(self: *Database, workspace_id: []const u8, branch: []const u8) !bool {
-        var stmt = try self.handle.prepareDynamic(worktree_branch_exists_sql);
-        defer stmt.deinit();
-        return (try stmt.one(u8, .{}, .{ workspace_id, branch })) != null;
-    }
-
-    pub fn worktreeFolderExists(self: *Database, workspace_id: []const u8, folder_name: []const u8) !bool {
-        var stmt = try self.handle.prepareDynamic(worktree_folder_exists_sql);
-        defer stmt.deinit();
-        return (try stmt.one(u8, .{}, .{ workspace_id, folder_name })) != null;
-    }
-
-    pub fn countTerminalSessions(self: *Database) !u64 {
-        return (try self.handle.one(u64, "SELECT COUNT(*) FROM terminal_sessions;", .{}, .{})) orelse error.SqliteUnexpectedNull;
-    }
-
-    pub fn countWorkspaces(self: *Database) !u64 {
-        return (try self.handle.one(u64, count_workspaces_sql, .{}, .{})) orelse error.SqliteUnexpectedNull;
-    }
-
-    pub fn countWorktrees(self: *Database) !u64 {
-        return (try self.handle.one(u64, count_worktrees_sql, .{}, .{})) orelse error.SqliteUnexpectedNull;
-    }
-
-    pub fn countTerminalSessionsByStatus(self: *Database, status: []const u8) !u64 {
-        var stmt = try self.handle.prepare("SELECT COUNT(*) FROM terminal_sessions WHERE status = ?;");
-        defer stmt.deinit();
-        return (try stmt.one(u64, .{}, .{status})) orelse error.SqliteUnexpectedNull;
-    }
-
-    pub fn countAgentSessions(self: *Database) !u64 {
-        return (try self.handle.one(u64, "SELECT COUNT(*) FROM agent_sessions;", .{}, .{})) orelse error.SqliteUnexpectedNull;
-    }
-
-    pub fn countSearchRows(self: *Database) !u64 {
-        return (try self.handle.one(u64, "SELECT COUNT(*) FROM terminal_search;", .{}, .{})) orelse error.SqliteUnexpectedNull;
-    }
-
     fn exec(self: *Database, sql: []const u8) !void {
-        try self.handle.execMulti(sql, .{});
-    }
-
-    fn hasMigration(self: *Database, version: i64) !bool {
-        var stmt = try self.handle.prepare("SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1;");
-        defer stmt.deinit();
-        return (try stmt.one(u8, .{}, .{version})) != null;
-    }
-
-    fn markMigration(self: *Database, version: i64) !void {
-        var stmt = try self.handle.prepare("INSERT INTO schema_migrations(version) VALUES (?);");
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{version});
+        try self.handle.execDynamic(sql, .{}, .{});
     }
 };
 
-test "sqlite migrations are registered in order" {
-    try std.testing.expectEqual(@as(usize, 5), migrations.len);
-    try std.testing.expect(std.mem.indexOf(u8, migrations[0], "terminal_sessions") != null);
-}
-
-test "sqlite database applies migrations and records terminal sessions" {
+test "sqlite database stores mux terminal sessions and FTS excerpts" {
     var database = try Database.openInMemory(std.testing.allocator);
     defer database.deinit();
-
     try database.recordTerminalSession(.{
         .id = "session-1",
         .terminal_id = "terminal-1",
         .cwd = "/tmp",
         .argv_json = "[\"bash\"]",
         .status = "live",
-        .pid = 123,
         .cols = 80,
         .rows = 24,
         .event_log_path = "/tmp/events.tauev",
         .last_seq = 1,
     });
-
-    try std.testing.expectEqual(@as(u64, 1), try database.countTerminalSessions());
-    try std.testing.expectEqual(@as(u64, 1), try database.countTerminalSessionsByStatus("live"));
-
-    try database.recordTerminalEnded(.{
-        .id = "session-1",
-        .status = "exited",
-        .cols = 80,
-        .rows = 24,
-        .last_seq = 2,
-        .exit_code = 0,
-        .signal = 0,
-    });
-
-    try std.testing.expectEqual(@as(u64, 0), try database.countTerminalSessionsByStatus("live"));
-    try std.testing.expectEqual(@as(u64, 1), try database.countTerminalSessionsByStatus("exited"));
-}
-
-test "sqlite database looks up terminal restart metadata" {
-    var database = try Database.openInMemory(std.testing.allocator);
-    defer database.deinit();
-
-    try database.recordTerminalSession(.{
-        .id = "session-restart",
-        .terminal_id = "terminal-restart",
-        .cwd = "/project",
-        .argv_json = "[\"bash\",\"-lc\",\"echo ok\"]",
-        .status = "detached",
-        .cols = 100,
-        .rows = 30,
-        .event_log_path = "/tmp/restart/events.tauev",
-        .last_seq = 42,
-    });
-
-    var by_id = (try database.findTerminalSessionById(std.testing.allocator, "session-restart")).?;
-    defer by_id.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("terminal-restart", by_id.terminal_id);
-    try std.testing.expectEqualStrings("/project", by_id.cwd.?);
-    try std.testing.expectEqual(@as(u16, 100), by_id.cols);
-    try std.testing.expectEqual(@as(u64, 42), by_id.last_seq);
-
-    var by_terminal = (try database.findTerminalSessionByTerminalId(std.testing.allocator, "terminal-restart")).?;
-    defer by_terminal.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("session-restart", by_terminal.id);
-}
-
-test "sqlite database records agent resume metadata and FTS excerpts" {
-    var database = try Database.openInMemory(std.testing.allocator);
-    defer database.deinit();
-
-    try database.recordTerminalSession(.{
-        .id = "session-agent",
-        .terminal_id = "terminal-agent",
-        .workspace_id = "workspace-agent",
-        .cwd = "/repo/tau",
-        .status = "live",
-        .cols = 80,
-        .rows = 24,
-        .event_log_path = "/tmp/agent/events.tauev",
-        .last_seq = 1,
-    });
-
-    try database.recordAgentSession(.{
-        .id = "agent-session-agent-pi",
-        .terminal_session_id = "session-agent",
-        .provider = "pi",
-        .native_session_id = "native-123",
-        .original_argv_json = "[\"pi\"]",
-        .resume_argv_json = "[\"pi\",\"--session\",\"native-123\"]",
-        .status = "resumable",
-    });
-
-    try std.testing.expectEqual(@as(u64, 1), try database.countAgentSessions());
-    var agent_resume = (try database.findAgentResumeForTerminal(std.testing.allocator, "session-agent")).?;
-    defer agent_resume.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("pi", agent_resume.provider);
-    try std.testing.expectEqualStrings("native-123", agent_resume.native_session_id);
-
-    const pi_threads = try database.listPiThreads(std.testing.allocator, .{ .root_path = "/repo" });
-    defer {
-        for (pi_threads) |*thread| thread.deinit(std.testing.allocator);
-        std.testing.allocator.free(pi_threads);
-    }
-    try std.testing.expectEqual(@as(usize, 1), pi_threads.len);
-    try std.testing.expectEqualStrings("session-agent", pi_threads[0].terminal_session_id);
-    try std.testing.expectEqualStrings("native-123", pi_threads[0].native_session_id.?);
-    try std.testing.expectEqualStrings("[\"pi\",\"--session\",\"native-123\"]", pi_threads[0].resume_argv_json.?);
-
-    try database.recordTerminalSession(.{
-        .id = "session-agent-like",
-        .terminal_id = "terminal-agent-like",
-        .cwd = "/repo/userXname/project",
-        .status = "live",
-        .cols = 80,
-        .rows = 24,
-        .event_log_path = "/tmp/agent-like/events.tauev",
-        .last_seq = 1,
-    });
-    try database.recordAgentSession(.{
-        .id = "agent-session-agent-like",
-        .terminal_session_id = "session-agent-like",
-        .provider = "pi",
-        .original_argv_json = "[\"pi\"]",
-        .resume_argv_json = "[\"pi\"]",
-        .status = "resumable",
-    });
-
-    const escaped_pi_threads = try database.listPiThreads(std.testing.allocator, .{ .root_path = "/repo/user_name" });
-    defer {
-        for (escaped_pi_threads) |*thread| thread.deinit(std.testing.allocator);
-        std.testing.allocator.free(escaped_pi_threads);
-    }
-    try std.testing.expectEqual(@as(usize, 0), escaped_pi_threads.len);
+    var row = (try database.findTerminalSessionById(std.testing.allocator, "session-1")).?;
+    defer row.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("terminal-1", row.terminal_id);
 
     try database.recordTerminalSearch(.{
-        .terminal_session_id = "session-agent",
-        .title = "Agent",
-        .excerpt = "build failed with uniqueerror",
+        .terminal_session_id = "session-1",
+        .title = "shell",
+        .excerpt = "unique searchable output",
     });
-    try std.testing.expectEqual(@as(u64, 1), try database.countSearchRows());
-
-    const results = try database.searchTerminalExcerpts(std.testing.allocator, "uniqueerror", 10);
+    const results = try database.searchTerminalExcerpts(std.testing.allocator, "unique", 10);
     defer {
         for (results) |*result| result.deinit(std.testing.allocator);
         std.testing.allocator.free(results);
     }
     try std.testing.expectEqual(@as(usize, 1), results.len);
-    try std.testing.expectEqualStrings("session-agent", results[0].terminal_session_id);
-
-    try database.clearTerminalHistoryMetadata("session-agent");
-    try std.testing.expectEqual(@as(u64, 0), try database.countSearchRows());
 }
 
-test "sqlite database records workspaces and worktrees" {
+test "fresh mux schema contains no workflow tables" {
     var database = try Database.openInMemory(std.testing.allocator);
     defer database.deinit();
-
-    const branch_unique_index_count = (try database.handle.one(
+    const workflow_count = try database.handle.one(
         u64,
-        "SELECT COUNT(*) FROM pragma_index_list('worktrees') WHERE name = 'idx_worktrees_workspace_branch' AND \"unique\" = 1;",
+        "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('workspaces','worktrees','agent_sessions');",
         .{},
         .{},
-    )) orelse error.SqliteUnexpectedNull;
-    try std.testing.expectEqual(@as(u64, 1), branch_unique_index_count);
+    );
+    try std.testing.expectEqual(@as(u64, 0), workflow_count);
+}
 
-    try database.insertWorkspace(.{
-        .id = "workspace-1",
-        .name = "tau",
-        .root_path = "/repo/tau",
-        .git_common_dir = "/repo/tau/.git",
-        .workspace_slug = "tau",
-        .default_branch = "main",
-        .order_index = 0,
-    });
-    try std.testing.expectEqual(@as(u64, 1), try database.countWorkspaces());
+test "migrates legacy terminal_sessions with workspace columns" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}/legacy.sqlite", .{tmp.sub_path});
+    defer std.testing.allocator.free(path);
 
-    var workspace = (try database.findWorkspaceById(std.testing.allocator, "workspace-1")).?;
-    defer workspace.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("/repo/tau", workspace.root_path);
-
-    try database.insertWorktree(.{
-        .id = "worktree-1",
-        .workspace_id = "workspace-1",
-        .title = "New worktree",
-        .folder_name = "luminous-galileo-a13f",
-        .path = "/tmp/luminous-galileo-a13f",
-        .branch = "luminous-galileo-a13f",
-        .base_branch = "main",
-        .target_branch = "main",
-        .state = "creating",
-        .order_index = 0,
-    });
-    try database.updateWorktreeGit("worktree-1", "renamed", "active");
-    try std.testing.expectEqual(@as(u64, 1), try database.countWorktrees());
-    try std.testing.expect(try database.worktreePathExists("/tmp/luminous-galileo-a13f"));
-    try std.testing.expect(try database.worktreeBranchExists("workspace-1", "renamed"));
-
-    const worktrees = try database.listWorktreesForWorkspace(std.testing.allocator, "workspace-1");
-    defer {
-        for (worktrees) |*row| row.deinit(std.testing.allocator);
-        std.testing.allocator.free(worktrees);
+    {
+        const path_z = try std.testing.allocator.dupeZ(u8, path);
+        defer std.testing.allocator.free(path_z);
+        var diags = sqlite.Diagnostics{};
+        var handle = try sqlite.Db.init(.{
+            .mode = .{ .File = path_z },
+            .open_flags = .{ .write = true, .create = true },
+            .threading_mode = .MultiThread,
+            .diags = &diags,
+        });
+        defer handle.deinit();
+        // Pre-mux schema: required workspace_id makes mux upserts fail without rebuild.
+        try handle.execDynamic(
+            \\CREATE TABLE terminal_sessions (
+            \\    id TEXT PRIMARY KEY,
+            \\    terminal_id TEXT NOT NULL,
+            \\    workspace_id TEXT NOT NULL,
+            \\    cwd TEXT,
+            \\    argv_json TEXT,
+            \\    status TEXT NOT NULL,
+            \\    daemon_id TEXT,
+            \\    pid INTEGER,
+            \\    cols INTEGER NOT NULL,
+            \\    rows INTEGER NOT NULL,
+            \\    title TEXT,
+            \\    event_log_path TEXT NOT NULL,
+            \\    last_seq INTEGER NOT NULL DEFAULT 0,
+            \\    snapshot_path TEXT,
+            \\    snapshot_seq INTEGER NOT NULL DEFAULT 0,
+            \\    snapshot_crc32 INTEGER,
+            \\    snapshot_size INTEGER,
+            \\    scrollback_excerpt TEXT,
+            \\    started_at TEXT NOT NULL,
+            \\    last_activity_at TEXT,
+            \\    ended_at TEXT,
+            \\    exit_code INTEGER,
+            \\    signal INTEGER,
+            \\    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            \\    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            \\);
+            ,
+            .{},
+            .{},
+        );
+        try handle.execDynamic(
+            \\INSERT INTO terminal_sessions (
+            \\    id, terminal_id, workspace_id, cwd, status, cols, rows,
+            \\    event_log_path, last_seq, started_at
+            \\) VALUES (
+            \\    'legacy-1', 'term-1', 'ws-1', '/tmp', 'exited', 80, 24,
+            \\    '/tmp/legacy.tauev', 3, datetime('now')
+            \\);
+            ,
+            .{},
+            .{},
+        );
     }
-    try std.testing.expectEqual(@as(usize, 1), worktrees.len);
-    try std.testing.expectEqualStrings("active", worktrees[0].state);
-    try std.testing.expectEqualStrings("renamed", worktrees[0].branch);
 
-    try database.archiveWorktree("worktree-1");
-    const remaining = try database.listWorktreesForWorkspace(std.testing.allocator, "workspace-1");
-    defer std.testing.allocator.free(remaining);
-    try std.testing.expectEqual(@as(usize, 0), remaining.len);
-    try std.testing.expect(!try database.worktreePathExists("/tmp/luminous-galileo-a13f"));
-    try std.testing.expect(!try database.worktreeFolderExists("workspace-1", "luminous-galileo-a13f"));
+    var database = try Database.open(std.testing.allocator, path);
+    defer database.deinit();
 
-    try database.insertWorktree(.{
-        .id = "worktree-2",
-        .workspace_id = "workspace-1",
-        .title = "Recreated worktree",
-        .folder_name = "luminous-galileo-a13f",
-        .path = "/tmp/luminous-galileo-a13f",
-        .branch = "luminous-galileo-a13f",
-        .state = "untracked",
-        .order_index = 1,
-    });
-    var recreated = (try database.findWorktreeByPath(std.testing.allocator, "/tmp/luminous-galileo-a13f")).?;
-    defer recreated.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(u64, 1), try database.countWorktrees());
-    try std.testing.expectEqualStrings("worktree-1", recreated.id);
-    try std.testing.expectEqualStrings("untracked", recreated.state);
+    const legacy_columns = try database.handle.one(
+        u64,
+        "SELECT COUNT(*) FROM pragma_table_info('terminal_sessions') WHERE name = 'workspace_id';",
+        .{},
+        .{},
+    );
+    try std.testing.expectEqual(@as(u64, 0), legacy_columns);
 
-    try database.archiveWorkspace("workspace-1");
-    var archived_workspace = (try database.findWorkspaceById(std.testing.allocator, "workspace-1")).?;
-    defer archived_workspace.deinit(std.testing.allocator);
-    try std.testing.expect(archived_workspace.archived_at != null);
-    try database.updateWorkspace(.{
-        .id = "workspace-1",
-        .name = "tau",
-        .root_path = "/repo/tau",
-        .git_common_dir = "/repo/tau/.git",
-        .workspace_slug = "tau",
-        .default_branch = "main",
-        .order_index = 0,
-    });
-    var still_archived_workspace = (try database.findWorkspaceById(std.testing.allocator, "workspace-1")).?;
-    defer still_archived_workspace.deinit(std.testing.allocator);
-    try std.testing.expect(still_archived_workspace.archived_at != null);
-    try database.reactivateWorkspace(.{
-        .id = "workspace-1",
-        .name = "tau",
-        .root_path = "/repo/tau",
-        .git_common_dir = "/repo/tau/.git",
-        .workspace_slug = "tau",
-        .default_branch = "main",
-        .order_index = 0,
-    });
-    var reactivated_workspace = (try database.findWorkspaceById(std.testing.allocator, "workspace-1")).?;
-    defer reactivated_workspace.deinit(std.testing.allocator);
-    try std.testing.expect(reactivated_workspace.archived_at == null);
-    try database.archiveWorktreesForWorkspace("workspace-1");
-    const archived_worktrees = try database.listWorktreesForWorkspace(std.testing.allocator, "workspace-1");
-    defer std.testing.allocator.free(archived_worktrees);
-    try std.testing.expectEqual(@as(usize, 0), archived_worktrees.len);
-    try std.testing.expect(!try database.worktreePathExists("/tmp/luminous-galileo-a13f"));
-    try std.testing.expect(!try database.worktreeFolderExists("workspace-1", "luminous-galileo-a13f"));
-    try std.testing.expect(!try database.worktreeBranchExists("workspace-1", "luminous-galileo-a13f"));
+    var row = (try database.findTerminalSessionById(std.testing.allocator, "legacy-1")).?;
+    defer row.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("term-1", row.terminal_id);
+    try std.testing.expectEqual(@as(u64, 3), row.last_seq);
 
-    try database.insertWorktree(.{
-        .id = "worktree-3",
-        .workspace_id = "workspace-1",
-        .title = "Reused branch",
-        .folder_name = "luminous-galileo-a13f",
-        .path = "/tmp/luminous-galileo-a13f",
-        .branch = "luminous-galileo-a13f",
-        .state = "active",
-        .order_index = 3,
+    // New session metadata must persist against the rebuilt mux schema.
+    try database.recordTerminalSession(.{
+        .id = "session-2",
+        .terminal_id = "term-2",
+        .cwd = "/tmp",
+        .status = "live",
+        .cols = 120,
+        .rows = 40,
+        .event_log_path = "/tmp/new.tauev",
+        .last_seq = 1,
     });
-    var reused = (try database.findWorktreeByPath(std.testing.allocator, "/tmp/luminous-galileo-a13f")).?;
-    defer reused.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(u64, 1), try database.countWorktrees());
-    try std.testing.expectEqualStrings("worktree-1", reused.id);
-    try std.testing.expectEqualStrings("active", reused.state);
+    var created = (try database.findTerminalSessionById(std.testing.allocator, "session-2")).?;
+    defer created.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("term-2", created.terminal_id);
+}
+
+test "resumes terminal_sessions rebuild from retained pre_mux backup" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}/resume.sqlite", .{tmp.sub_path});
+    defer std.testing.allocator.free(path);
+
+    {
+        const path_z = try std.testing.allocator.dupeZ(u8, path);
+        defer std.testing.allocator.free(path_z);
+        var diags = sqlite.Diagnostics{};
+        var handle = try sqlite.Db.init(.{
+            .mode = .{ .File = path_z },
+            .open_flags = .{ .write = true, .create = true },
+            .threading_mode = .MultiThread,
+            .diags = &diags,
+        });
+        defer handle.deinit();
+        // Simulate crash after rename: only the pre_mux backup remains, plus a partial new table.
+        try handle.execDynamic(
+            \\CREATE TABLE terminal_sessions_pre_mux (
+            \\    id TEXT PRIMARY KEY,
+            \\    terminal_id TEXT NOT NULL,
+            \\    workspace_id TEXT NOT NULL,
+            \\    cwd TEXT,
+            \\    argv_json TEXT,
+            \\    status TEXT NOT NULL,
+            \\    daemon_id TEXT,
+            \\    pid INTEGER,
+            \\    cols INTEGER NOT NULL,
+            \\    rows INTEGER NOT NULL,
+            \\    title TEXT,
+            \\    event_log_path TEXT NOT NULL,
+            \\    last_seq INTEGER NOT NULL DEFAULT 0,
+            \\    snapshot_path TEXT,
+            \\    snapshot_seq INTEGER NOT NULL DEFAULT 0,
+            \\    snapshot_crc32 INTEGER,
+            \\    snapshot_size INTEGER,
+            \\    scrollback_excerpt TEXT,
+            \\    started_at TEXT NOT NULL,
+            \\    last_activity_at TEXT,
+            \\    ended_at TEXT,
+            \\    exit_code INTEGER,
+            \\    signal INTEGER,
+            \\    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            \\    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            \\);
+            ,
+            .{},
+            .{},
+        );
+        try handle.execDynamic(
+            \\INSERT INTO terminal_sessions_pre_mux (
+            \\    id, terminal_id, workspace_id, cwd, status, cols, rows,
+            \\    event_log_path, last_seq, started_at
+            \\) VALUES (
+            \\    'resume-1', 'term-resume', 'ws-1', '/tmp', 'exited', 80, 24,
+            \\    '/tmp/resume.tauev', 9, datetime('now')
+            \\);
+            ,
+            .{},
+            .{},
+        );
+        try handle.execDynamic(
+            \\CREATE TABLE terminal_sessions (
+            \\    id TEXT PRIMARY KEY,
+            \\    terminal_id TEXT NOT NULL
+            \\);
+            ,
+            .{},
+            .{},
+        );
+    }
+
+    var database = try Database.open(std.testing.allocator, path);
+    defer database.deinit();
+
+    const pre_mux_left = try database.handle.one(
+        u64,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'terminal_sessions_pre_mux';",
+        .{},
+        .{},
+    );
+    try std.testing.expectEqual(@as(u64, 0), pre_mux_left);
+
+    var row = (try database.findTerminalSessionById(std.testing.allocator, "resume-1")).?;
+    defer row.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("term-resume", row.terminal_id);
+    try std.testing.expectEqual(@as(u64, 9), row.last_seq);
 }

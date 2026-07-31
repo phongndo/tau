@@ -6,10 +6,10 @@
   "exports": {
     "./app-command": "./src/app-command.ts",
     "./current-screen-snapshot": "./src/current-screen-snapshot.ts",
+    "./mux-graph": "./src/mux-graph.ts",
     "./session": "./src/session.ts",
     "./storage-path": "./src/storage-path.ts",
-    "./taud-protocol": "./src/taud-protocol.ts",
-    "./workspace": "./src/workspace.ts"
+    "./taud-protocol": "./src/taud-protocol.ts"
   },
   "scripts": {
     "tsc": "tsc --noEmit -p tsconfig.json",

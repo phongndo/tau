@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createBatchedTerminalWriter } from '../src/renderer/terminal-output-writer'
+import {
+  createBatchedTerminalWriter,
+  createSequencedTerminalWriter,
+} from '../src/renderer/terminal-output-writer'
 
 const delay = () => new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -119,6 +122,44 @@ test('terminal output writer batches same-tick output before writing', async () 
     await writer.drain()
     assert.equal(writer.diagnostics().writeCount, 1)
     assert.equal(writer.diagnostics().totalWrittenChars, 6)
+  } finally {
+    restoreWindow()
+  }
+})
+
+test('sequenced byte writer acknowledges applied frames and resyncs without slicing bytes', async () => {
+  const restoreWindow = installWindowTimers()
+  try {
+    const writes: Uint8Array[] = []
+    const callbacks: Array<() => void> = []
+    const acknowledgements: number[] = []
+    const resyncs: number[] = []
+    const writer = createSequencedTerminalWriter(
+      {
+        write(data, callback) {
+          assert.ok(data instanceof Uint8Array)
+          writes.push(data)
+          if (callback) callbacks.push(callback)
+        },
+      },
+      {
+        maxQueuedBytes: 8,
+        onApplied: (seq) => acknowledgements.push(seq),
+        onResync: (seq) => resyncs.push(seq),
+      },
+    )
+
+    writer.write(Uint8Array.from([0xe2, 0x82, 0xac]), 1)
+    await delay()
+    callbacks.shift()?.()
+    await delay()
+    assert.deepEqual(acknowledgements, [1])
+    writer.write(Uint8Array.from([1, 2, 3, 4, 5]), 2)
+    writer.write(Uint8Array.from([6, 7, 8, 9, 10]), 3)
+    assert.deepEqual(resyncs, [1])
+    assert.equal(writer.diagnostics().writeQueueChunks, 0)
+    assert.deepEqual([...writes[0]!], [0xe2, 0x82, 0xac])
+    writer.dispose()
   } finally {
     restoreWindow()
   }

@@ -9,7 +9,6 @@ import {
   statSync,
 } from 'node:fs'
 import { basename, resolve } from 'node:path'
-import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 
@@ -49,14 +48,6 @@ function copyTaudBinary() {
       copyFileSync(taudSource, taudDest)
       chmodSync(taudDest, 0o755)
       console.log('[copy-taud-binary] Copied taud to', taudDest)
-
-      const adaptersSource = resolve(__dirname, '../daemon/adapters')
-      const adaptersDest = resolve(outDir, '../adapters')
-      if (existsSync(adaptersSource)) {
-        rmSync(adaptersDest, { recursive: true, force: true })
-        copyDirectory(adaptersSource, adaptersDest)
-        console.log('[copy-taud-binary] Copied taud adapters to', adaptersDest)
-      }
     },
   }
 }
@@ -140,16 +131,27 @@ export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin(), copyTaudBinary()],
     build: {
+      sourcemap: false,
       // node-pty has been removed — taud owns PTY lifecycle
     },
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    // Sandbox preloads cannot require arbitrary npm modules; bundle validation schemas.
+    plugins: [],
+    ssr: { noExternal: ['effect', '@tau/shared'] },
+    build: {
+      sourcemap: false,
+      rollupOptions: {
+        external: ['electron'],
+        output: { format: 'cjs', entryFileNames: 'index.cjs' },
+      },
+    },
   },
   renderer: {
-    plugins: [react(), tailwindcss(), exposeNightlyAssets()],
+    plugins: [react(), exposeNightlyAssets()],
     publicDir: resolve(__dirname, 'public'),
     build: {
+      sourcemap: false,
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/renderer/index.html'),

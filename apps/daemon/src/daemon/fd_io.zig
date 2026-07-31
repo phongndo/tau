@@ -1,6 +1,7 @@
 const std = @import("std");
+const limits = @import("../limits.zig");
 
-pub const control_payload_max = 64 * 1024;
+pub const control_payload_max = limits.control_payload_bytes_max;
 
 const assert = std.debug.assert;
 

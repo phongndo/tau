@@ -1,7 +1,6 @@
 import { existsSync } from 'node:fs'
-import { open, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { spawn, type ChildProcess, type StdioOptions } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import net from 'node:net'
@@ -10,6 +9,7 @@ import { resolveTauStoragePaths } from '@tau/shared/storage-path'
 import {
   TAUD_CONTROL_CAPABILITIES,
   TAUD_CONTROL_PROTOCOL_VERSION,
+  TAUD_STREAM_MAX_PAYLOAD_BYTES,
   TaudStreamFrameKind,
   type TaudControlRequestDiagnostics,
   type TaudDaemonControlDiagnostics,
@@ -18,7 +18,6 @@ import {
   type TaudLifecycleEvent,
   type TaudLifecycleRecoveryAction,
   type TaudLifecycleState,
-  type PiThread,
   type TaudStreamDiagnostics,
   type TaudStreamFrameKind as TaudStreamFrameKindValue,
 } from '@tau/shared/taud-protocol'
@@ -28,19 +27,7 @@ import {
   TaudStreamFrameParser,
   type TaudParsedStreamFrame,
 } from './taud-stream'
-import type {
-  GitStatus,
-  PortInfo,
-  PullRequestInfo,
-  WorktreeInfo,
-  WorkspaceDiffPatch,
-  WorkspaceDiffPatchScope,
-  WorkspaceFileGitStatus,
-  WorkspaceFileTree,
-  WorkspaceRecord,
-  WorkspaceWorktree,
-  WorkspaceWorktreeState,
-} from '@tau/shared/workspace'
+
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 500
 const DEFAULT_CONTROL_RESPONSE_TIMEOUT_MS = 5000
@@ -48,9 +35,9 @@ const DEFAULT_START_TIMEOUT_MS = 3000
 const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 10_000
 const DEFAULT_RESTART_BACKOFF_MS = 750
 const DEFAULT_DISPOSE_DAEMON_TIMEOUT_MS = 1000
-const CONTROL_RESPONSE_MAX_BYTES = 1024 * 1024
+/** Must cover daemon graph_snapshot_bytes_max after JSON string escaping plus control envelope. */
+const CONTROL_RESPONSE_MAX_BYTES = 9 * 1024 * 1024
 const TAUD_LIFECYCLE_EVENT_LIMIT = 32
-const PI_SESSION_TITLE_SCAN_BYTES = 256 * 1024
 
 type ElectronAppLike = {
   getAppPath(): string
@@ -82,98 +69,23 @@ export type TaudControlResponse = {
   readonly rows?: number
   readonly last_seq?: number
   readonly attach_kind?: string
-  readonly agent_provider?: string
-  readonly native_session_id?: string | null
   readonly removed_sessions?: number
   readonly removed_bytes?: number
-  readonly branch?: unknown
-  readonly branches?: unknown
-  readonly worktrees?: unknown
-  readonly git_status?: unknown
-  readonly gitStatus?: unknown
-  readonly file_tree?: unknown
-  readonly fileTree?: unknown
-  readonly diff_patch?: unknown
-  readonly diffPatch?: unknown
-  readonly ports?: unknown
-  readonly pull_request?: unknown
-  readonly pullRequest?: unknown
-  readonly pi_threads?: unknown
-  readonly piThreads?: unknown
   readonly stream_diagnostics?: unknown
   readonly streamDiagnostics?: unknown
   readonly control_diagnostics?: unknown
   readonly controlDiagnostics?: unknown
+  readonly graph_snapshot_json?: unknown
+  readonly graph_rev?: unknown
+  readonly event_seq?: unknown
+  readonly oldest_event_seq?: unknown
+  readonly graph_changed?: unknown
+  readonly requires_resync?: unknown
   readonly error_code?: string
   readonly error_message?: string
 }
 
 type TaudRawControlResponse = TaudControlResponse & Record<string, unknown>
-
-type RawGitStatus = {
-  readonly changed?: unknown
-  readonly staged?: unknown
-}
-
-type RawGitWorktreeInfo = {
-  readonly path?: unknown
-  readonly branch?: unknown
-  readonly hash?: unknown
-  readonly is_bare?: unknown
-  readonly isBare?: unknown
-}
-
-type RawWorkspaceFileStatus = {
-  readonly path?: unknown
-  readonly status?: unknown
-}
-
-type RawWorkspaceFileTree = {
-  readonly paths?: unknown
-  readonly git_status?: unknown
-  readonly gitStatus?: unknown
-}
-
-type RawWorkspacePort = {
-  readonly port?: unknown
-  readonly process_name?: unknown
-  readonly processName?: unknown
-}
-
-type RawPullRequestInfo = {
-  readonly number?: unknown
-  readonly title?: unknown
-  readonly url?: unknown
-  readonly state?: unknown
-  readonly head_ref_name?: unknown
-  readonly headRefName?: unknown
-}
-
-type RawPiThread = {
-  readonly id?: unknown
-  readonly terminal_session_id?: unknown
-  readonly terminalSessionId?: unknown
-  readonly terminal_id?: unknown
-  readonly terminalId?: unknown
-  readonly workspace_id?: unknown
-  readonly workspaceId?: unknown
-  readonly worktree_id?: unknown
-  readonly worktreeId?: unknown
-  readonly cwd?: unknown
-  readonly terminal_status?: unknown
-  readonly terminalStatus?: unknown
-  readonly agent_status?: unknown
-  readonly agentStatus?: unknown
-  readonly native_session_id?: unknown
-  readonly nativeSessionId?: unknown
-  readonly resume_argv?: unknown
-  readonly resumeArgv?: unknown
-  readonly title?: unknown
-  readonly last_seq?: unknown
-  readonly lastSeq?: unknown
-  readonly last_activity_at?: unknown
-  readonly lastActivityAt?: unknown
-}
 
 type RawTaudStreamDiagnostics = {
   readonly active_subscribers?: unknown
@@ -192,6 +104,8 @@ type RawTaudStreamDiagnostics = {
   readonly outputFramesTotal?: unknown
   readonly output_bytes_total?: unknown
   readonly outputBytesTotal?: unknown
+  readonly last_pty_read_ns?: unknown
+  readonly lastPtyReadNs?: unknown
   readonly slow_subscriber_drops_total?: unknown
   readonly slowSubscriberDropsTotal?: unknown
   readonly pending_output_dropped_frames_total?: unknown
@@ -219,58 +133,9 @@ type RawTaudDaemonControlDiagnostics = {
   readonly lastRecordedAtMs?: unknown
 }
 
-type RawWorktree = {
-  readonly id?: unknown
-  readonly workspace_id?: unknown
-  readonly workspaceId?: unknown
-  readonly title?: unknown
-  readonly folder_name?: unknown
-  readonly folderName?: unknown
-  readonly path?: unknown
-  readonly branch?: unknown
-  readonly base_branch?: unknown
-  readonly baseBranch?: unknown
-  readonly target_branch?: unknown
-  readonly targetBranch?: unknown
-  readonly state?: unknown
-  readonly order_index?: unknown
-  readonly orderIndex?: unknown
-  readonly last_active_tab_id?: unknown
-  readonly lastActiveTabId?: unknown
-  readonly last_error?: unknown
-  readonly lastError?: unknown
-  readonly created_by?: unknown
-  readonly createdBy?: unknown
-  readonly git_status?: unknown
-  readonly gitStatus?: unknown
-}
-
-type RawWorkspace = {
-  readonly id?: unknown
-  readonly name?: unknown
-  readonly root_path?: unknown
-  readonly rootPath?: unknown
-  readonly git_common_dir?: unknown
-  readonly gitCommonDir?: unknown
-  readonly workspace_slug?: unknown
-  readonly workspaceSlug?: unknown
-  readonly default_branch?: unknown
-  readonly defaultBranch?: unknown
-  readonly branch?: unknown
-  readonly order_index?: unknown
-  readonly orderIndex?: unknown
-  readonly last_active_tab_id?: unknown
-  readonly lastActiveTabId?: unknown
-  readonly git_status?: unknown
-  readonly gitStatus?: unknown
-  readonly worktrees?: unknown
-}
-
 export type TaudCreateSessionInput = {
   readonly sessionId: string
   readonly terminalId: string
-  readonly workspaceId: string
-  readonly worktreeId?: string
   readonly cols: number
   readonly rows: number
   readonly cwd?: string
@@ -280,8 +145,6 @@ export type TaudCreateSessionInput = {
 export type TaudAttachSessionInput = {
   readonly sessionId: string
   readonly terminalId?: string
-  readonly workspaceId?: string
-  readonly worktreeId?: string
   readonly cols?: number
   readonly rows?: number
   readonly cwd?: string
@@ -298,45 +161,20 @@ export type TaudPersistenceSettingsInput = {
   readonly persistInput: boolean
 }
 
-export type TaudListPiThreadsInput = {
-  readonly workspaceId?: string
-  readonly worktreeId?: string
-  readonly rootPath?: string
+export type TaudMuxGraphState = {
+  readonly snapshotJson: string
+  readonly graphRev: number
+  readonly eventSeq: number
+  readonly oldestEventSeq: number
+  readonly changed: boolean
+  readonly requiresResync: boolean
 }
 
-export type TaudAddWorkspaceInput = {
-  readonly rootPath: string
-  readonly workspaceId?: string
-  readonly name?: string
-  readonly orderIndex?: number
-}
 
-export type TaudWorkspaceDiffInput = {
-  readonly rootPath: string
-  readonly scope?: WorkspaceDiffPatchScope
-  readonly compareBranch?: string
-}
 
-export type TaudGitPathActionInput = {
-  readonly rootPath: string
-  readonly path: string | readonly string[]
-}
 
-export type TaudCreateWorktreeInput = {
-  readonly workspaceId: string
-  readonly baseBranch?: string
-  readonly targetBranch?: string
-  readonly branch?: string
-  readonly folderName?: string
-  readonly startPoint?: string
-  readonly title?: string
-}
 
-export type TaudRemoveWorktreeInput = {
-  readonly worktreeId: string
-  readonly force?: boolean
-  readonly deleteBranch?: boolean
-}
+
 
 export type TaudSessionStreamEvents = {
   frame: [TaudParsedStreamFrame]
@@ -464,13 +302,31 @@ function parseControlResponse(line: Buffer): TaudRawControlResponse {
   return parsed
 }
 
+function parseMuxGraphState(response: TaudRawControlResponse): TaudMuxGraphState {
+  if (
+    typeof response.graph_snapshot_json !== 'string' ||
+    typeof response.graph_rev !== 'number' ||
+    typeof response.event_seq !== 'number'
+  ) {
+    throw new Error('Invalid taud mux graph response')
+  }
+  return {
+    snapshotJson: response.graph_snapshot_json,
+    graphRev: response.graph_rev,
+    eventSeq: response.event_seq,
+    oldestEventSeq:
+      typeof response.oldest_event_seq === 'number'
+        ? response.oldest_event_seq
+        : response.event_seq,
+    changed: response.graph_changed !== false,
+    requiresResync: response.requires_resync === true,
+  }
+}
+
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
-function optionalNullableString(value: unknown): string | null | undefined {
-  return value === null ? null : optionalString(value)
-}
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
@@ -480,384 +336,6 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
     : []
-}
-
-function gitPathActionPaths(path: string | readonly string[]): string[] {
-  const values = Array.isArray(path) ? path : [path]
-  const paths = values.map((value) => value.trim())
-  if (
-    paths.length === 0 ||
-    paths.some((value) => value.length === 0 || value.startsWith('-') || value.includes('\0'))
-  ) {
-    throw new Error('Invalid workspace git path')
-  }
-  return paths
-}
-
-const VALID_WORKTREE_STATES = new Set<WorkspaceWorktreeState>([
-  'creating',
-  'active',
-  'missing',
-  'removing',
-  'archived',
-  'error',
-  'untracked',
-])
-
-const VALID_WORKSPACE_FILE_STATUSES = new Set<WorkspaceFileGitStatus>([
-  'added',
-  'deleted',
-  'ignored',
-  'modified',
-  'renamed',
-  'untracked',
-])
-
-function isWorkspaceWorktreeState(value: string): value is WorkspaceWorktreeState {
-  return VALID_WORKTREE_STATES.has(value as WorkspaceWorktreeState)
-}
-
-function isWorkspaceFileGitStatus(value: string): value is WorkspaceFileGitStatus {
-  return VALID_WORKSPACE_FILE_STATUSES.has(value as WorkspaceFileGitStatus)
-}
-
-function normalizeGitStatus(value: unknown): GitStatus | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const raw = value as RawGitStatus
-  return {
-    changed: numberOr(raw.changed, 0),
-    staged: numberOr(raw.staged, 0),
-  }
-}
-
-function normalizeGitWorktreeInfo(value: unknown): WorktreeInfo {
-  if (!value || typeof value !== 'object')
-    throw new Error('Invalid workspace.gitWorktrees response')
-  const raw = value as RawGitWorktreeInfo
-  const path = optionalString(raw.path)
-  if (!path) throw new Error('Invalid workspace.gitWorktrees response')
-  return {
-    path,
-    branch: optionalString(raw.branch) ?? '',
-    hash: optionalString(raw.hash) ?? '',
-    isBare: raw.is_bare === true || raw.isBare === true,
-  }
-}
-
-function normalizeWorkspaceFileTree(value: unknown): WorkspaceFileTree {
-  if (!value || typeof value !== 'object') throw new Error('Invalid taud workspace file tree')
-  const raw = value as RawWorkspaceFileTree
-  const rawGitStatus = Array.isArray(raw.git_status ?? raw.gitStatus)
-    ? ((raw.git_status ?? raw.gitStatus) as unknown[])
-    : []
-
-  return {
-    paths: stringArray(raw.paths),
-    gitStatus: rawGitStatus.map((entry) => {
-      if (!entry || typeof entry !== 'object') throw new Error('Invalid taud workspace file status')
-      const rawEntry = entry as RawWorkspaceFileStatus
-      const path = optionalString(rawEntry.path)
-      const status = optionalString(rawEntry.status)
-      if (!path || !status || !isWorkspaceFileGitStatus(status)) {
-        throw new Error('Invalid taud workspace file status')
-      }
-      return { path, status }
-    }),
-  }
-}
-
-function normalizeWorkspacePorts(value: unknown): PortInfo[] {
-  if (!Array.isArray(value)) throw new Error('Invalid workspace.ports response')
-  return value.map((entry) => {
-    if (!entry || typeof entry !== 'object') throw new Error('Invalid workspace port')
-    const raw = entry as RawWorkspacePort
-    const port = numberOr(raw.port, 0)
-    if (!Number.isInteger(port) || port <= 0) throw new Error('Invalid workspace port')
-    const processName = optionalString(raw.process_name ?? raw.processName)
-    return {
-      port,
-      ...(processName ? { processName } : {}),
-    }
-  })
-}
-
-function normalizePullRequestInfo(value: unknown): PullRequestInfo | null {
-  if (value == null) return null
-  if (typeof value !== 'object') throw new Error('Invalid workspace.pullRequest response')
-  const raw = value as RawPullRequestInfo
-  const number = numberOr(raw.number, 0)
-  const title = optionalString(raw.title)
-  const url = optionalString(raw.url)
-  const state = optionalString(raw.state)
-  if (!Number.isInteger(number) || number <= 0 || !title || !url || !state) {
-    throw new Error('Invalid workspace.pullRequest response')
-  }
-  const headRefName = optionalString(raw.head_ref_name ?? raw.headRefName)
-  return {
-    number,
-    title,
-    url,
-    state,
-    ...(headRefName ? { headRefName } : {}),
-  }
-}
-
-function normalizePiThread(value: unknown): PiThread {
-  if (!value || typeof value !== 'object') throw new Error('Invalid pi.thread.list response')
-  const raw = value as RawPiThread
-  const id = optionalString(raw.id)
-  const terminalSessionId = optionalString(raw.terminal_session_id ?? raw.terminalSessionId)
-  const terminalId = optionalString(raw.terminal_id ?? raw.terminalId)
-  const terminalStatus = optionalString(raw.terminal_status ?? raw.terminalStatus)
-  const agentStatus = optionalString(raw.agent_status ?? raw.agentStatus)
-  if (!id || !terminalSessionId || !terminalId || !terminalStatus || !agentStatus) {
-    throw new Error('Invalid pi.thread.list response')
-  }
-
-  return {
-    id,
-    terminalSessionId,
-    terminalId,
-    workspaceId: optionalString(raw.workspace_id ?? raw.workspaceId),
-    worktreeId: optionalString(raw.worktree_id ?? raw.worktreeId),
-    cwd: optionalString(raw.cwd),
-    terminalStatus,
-    agentStatus,
-    nativeSessionId: optionalNullableString(raw.native_session_id ?? raw.nativeSessionId),
-    resumeArgv: optionalStringArray(raw.resume_argv ?? raw.resumeArgv),
-    title: optionalString(raw.title),
-    lastSeq: numberOr(raw.last_seq ?? raw.lastSeq, 0),
-    lastActivityAt: optionalString(raw.last_activity_at ?? raw.lastActivityAt),
-  }
-}
-
-function optionalStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const strings = value.filter(
-    (item): item is string => typeof item === 'string' && item.length > 0,
-  )
-  return strings.length > 0 ? strings : undefined
-}
-
-type NativePiSession = {
-  readonly id: string
-  readonly cwd: string
-  readonly timestamp?: string
-  readonly filePath: string
-  readonly title?: string
-  readonly lastActivityAt?: string
-}
-
-type NativePiSessionHeader = {
-  readonly type?: unknown
-  readonly id?: unknown
-  readonly cwd?: unknown
-  readonly timestamp?: unknown
-}
-
-type NativePiMessageLine = {
-  readonly type?: unknown
-  readonly message?: {
-    readonly role?: unknown
-    readonly content?: unknown
-  }
-}
-
-function piSessionsRoot(): string {
-  return join(homedir(), '.pi', 'agent', 'sessions')
-}
-
-function isPathInRoot(candidate: string, rootPath: string): boolean {
-  const root = resolve(rootPath)
-  const value = resolve(candidate)
-  const relativePath = relative(root, value)
-  return (
-    relativePath === '' ||
-    (relativePath.length > 0 && !relativePath.startsWith('..') && !isAbsolute(relativePath))
-  )
-}
-
-async function listNativePiThreads(rootPath: string): Promise<readonly PiThread[]> {
-  const sessionsRoot = piSessionsRoot()
-  let projectDirs: string[]
-  try {
-    const entries = await readdir(sessionsRoot, { withFileTypes: true })
-    projectDirs = entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => join(sessionsRoot, entry.name))
-  } catch {
-    return []
-  }
-
-  const threads: PiThread[] = []
-  for (const projectDir of projectDirs) {
-    let files: string[]
-    try {
-      const entries = await readdir(projectDir, { withFileTypes: true })
-      files = entries
-        .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
-        .map((entry) => join(projectDir, entry.name))
-    } catch {
-      continue
-    }
-
-    for (const filePath of files) {
-      const session = await readNativePiSession(filePath)
-      if (!session || !isPathInRoot(session.cwd, rootPath)) continue
-      threads.push(nativePiSessionToThread(session))
-    }
-  }
-
-  return threads.sort((left, right) =>
-    (right.lastActivityAt ?? '').localeCompare(left.lastActivityAt ?? ''),
-  )
-}
-
-async function readNativePiSession(filePath: string): Promise<NativePiSession | null> {
-  let text: string
-  try {
-    text = await readPiSessionPrefix(filePath)
-  } catch {
-    return null
-  }
-
-  const lines = text.split(/\r?\n/u).filter((line) => line.length > 0)
-  if (lines.length === 0) return null
-
-  const header = parseJsonLine<NativePiSessionHeader>(lines[0])
-  if (
-    !header ||
-    header.type !== 'session' ||
-    typeof header.id !== 'string' ||
-    typeof header.cwd !== 'string'
-  ) {
-    return null
-  }
-
-  const fileStat = await stat(filePath).catch(() => null)
-  return {
-    id: header.id,
-    cwd: header.cwd,
-    timestamp: typeof header.timestamp === 'string' ? header.timestamp : undefined,
-    filePath,
-    title: nativePiTitle(lines) ?? nativePiFallbackTitle(header.timestamp, filePath),
-    lastActivityAt: fileStat ? fileStat.mtime.toISOString() : undefined,
-  }
-}
-
-async function readPiSessionPrefix(filePath: string): Promise<string> {
-  const file = await open(filePath, 'r')
-  try {
-    const buffer = Buffer.alloc(PI_SESSION_TITLE_SCAN_BYTES)
-    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
-    return buffer.subarray(0, bytesRead).toString('utf8')
-  } finally {
-    await file.close()
-  }
-}
-
-function parseJsonLine<T>(line: string): T | null {
-  try {
-    return JSON.parse(line) as T
-  } catch {
-    return null
-  }
-}
-
-function nativePiTitle(lines: readonly string[]): string | null {
-  for (const line of lines.slice(1, 200)) {
-    const parsed = parseJsonLine<NativePiMessageLine>(line)
-    if (!parsed || parsed.type !== 'message') continue
-    if (parsed.message?.role !== 'user') continue
-    const text = firstTextContent(parsed.message.content)
-    const title = text
-      ?.split(/\r?\n/u)
-      .map((part) => part.trim())
-      .find((part) => part.length > 0)
-    if (title) return truncateThreadTitle(title.replace(/^#+\s*/u, ''))
-  }
-  return null
-}
-
-function firstTextContent(content: unknown): string | null {
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return null
-  for (const item of content) {
-    if (
-      item &&
-      typeof item === 'object' &&
-      'type' in item &&
-      item.type === 'text' &&
-      'text' in item &&
-      typeof item.text === 'string'
-    ) {
-      return item.text
-    }
-  }
-  return null
-}
-
-function truncateThreadTitle(title: string): string {
-  const normalized = title.replace(/\s+/gu, ' ').trim()
-  return normalized.length > 64 ? `${normalized.slice(0, 61)}...` : normalized
-}
-
-function nativePiFallbackTitle(timestamp: unknown, filePath: string): string {
-  if (typeof timestamp === 'string' && timestamp.length > 0) {
-    return `Pi ${timestamp.slice(0, 16).replace('T', ' ')}`
-  }
-  return `Pi ${basename(filePath, '.jsonl').slice(0, 8)}`
-}
-
-function nativePiSessionToThread(session: NativePiSession): PiThread {
-  return {
-    id: `pi-native:${session.id}`,
-    terminalSessionId: `pi-native:${session.id}`,
-    terminalId: `pi-native-term:${session.id}`,
-    cwd: session.cwd,
-    terminalStatus: 'detached',
-    agentStatus: 'resumable',
-    nativeSessionId: session.id,
-    resumeArgv: ['pi', '--session', session.filePath],
-    title: session.title,
-    lastSeq: 0,
-    lastActivityAt: session.lastActivityAt ?? session.timestamp,
-  }
-}
-
-function mergePiThreads(
-  daemonThreads: readonly PiThread[],
-  nativeThreads: readonly PiThread[],
-): readonly PiThread[] {
-  const threads = new Map<string, PiThread>()
-  for (const thread of daemonThreads) {
-    threads.set(piThreadKey(thread), thread)
-  }
-  for (const thread of nativeThreads) {
-    const key = piThreadKey(thread)
-    const existing = threads.get(key)
-    threads.set(
-      key,
-      existing
-        ? {
-            ...thread,
-            ...existing,
-            nativeSessionId: existing.nativeSessionId ?? thread.nativeSessionId,
-            resumeArgv: existing.resumeArgv ?? thread.resumeArgv,
-            title: thread.title,
-          }
-        : thread,
-    )
-  }
-  return [...threads.values()].sort((left, right) =>
-    (right.lastActivityAt ?? '').localeCompare(left.lastActivityAt ?? ''),
-  )
-}
-
-function piThreadKey(thread: PiThread): string {
-  return thread.nativeSessionId
-    ? `native:${thread.nativeSessionId}`
-    : `terminal:${thread.terminalSessionId}`
 }
 
 function normalizeTaudStreamDiagnostics(value: unknown): TaudStreamDiagnostics | undefined {
@@ -872,6 +350,7 @@ function normalizeTaudStreamDiagnostics(value: unknown): TaudStreamDiagnostics |
     inputBytesTotal: numberOr(raw.input_bytes_total ?? raw.inputBytesTotal, 0),
     outputFramesTotal: numberOr(raw.output_frames_total ?? raw.outputFramesTotal, 0),
     outputBytesTotal: numberOr(raw.output_bytes_total ?? raw.outputBytesTotal, 0),
+    lastPtyReadNs: numberOr(raw.last_pty_read_ns ?? raw.lastPtyReadNs, 0),
     slowSubscriberDropsTotal: numberOr(
       raw.slow_subscriber_drops_total ?? raw.slowSubscriberDropsTotal,
       0,
@@ -912,65 +391,6 @@ function normalizeTaudDaemonControlDiagnostics(
   }
 }
 
-function normalizeWorktree(value: unknown): WorkspaceWorktree {
-  if (!value || typeof value !== 'object') throw new Error('Invalid taud worktree')
-  const raw = value as RawWorktree
-  const id = optionalString(raw.id)
-  const workspaceId = optionalString(raw.workspace_id ?? raw.workspaceId)
-  const folderName = optionalString(raw.folder_name ?? raw.folderName)
-  const path = optionalString(raw.path)
-  const branch = optionalString(raw.branch)
-  const state = optionalString(raw.state)
-  if (!id || !workspaceId || !folderName || !path || !branch || !state) {
-    throw new Error('Invalid taud worktree')
-  }
-  if (!isWorkspaceWorktreeState(state)) {
-    throw new Error('Invalid taud worktree')
-  }
-
-  return {
-    id,
-    workspaceId,
-    title: optionalNullableString(raw.title),
-    folderName,
-    path,
-    branch,
-    baseBranch: optionalNullableString(raw.base_branch ?? raw.baseBranch),
-    targetBranch: optionalNullableString(raw.target_branch ?? raw.targetBranch),
-    state,
-    orderIndex: numberOr(raw.order_index ?? raw.orderIndex, 0),
-    lastActiveTabId: optionalNullableString(raw.last_active_tab_id ?? raw.lastActiveTabId),
-    lastError: optionalNullableString(raw.last_error ?? raw.lastError),
-    createdBy: optionalString(raw.created_by ?? raw.createdBy) ?? 'tau',
-    gitStatus: normalizeGitStatus(raw.git_status ?? raw.gitStatus) ?? null,
-  }
-}
-
-function normalizeWorkspace(value: unknown): WorkspaceRecord {
-  if (!value || typeof value !== 'object') throw new Error('Invalid taud workspace')
-  const raw = value as RawWorkspace
-  const id = optionalString(raw.id)
-  const name = optionalString(raw.name)
-  const rootPath = optionalString(raw.root_path ?? raw.rootPath)
-  const workspaceSlug = optionalString(raw.workspace_slug ?? raw.workspaceSlug)
-  if (!id || !name || !rootPath || !workspaceSlug) throw new Error('Invalid taud workspace')
-  const rawWorktrees = Array.isArray(raw.worktrees) ? raw.worktrees : []
-
-  return {
-    id,
-    name,
-    rootPath,
-    gitCommonDir: optionalNullableString(raw.git_common_dir ?? raw.gitCommonDir),
-    workspaceSlug,
-    defaultBranch: optionalNullableString(raw.default_branch ?? raw.defaultBranch),
-    branch: optionalNullableString(raw.branch),
-    orderIndex: numberOr(raw.order_index ?? raw.orderIndex, 0),
-    lastActiveTabId: optionalNullableString(raw.last_active_tab_id ?? raw.lastActiveTabId),
-    gitStatus: normalizeGitStatus(raw.git_status ?? raw.gitStatus) ?? null,
-    worktrees: rawWorktrees.map(normalizeWorktree),
-  }
-}
-
 function candidateTaudPaths(): string[] {
   const envPath = process.env.TAUD_PATH?.trim()
   const exeName = process.platform === 'win32' ? 'taud.exe' : 'taud'
@@ -1003,31 +423,6 @@ function candidateTaudPaths(): string[] {
   )
 }
 
-function candidateTaudAdapterDirs(): string[] {
-  const envPath = process.env.TAUD_ADAPTER_DIR?.trim()
-  const appPath = safeAppPath()
-  const cwd = process.cwd()
-
-  return Array.from(
-    new Set(
-      [
-        envPath,
-        join(cwd, 'apps/daemon/adapters'),
-        join(cwd, '../daemon/adapters'),
-        join(cwd, '../../apps/daemon/adapters'),
-        appPath ? join(appPath, '../daemon/adapters') : null,
-        appPath ? join(appPath, '../../daemon/adapters') : null,
-        appPath ? join(appPath, 'adapters') : null,
-        typeof __dirname === 'string' ? join(__dirname, '../adapters') : null,
-        typeof __dirname === 'string' ? join(__dirname, '../../../daemon/adapters') : null,
-        typeof __dirname === 'string' ? join(__dirname, '../../../../apps/daemon/adapters') : null,
-        process.resourcesPath ? join(process.resourcesPath, 'adapters') : null,
-      ]
-        .filter((value): value is string => typeof value === 'string' && value.length > 0)
-        .map((value) => resolve(value)),
-    ),
-  )
-}
 
 function safeAppPath(): string | null {
   try {
@@ -1044,12 +439,6 @@ function findTaudBinary(): string | null {
   return null
 }
 
-function findTaudAdapterDir(): string | null {
-  for (const candidate of candidateTaudAdapterDirs()) {
-    if (existsSync(candidate)) return candidate
-  }
-  return null
-}
 
 function defaultSocketPath(): string {
   return resolveTauStoragePaths(homedir()).socket
@@ -1209,11 +598,18 @@ function readNdjsonResponse(
   })
 }
 
+/** Bound queued terminal input while the stream socket is write-blocked. */
+const SESSION_INPUT_QUEUE_MAX_BYTES = 1024 * 1024
+/** Chunk size for direct and queued writes; keeps frames under the daemon payload limit. */
+const SESSION_INPUT_CHUNK_MAX_BYTES = Math.min(256 * 1024, TAUD_STREAM_MAX_PAYLOAD_BYTES, SESSION_INPUT_QUEUE_MAX_BYTES)
+
 export class TaudSessionStream extends EventEmitter<TaudSessionStreamEvents> {
   private readonly parser = new TaudStreamFrameParser()
   private clientSeq = 0n
   private started = false
   private waitingForWriteDrain = false
+  private inputQueue: Buffer[] = []
+  private inputQueueBytes = 0
 
   constructor(
     private readonly socket: net.Socket,
@@ -1236,7 +632,18 @@ export class TaudSessionStream extends EventEmitter<TaudSessionStreamEvents> {
   writeInput(data: string | Buffer | Uint8Array): void {
     const payload = typeof data === 'string' ? Buffer.from(data, 'utf8') : Buffer.from(data)
     if (payload.length === 0 || this.socket.destroyed) return
-    this.writeFrame(TaudStreamFrameKind.Input, payload)
+    // Always chunk first: a single huge paste must not bypass the queue cap or the stream payload limit.
+    let offset = 0
+    while (offset < payload.length) {
+      const end = Math.min(offset + SESSION_INPUT_CHUNK_MAX_BYTES, payload.length)
+      const chunk = Buffer.from(payload.subarray(offset, end))
+      offset = end
+      if (this.waitingForWriteDrain || this.inputQueue.length > 0) {
+        this.enqueueInput(chunk)
+        continue
+      }
+      this.writeFrame(TaudStreamFrameKind.Input, chunk)
+    }
   }
 
   resize(cols: number, rows: number): void {
@@ -1245,8 +652,42 @@ export class TaudSessionStream extends EventEmitter<TaudSessionStreamEvents> {
   }
 
   close(): void {
+    this.inputQueue = []
+    this.inputQueueBytes = 0
+    this.waitingForWriteDrain = false
     this.socket.end()
     this.socket.destroy()
+  }
+
+  private enqueueInput(payload: Buffer): void {
+    if (payload.length > SESSION_INPUT_QUEUE_MAX_BYTES) {
+      console.warn(
+        `[taud-client] dropping oversized input frame for ${this.sessionId}; bytes=${payload.length}`,
+      )
+      return
+    }
+    // Overflow policy: drop oldest queued chunks so the newest paste can still land.
+    while (
+      this.inputQueue.length > 0 &&
+      this.inputQueueBytes + payload.length > SESSION_INPUT_QUEUE_MAX_BYTES
+    ) {
+      const dropped = this.inputQueue.shift()!
+      this.inputQueueBytes -= dropped.length
+      console.warn(
+        `[taud-client] input queue overflow for ${this.sessionId}; dropped oldest chunk bytes=${dropped.length}`,
+      )
+    }
+    if (this.inputQueueBytes + payload.length > SESSION_INPUT_QUEUE_MAX_BYTES) return
+    this.inputQueue.push(payload)
+    this.inputQueueBytes += payload.length
+  }
+
+  private flushInputQueue(): void {
+    while (this.inputQueue.length > 0 && !this.socket.destroyed && !this.waitingForWriteDrain) {
+      const next = this.inputQueue.shift()!
+      this.inputQueueBytes -= next.length
+      this.writeFrame(TaudStreamFrameKind.Input, next)
+    }
   }
 
   private writeFrame(kind: TaudStreamFrameKindValue, payload: Buffer): void {
@@ -1265,6 +706,7 @@ export class TaudSessionStream extends EventEmitter<TaudSessionStreamEvents> {
       )
       this.socket.once('drain', () => {
         this.waitingForWriteDrain = false
+        this.flushInputQueue()
       })
     }
   }
@@ -1623,8 +1065,6 @@ export class TaudClient {
       id: nextRequestId('create'),
       sessionId: input.sessionId,
       terminalId: input.terminalId,
-      workspaceId: input.workspaceId,
-      ...(input.worktreeId ? { worktreeId: input.worktreeId } : {}),
       cols: input.cols,
       rows: input.rows,
       ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -1646,8 +1086,6 @@ export class TaudClient {
       id: nextRequestId('attach'),
       sessionId: input.sessionId,
       ...(input.terminalId ? { terminalId: input.terminalId } : {}),
-      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
-      ...(input.worktreeId ? { worktreeId: input.worktreeId } : {}),
       ...(input.cols ? { cols: input.cols } : {}),
       ...(input.rows ? { rows: input.rows } : {}),
       ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -1743,217 +1181,43 @@ export class TaudClient {
     return response
   }
 
-  async listWorkspaces(): Promise<readonly WorkspaceRecord[]> {
+  async getMuxGraph(afterEventSeq?: number): Promise<TaudMuxGraphState> {
     const response = await this.request({
-      type: 'workspace.list',
-      id: nextRequestId('workspace-list'),
+      type: 'graph-get',
+      id: nextRequestId('graph-get'),
+      ...(afterEventSeq !== undefined ? { afterEventSeq } : {}),
     })
     if (!response.ok) throw responseError(response)
-    const workspaces = response.workspaces
-    if (!Array.isArray(workspaces)) throw new Error('Invalid workspace.list response')
-    return workspaces.map(normalizeWorkspace)
+    return parseMuxGraphState(response)
   }
 
-  async addWorkspace(input: TaudAddWorkspaceInput): Promise<WorkspaceRecord> {
+  async replaceMuxGraph(snapshotJson: string, expectedRev: number): Promise<TaudMuxGraphState> {
     const response = await this.request({
-      type: 'workspace.add',
-      id: nextRequestId('workspace-add'),
-      rootPath: input.rootPath,
-      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
-      ...(input.name ? { name: input.name } : {}),
-      ...(typeof input.orderIndex === 'number' ? { orderIndex: input.orderIndex } : {}),
+      type: 'graph-replace',
+      id: nextRequestId('graph-replace'),
+      expectedRev,
+      graphSnapshotJson: snapshotJson,
     })
-    if (!response.ok) throw responseError(response)
-    return normalizeWorkspace(response.workspace)
+    if (!response.ok) {
+      const error = responseError(response) as Error & { graph?: TaudMuxGraphState }
+      if (typeof response.graph_snapshot_json === 'string') error.graph = parseMuxGraphState(response)
+      throw error
+    }
+    return parseMuxGraphState(response)
   }
 
-  async refreshWorkspace(workspaceId: string): Promise<WorkspaceRecord> {
-    const response = await this.request({
-      type: 'workspace.refresh',
-      id: nextRequestId('workspace-refresh'),
-      workspaceId,
-    })
-    if (!response.ok) throw responseError(response)
-    return normalizeWorkspace(response.workspace)
-  }
-
-  async removeWorkspace(workspaceId: string): Promise<void> {
-    const response = await this.request({
-      type: 'workspace.remove',
-      id: nextRequestId('workspace-remove'),
-      workspaceId,
-    })
-    if (!response.ok) throw responseError(response)
-  }
-
-  async listBranches(rootPath: string): Promise<string[]> {
-    const response = await this.request({
-      type: 'workspace.branches',
-      id: nextRequestId('workspace-branches'),
-      rootPath,
-    })
-    if (!response.ok) throw responseError(response)
-    return stringArray(response.branches)
-  }
-
-  async getGitBranch(rootPath: string): Promise<string | null> {
-    const response = await this.request({
-      type: 'workspace.branch',
-      id: nextRequestId('workspace-branch'),
-      rootPath,
-    })
-    if (!response.ok) throw responseError(response)
-    const branch = response.branch
-    return typeof branch === 'string' && branch.length > 0 ? branch : null
-  }
-
-  async getGitWorktrees(rootPath: string): Promise<WorktreeInfo[]> {
-    const response = await this.request({
-      type: 'workspace.gitWorktrees',
-      id: nextRequestId('workspace-git-worktrees'),
-      rootPath,
-    })
-    if (!response.ok) throw responseError(response)
-    if (!Array.isArray(response.worktrees))
-      throw new Error('Invalid workspace.gitWorktrees response')
-    return response.worktrees.map(normalizeGitWorktreeInfo)
-  }
-
-  async getGitStatus(rootPath: string): Promise<GitStatus> {
-    const response = await this.request({
-      type: 'workspace.status',
-      id: nextRequestId('workspace-status'),
-      rootPath,
-    })
-    if (!response.ok) throw responseError(response)
-    return (
-      normalizeGitStatus(response.git_status ?? response.gitStatus) ?? { changed: 0, staged: 0 }
+  async waitForMuxGraph(afterEventSeq: number): Promise<TaudMuxGraphState> {
+    const response = await this.request(
+      {
+        type: 'graph-wait',
+        id: nextRequestId('graph-wait'),
+        afterEventSeq,
+        waitTimeoutMs: 25_000,
+      },
+      { responseTimeoutMs: 30_000 },
     )
-  }
-
-  async getWorkspaceFileTree(rootPath: string): Promise<WorkspaceFileTree> {
-    const response = await this.request({
-      type: 'workspace.fileTree',
-      id: nextRequestId('workspace-file-tree'),
-      rootPath,
-    })
     if (!response.ok) throw responseError(response)
-    return normalizeWorkspaceFileTree(response.file_tree ?? response.fileTree)
-  }
-
-  async getWorkspaceDiffPatch(input: TaudWorkspaceDiffInput): Promise<WorkspaceDiffPatch> {
-    const response = await this.request({
-      type: 'workspace.diff',
-      id: nextRequestId('workspace-diff'),
-      rootPath: input.rootPath,
-      scope: input.scope ?? 'all',
-      ...(input.compareBranch ? { compareBranch: input.compareBranch } : {}),
-    })
-    if (!response.ok) throw responseError(response)
-    const patch = response.diff_patch ?? response.diffPatch
-    if (typeof patch !== 'string') throw new Error('Invalid workspace.diff response')
-    return patch
-  }
-
-  async stagePath(input: TaudGitPathActionInput): Promise<void> {
-    await this.gitPathAction('workspace.stagePath', 'workspace-stage-path', input)
-  }
-
-  async unstagePath(input: TaudGitPathActionInput): Promise<void> {
-    await this.gitPathAction('workspace.unstagePath', 'workspace-unstage-path', input)
-  }
-
-  async revertPath(input: TaudGitPathActionInput): Promise<void> {
-    await this.gitPathAction('workspace.revertPath', 'workspace-revert-path', input)
-  }
-
-  async getWorkspacePorts(rootPath: string): Promise<PortInfo[]> {
-    const response = await this.request({
-      type: 'workspace.ports',
-      id: nextRequestId('workspace-ports'),
-      rootPath,
-    })
-    if (!response.ok) throw responseError(response)
-    return normalizeWorkspacePorts(response.ports)
-  }
-
-  async getPullRequestInfo(rootPath: string): Promise<PullRequestInfo | null> {
-    const response = await this.request({
-      type: 'workspace.pullRequest',
-      id: nextRequestId('workspace-pr'),
-      rootPath,
-    })
-    if (!response.ok) throw responseError(response)
-    return normalizePullRequestInfo(response.pull_request ?? response.pullRequest)
-  }
-
-  async listPiThreads(input: TaudListPiThreadsInput = {}): Promise<readonly PiThread[]> {
-    const response = await this.request({
-      type: 'pi.thread.list',
-      id: nextRequestId('pi-thread-list'),
-      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
-      ...(input.worktreeId ? { worktreeId: input.worktreeId } : {}),
-      ...(input.rootPath ? { rootPath: input.rootPath } : {}),
-    })
-    if (!response.ok) throw responseError(response)
-    const threads = response.pi_threads ?? response.piThreads
-    if (!Array.isArray(threads)) throw new Error('Invalid pi.thread.list response')
-    const daemonThreads = threads.map(normalizePiThread)
-    if (!input.rootPath) return daemonThreads
-
-    const nativeThreads = await listNativePiThreads(input.rootPath)
-    return mergePiThreads(daemonThreads, nativeThreads)
-  }
-
-  private async gitPathAction(
-    type: 'workspace.stagePath' | 'workspace.unstagePath' | 'workspace.revertPath',
-    requestIdPrefix: string,
-    input: TaudGitPathActionInput,
-  ): Promise<void> {
-    const response = await this.request({
-      type,
-      id: nextRequestId(requestIdPrefix),
-      rootPath: input.rootPath,
-      paths: gitPathActionPaths(input.path),
-    })
-    if (!response.ok) throw responseError(response)
-  }
-
-  async createWorktree(input: TaudCreateWorktreeInput): Promise<WorkspaceWorktree> {
-    const response = await this.request({
-      type: 'worktree.create',
-      id: nextRequestId('worktree-create'),
-      workspaceId: input.workspaceId,
-      ...(input.baseBranch ? { baseBranch: input.baseBranch } : {}),
-      ...(input.targetBranch ? { targetBranch: input.targetBranch } : {}),
-      ...(input.branch ? { branch: input.branch } : {}),
-      ...(input.folderName ? { folderName: input.folderName } : {}),
-      ...(input.startPoint ? { startPoint: input.startPoint } : {}),
-      ...(input.title ? { title: input.title } : {}),
-    })
-    if (!response.ok) throw responseError(response)
-    return normalizeWorktree(response.worktree)
-  }
-
-  async refreshWorktree(worktreeId: string): Promise<WorkspaceWorktree> {
-    const response = await this.request({
-      type: 'worktree.refresh',
-      id: nextRequestId('worktree-refresh'),
-      worktreeId,
-    })
-    if (!response.ok) throw responseError(response)
-    return normalizeWorktree(response.worktree)
-  }
-
-  async removeWorktree(input: TaudRemoveWorktreeInput): Promise<void> {
-    const response = await this.request({
-      type: 'worktree.remove',
-      id: nextRequestId('worktree-remove'),
-      worktreeId: input.worktreeId,
-      ...(input.force ? { force: input.force } : {}),
-      ...(input.deleteBranch ? { deleteBranch: input.deleteBranch } : {}),
-    })
-    if (!response.ok) throw responseError(response)
+    return parseMuxGraphState(response)
   }
 
   private async canConnect(): Promise<boolean> {
@@ -2020,7 +1284,6 @@ export class TaudClient {
       this.spawnedProcess.killed
     ) {
       if (this.disposed) throw new Error('taud client is disposed')
-      const adapterDir = findTaudAdapterDir()
       const stdio: StdioOptions = this.detachDaemon ? 'ignore' : ['ignore', 'ignore', 'pipe']
       const child = spawn(binaryPath, [], {
         // Detached/unref'd in normal app runs: taud owns PTYs and should survive Electron restarts.
@@ -2029,7 +1292,6 @@ export class TaudClient {
         stdio,
         env: {
           ...process.env,
-          ...(adapterDir ? { TAUD_ADAPTER_DIR: adapterDir } : {}),
         },
         cwd: dirname(binaryPath),
       })
@@ -2132,7 +1394,7 @@ export class TaudClient {
 
   private async request(
     request: TaudRequest,
-    options: { ensure?: boolean } = {},
+    options: { ensure?: boolean; responseTimeoutMs?: number } = {},
   ): Promise<TaudRawControlResponse> {
     if (options.ensure !== false) await this.ensureRunning()
 
@@ -2146,7 +1408,10 @@ export class TaudClient {
         this.controlResponseTimeoutMs,
         'control request',
       )
-      const { response } = await readNdjsonResponse(socket, this.controlResponseTimeoutMs)
+      const { response } = await readNdjsonResponse(
+        socket,
+        options.responseTimeoutMs ?? this.controlResponseTimeoutMs,
+      )
       this.recordControlRequest(
         tracedRequest,
         startedAt,
@@ -2167,4 +1432,6 @@ export class TaudClient {
   private withTrace(request: TaudRequest): TaudRequest {
     return { ...request, traceId: requestTraceId(this.clientTraceId, request) }
   }
+
+
 }

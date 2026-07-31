@@ -92,7 +92,6 @@ test('taud protocol spec matches TS constants and fixture files', () => {
     { name: 'resize', value: TaudStreamFrameKind.Resize },
     { name: 'snapshot', value: TaudStreamFrameKind.Snapshot },
     { name: 'exit', value: TaudStreamFrameKind.Exit },
-    { name: 'agent', value: TaudStreamFrameKind.Agent },
   ])
 
   for (const fixture of [
@@ -204,7 +203,7 @@ test('taud stream parser keeps partial tails for the next chunk', () => {
     payload: 'first',
   })
   const second = encodeTaudStreamFrame({
-    kind: TaudStreamFrameKind.Agent,
+    kind: TaudStreamFrameKind.Input,
     sessionId: 'session-1',
     seq: 2,
     payload: '{"ok":true}',
@@ -215,7 +214,7 @@ test('taud stream parser keeps partial tails for the next chunk', () => {
   const frames = parser.push(second.subarray(5))
 
   assert.equal(frames.length, 1)
-  assert.equal(frames[0]?.kind, TaudStreamFrameKind.Agent)
+  assert.equal(frames[0]?.kind, TaudStreamFrameKind.Input)
   assert.equal(frames[0]?.seq, 2)
 })
 

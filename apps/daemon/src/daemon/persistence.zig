@@ -30,35 +30,12 @@ pub fn restoreSessionFromDatabaseLocked(
     };
     defer record.deinit(self.allocator);
 
-    const resume_lookup = try database.findAgentResumeForTerminal(self.allocator, record.id);
-    var mutable_resume_lookup = resume_lookup;
-    defer if (mutable_resume_lookup) |*lookup| lookup.deinit(self.allocator);
-
     const cols = request.cols orelse record.cols;
     const rows = request.rows orelse record.rows;
     const cwd = request.cwd orelse record.cwd;
     const terminal_id = request.requestTerminalId() orelse record.terminal_id;
-    const workspace_id = request.requestWorkspaceId() orelse record.workspace_id orelse return null;
-    const worktree_id = request.requestWorktreeId() orelse record.worktree_id;
-
-    if (mutable_resume_lookup) |lookup| {
-        if (try self.restoreSessionWithArgvJsonLocked(session_id, terminal_id, workspace_id, worktree_id, cwd, cols, rows, lookup.resume_argv_json, "resumed")) |restored| {
-            std.log.info("restored persisted session {s} with native agent resume", .{restored.id});
-            var result: RestoreResult = .{
-                .item = restored,
-                .attach_kind = .agent_resume,
-                .agent_provider = try self.allocator.dupe(u8, lookup.provider),
-                .native_session_id = try self.allocator.dupe(u8, lookup.native_session_id),
-            };
-            errdefer result.deinit(self.allocator);
-            return result;
-        }
-
-        std.log.warn("agent resume argv for {s} was unusable; falling back to saved command", .{record.id});
-    }
-
     const restart_argv_json = record.argv_json orelse return null;
-    const restored = (try self.restoreSessionWithArgvJsonLocked(session_id, terminal_id, workspace_id, worktree_id, cwd, cols, rows, restart_argv_json, "running")) orelse return null;
+    const restored = (try self.restoreSessionWithArgvJsonLocked(session_id, terminal_id, cwd, cols, rows, restart_argv_json)) orelse return null;
     std.log.info("restored persisted session {s} with saved command", .{restored.id});
     return .{
         .item = restored,
@@ -70,13 +47,10 @@ pub fn restoreSessionWithArgvJsonLocked(
     self: anytype,
     session_id: []const u8,
     terminal_id: []const u8,
-    workspace_id: ?[]const u8,
-    worktree_id: ?[]const u8,
     cwd: ?[]const u8,
     cols: u16,
     rows: u16,
     argv_json: []const u8,
-    agent_status: []const u8,
 ) !?*session.TerminalSession {
     var parsed_argv = parseArgvJson(self.allocator, argv_json) catch |err| {
         std.log.warn("failed to parse restart argv for {s}: {t}", .{ session_id, err });
@@ -90,8 +64,6 @@ pub fn restoreSessionWithArgvJsonLocked(
     const restored = try self.sessions.create(.{
         .session_id = session_id,
         .terminal_id = terminal_id,
-        .workspace_id = workspace_id,
-        .worktree_id = worktree_id,
         .cols = cols,
         .rows = rows,
         .cwd = cwd,
@@ -125,18 +97,9 @@ pub fn restoreSessionWithArgvJsonLocked(
     const current_argv_json = try argvJsonAlloc(self.allocator, argv);
     defer if (current_argv_json) |json| self.allocator.free(json);
     self.recordTerminalSessionLocked(restored, current_argv_json);
-    var agent_snapshot = self.agentDetectionSnapshotFromArgvLocked(restored, argv, current_argv_json, agent_status) catch |err| blk: {
-        std.log.warn("failed to prepare restored agent metadata for {s}: {t}", .{ restored.id, err });
-        break :blk null;
-    };
     try self.startSessionReaderLocked(restored);
 
     restore_committed = true;
-    self.unlock();
-    defer if (agent_snapshot) |*value| value.deinit(self.allocator);
-    if (agent_snapshot) |*value| self.recordAgentSessionFromSnapshot(value);
-    self.lock();
-
     return self.sessions.find(restored_id);
 }
 
@@ -268,8 +231,6 @@ pub fn recordTerminalSessionLocked(self: anytype, item: *const session.TerminalS
     database.recordTerminalSession(.{
         .id = item.id,
         .terminal_id = item.terminal_id,
-        .workspace_id = item.workspace_id,
-        .worktree_id = item.worktree_id,
         .cwd = item.cwd,
         .argv_json = argv_json,
         .status = item.status.text(),
@@ -385,4 +346,27 @@ pub fn pruneMissingEventLogMetadataLocked(self: anytype) void {
             std.log.warn("failed to prune missing session metadata {s}: {t}", .{ ref.id, err });
         };
     }
+}
+
+pub fn indexSearchExcerptFromSnapshot(self: anytype, snapshot_input: *const SearchExcerptSnapshot) void {
+    const excerpt = util.readSmallFileAlloc(self.allocator, snapshot_input.excerpt_path, event_log.max_excerpt_bytes) catch |err| {
+        std.log.warn("failed to read search excerpt for {s}: {t}", .{ snapshot_input.terminal_session_id, err });
+        return;
+    };
+    defer if (excerpt) |bytes| self.allocator.free(bytes);
+    const bytes = excerpt orelse return;
+    if (bytes.len == 0) return;
+
+    self.lock();
+    defer self.unlock();
+    if (!self.persistence.enabled) return;
+    const database = if (self.database) |*database| database else return;
+
+    database.recordTerminalSearch(.{
+        .terminal_session_id = snapshot_input.terminal_session_id,
+        .title = snapshot_input.title,
+        .excerpt = bytes,
+    }) catch |err| {
+        std.log.warn("failed to index search excerpt for {s}: {t}", .{ snapshot_input.terminal_session_id, err });
+    };
 }

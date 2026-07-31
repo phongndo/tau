@@ -2,29 +2,15 @@
   "name": "taud-control-and-stream",
   "version": 1,
   "control": {
-    "protocolVersion": 1,
+    "protocolVersion": 2,
     "daemonVersion": "1.0.0",
     "capabilities": [
       "sessions-v1",
       "stream-frames-v1",
-      "workspaces-v1",
-      "worktrees-v1",
       "persistence-v1",
-      "pi-threads-v1"
+      "mux-graph-v2"
     ],
-    "requestFixtures": [
-      "control-workspace-branch-request.ndjson",
-      "control-workspace-branches-request.ndjson",
-      "control-workspace-diff-request.ndjson",
-      "control-workspace-file-tree-request.ndjson",
-      "control-workspace-git-worktrees-request.ndjson",
-      "control-workspace-ports-request.ndjson",
-      "control-workspace-pull-request-request.ndjson",
-      "control-workspace-revert-path-request.ndjson",
-      "control-workspace-stage-path-request.ndjson",
-      "control-workspace-status-request.ndjson",
-      "control-workspace-unstage-path-request.ndjson"
-    ],
+    "requestFixtures": [],
     "responseFixtures": [
       "control-attach-response.ndjson",
       "control-cleanup-response.ndjson",
@@ -32,23 +18,7 @@
       "control-configure-persistence-response.ndjson",
       "control-error-response.ndjson",
       "control-ping-response.ndjson",
-      "control-session-response.ndjson",
-      "control-workspace-branch-response.ndjson",
-      "control-workspace-branches-response.ndjson",
-      "control-workspace-diff-response.ndjson",
-      "control-workspace-file-tree-response.ndjson",
-      "control-workspace-git-worktrees-response.ndjson",
-      "control-workspace-list-response.ndjson",
-      "control-workspace-ports-response.ndjson",
-      "control-workspace-pull-request-response.ndjson",
-      "control-workspace-record-response.ndjson",
-      "control-workspace-remove-response.ndjson",
-      "control-workspace-revert-path-response.ndjson",
-      "control-workspace-stage-path-response.ndjson",
-      "control-workspace-status-response.ndjson",
-      "control-workspace-unstage-path-response.ndjson",
-      "control-worktree-remove-response.ndjson",
-      "control-worktree-response.ndjson"
+      "control-session-response.ndjson"
     ]
   },
   "stream": {
@@ -58,12 +28,26 @@
     "headerSize": 88,
     "maxPayloadBytes": 67108864,
     "frameKinds": [
-      { "name": "output", "value": 1 },
-      { "name": "input", "value": 2 },
-      { "name": "resize", "value": 3 },
-      { "name": "snapshot", "value": 4 },
-      { "name": "exit", "value": 5 },
-      { "name": "agent", "value": 6 }
+      {
+        "name": "output",
+        "value": 1
+      },
+      {
+        "name": "input",
+        "value": 2
+      },
+      {
+        "name": "resize",
+        "value": 3
+      },
+      {
+        "name": "snapshot",
+        "value": 4
+      },
+      {
+        "name": "exit",
+        "value": 5
+      }
     ],
     "fixtures": [
       "stream-exit-frame.hex",
@@ -71,6 +55,8 @@
       "stream-resize-frame.hex",
       "stream-snapshot-frame.hex"
     ],
-    "corruptFixtures": ["stream-corrupt-crc-frame.hex"]
+    "corruptFixtures": [
+      "stream-corrupt-crc-frame.hex"
+    ]
   }
 }

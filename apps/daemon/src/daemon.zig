@@ -7,8 +7,7 @@ const rpc = @import("rpc.zig");
 const session = @import("session.zig");
 const snapshot = @import("snapshot.zig");
 const vt = @import("vt.zig");
-const workspace_mod = @import("workspace.zig");
-const worktree_mod = @import("worktree.zig");
+const mux_graph_mod = @import("mux_graph.zig");
 
 const daemon_config = @import("daemon/config.zig");
 const fd_io = @import("daemon/fd_io.zig");
@@ -20,14 +19,12 @@ const control = @import("daemon/control.zig");
 const persistence = @import("daemon/persistence.zig");
 const process = @import("daemon/process.zig");
 const stream_mod = @import("daemon/stream.zig");
-const agent_index = @import("daemon/agent_index.zig");
 const screen = @import("daemon/screen.zig");
 
 const fileExists = util.fileExists;
 
 const PersistencePolicy = types.PersistencePolicy;
 const RestoreResult = types.RestoreResult;
-const AgentDetectionSnapshot = types.AgentDetectionSnapshot;
 const SearchExcerptSnapshot = types.SearchExcerptSnapshot;
 const CurrentScreenCheckpoint = types.CurrentScreenCheckpoint;
 
@@ -44,10 +41,8 @@ test {
     _ = persistence;
     _ = process;
     _ = stream_mod;
-    _ = agent_index;
     _ = screen;
-    _ = workspace_mod;
-    _ = worktree_mod;
+    _ = mux_graph_mod;
 }
 
 pub const Daemon = struct {
@@ -57,13 +52,16 @@ pub const Daemon = struct {
     pty_driver: pty.Driver,
     database: ?db.Database,
     persistence: PersistencePolicy,
+    mux_graph: mux_graph_mod.Graph,
     mutex: std.Thread.Mutex = .{},
+    graph_condition: std.Thread.Condition = .{},
     active_control_connections: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     active_session_readers: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     stream_input_frames_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     stream_input_bytes_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     stream_output_frames_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     stream_output_bytes_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    last_pty_read_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     stream_slow_subscriber_drops_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     stream_pending_output_dropped_frames_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     stream_pending_output_dropped_bytes_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -88,6 +86,7 @@ pub const Daemon = struct {
             .pty_driver = pty.Driver.init(allocator),
             .database = null,
             .persistence = .{},
+            .mux_graph = mux_graph_mod.Graph.init(allocator),
         };
     }
 
@@ -95,6 +94,7 @@ pub const Daemon = struct {
         self.stopSessionProcessesForDeinit();
         self.waitForSessionReadersForDeinit();
         if (self.database) |*database| database.deinit();
+        self.mux_graph.deinit();
         self.sessions.deinit();
     }
 
@@ -217,100 +217,16 @@ pub const Daemon = struct {
         return control.handleConfigurePersistenceLocked(self, allocator, request);
     }
 
-    pub fn handlePiThreadListLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return control.handlePiThreadListLocked(self, allocator, request);
+    pub fn handleGraphGetLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
+        return control.handleGraphGetLocked(self, allocator, request);
     }
 
-    pub fn handleWorkspaceListLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleListLocked(self, allocator, request);
+    pub fn handleGraphReplaceLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
+        return control.handleGraphReplaceLocked(self, allocator, request);
     }
 
-    pub fn handleWorkspaceAddLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleAddLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspaceRemoveLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleRemoveLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspaceRefreshLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleRefreshLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspaceReorderLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleReorderLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspaceBranchLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleBranchLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspaceBranchesLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleBranchesLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspaceGitWorktreesLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleGitWorktreesLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspaceStatusLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleStatusLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspaceFileTreeLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleFileTreeLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspaceDiffLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleDiffLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspaceStagePathLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleStagePathLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspaceUnstagePathLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleUnstagePathLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspaceRevertPathLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handleRevertPathLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspacePortsLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handlePortsLocked(self, allocator, request);
-    }
-
-    pub fn handleWorkspacePullRequestLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return workspace_mod.handlePullRequestLocked(self, allocator, request);
-    }
-
-    pub fn handleWorktreeListLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return worktree_mod.handleListLocked(self, allocator, request);
-    }
-
-    pub fn handleWorktreeCreateLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return worktree_mod.handleCreateLocked(self, allocator, request);
-    }
-
-    pub fn handleWorktreeRemoveLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return worktree_mod.handleRemoveLocked(self, allocator, request);
-    }
-
-    pub fn handleWorktreeAdoptLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return worktree_mod.handleAdoptLocked(self, allocator, request);
-    }
-
-    pub fn handleWorktreeHandoffLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return worktree_mod.handleHandoffLocked(self, allocator, request);
-    }
-
-    pub fn handleWorktreeRefreshLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return worktree_mod.handleRefreshLocked(self, allocator, request);
-    }
-
-    pub fn handleWorktreeReorderLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-        return worktree_mod.handleReorderLocked(self, allocator, request);
+    pub fn handleGraphWaitLocked(self: *Daemon, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
+        return control.handleGraphWaitLocked(self, allocator, request);
     }
 
     pub fn restoreSessionFromDatabaseLocked(
@@ -325,15 +241,12 @@ pub const Daemon = struct {
         self: *Daemon,
         session_id: []const u8,
         terminal_id: []const u8,
-        workspace_id: ?[]const u8,
-        worktree_id: ?[]const u8,
         cwd: ?[]const u8,
         cols: u16,
         rows: u16,
         argv_json: []const u8,
-        agent_status: []const u8,
     ) !?*session.TerminalSession {
-        return persistence.restoreSessionWithArgvJsonLocked(self, session_id, terminal_id, workspace_id, worktree_id, cwd, cols, rows, argv_json, agent_status);
+        return persistence.restoreSessionWithArgvJsonLocked(self, session_id, terminal_id, cwd, cols, rows, argv_json);
     }
 
     pub fn ensureSessionPersistence(self: *Daemon, item: *session.TerminalSession) !void {
@@ -416,40 +329,8 @@ pub const Daemon = struct {
         return persistence.searchExcerptSnapshotLocked(self, item);
     }
 
-    pub fn agentDetectionSnapshotFromStoredArgvLocked(self: *Daemon, item: *const session.TerminalSession, status: []const u8) !?AgentDetectionSnapshot {
-        return agent_index.agentDetectionSnapshotFromStoredArgvLocked(self, item, status);
-    }
-
-    pub fn agentDetectionSnapshotFromArgvLocked(
-        self: *Daemon,
-        item: *const session.TerminalSession,
-        argv_items: []const []const u8,
-        original_argv_json: ?[]const u8,
-        status: []const u8,
-    ) !?AgentDetectionSnapshot {
-        return agent_index.agentDetectionSnapshotFromArgvLocked(self, item, argv_items, original_argv_json, status);
-    }
-
-    pub fn recordAgentSessionFromSnapshot(self: *Daemon, snapshot_input: *const AgentDetectionSnapshot) void {
-        return agent_index.recordAgentSessionFromSnapshot(self, snapshot_input);
-    }
-
-    pub fn refreshAgentSessionMetadataFromStoredArgvLocked(self: *Daemon, item: *const session.TerminalSession, status: []const u8) void {
-        return agent_index.refreshAgentSessionMetadataFromStoredArgvLocked(self, item, status);
-    }
-
-    pub fn recordAgentSessionLocked(
-        self: *Daemon,
-        item: *const session.TerminalSession,
-        argv: []const []const u8,
-        original_argv_json: ?[]const u8,
-        status: []const u8,
-    ) void {
-        return agent_index.recordAgentSessionLocked(self, item, argv, original_argv_json, status);
-    }
-
     pub fn indexSearchExcerptFromSnapshot(self: *Daemon, snapshot_input: *const SearchExcerptSnapshot) void {
-        return agent_index.indexSearchExcerptFromSnapshot(self, snapshot_input);
+        persistence.indexSearchExcerptFromSnapshot(self, snapshot_input);
     }
 
     pub fn pruneMissingEventLogMetadataLocked(self: *Daemon) void {
@@ -492,7 +373,7 @@ pub const Daemon = struct {
 
     /// Guarded daemon mutex ownership. Most daemon methods still expose the
     /// legacy `lock`/`unlock` pair because the control path deliberately drops
-    /// the lock around filesystem, SQLite, and adapter work. New code should
+    /// the lock around filesystem, SQLite, and filesystem work. New code should
     /// prefer this guard so lock ownership is local and mechanically paired.
     pub const LockGuard = struct {
         daemon: *Daemon,
@@ -564,6 +445,11 @@ pub const Daemon = struct {
         _ = self.stream_input_bytes_total.fetchAdd(@intCast(payload_len), .monotonic);
     }
 
+    pub fn recordPtyRead(self: *Daemon) void {
+        const timestamp = std.time.nanoTimestamp();
+        self.last_pty_read_ns.store(if (timestamp > 0) @intCast(timestamp) else 0, .monotonic);
+    }
+
     pub fn recordStreamOutputFrame(self: *Daemon, payload_len: usize) void {
         _ = self.stream_output_frames_total.fetchAdd(1, .monotonic);
         _ = self.stream_output_bytes_total.fetchAdd(@intCast(payload_len), .monotonic);
@@ -608,6 +494,7 @@ pub const Daemon = struct {
             .input_bytes_total = self.stream_input_bytes_total.load(.monotonic),
             .output_frames_total = self.stream_output_frames_total.load(.monotonic),
             .output_bytes_total = self.stream_output_bytes_total.load(.monotonic),
+            .last_pty_read_ns = self.last_pty_read_ns.load(.monotonic),
             .slow_subscriber_drops_total = self.stream_slow_subscriber_drops_total.load(.monotonic),
             .pending_output_dropped_frames_total = self.stream_pending_output_dropped_frames_total.load(.monotonic),
             .pending_output_dropped_bytes_total = self.stream_pending_output_dropped_bytes_total.load(.monotonic),
@@ -653,7 +540,7 @@ test "daemon control RPC creates and updates sessions" {
     defer daemon.deinit();
 
     const created = try daemon.handleControlPayload(std.testing.allocator,
-        \\{"id":"1","method":"create","session_id":"s1","terminal_id":"t1","workspace_id":"workspace-1","cols":80,"rows":24}
+        \\{"id":"1","method":"create","session_id":"s1","terminal_id":"t1","cols":80,"rows":24}
     );
     defer std.testing.allocator.free(created);
 
@@ -669,7 +556,7 @@ test "daemon control RPC creates and updates sessions" {
     try std.testing.expect(std.mem.indexOf(u8, resized, "\"cols\":120") != null);
 
     const recreated = try daemon.handleControlPayload(std.testing.allocator,
-        \\{"id":"2b","method":"create","session_id":"s1","terminal_id":"t1b","workspace_id":"workspace-1","cols":90,"rows":25,"cwd":"/tmp"}
+        \\{"id":"2b","method":"create","session_id":"s1","terminal_id":"t1b","cols":90,"rows":25,"cwd":"/tmp"}
     );
     defer std.testing.allocator.free(recreated);
 
@@ -685,6 +572,22 @@ test "daemon control RPC creates and updates sessions" {
     try std.testing.expect(daemon.sessions.find("s2") != null);
 }
 
+test "daemon control RPC creates session without workspace" {
+    var config = try Config.fromHome(std.testing.allocator, "/tmp/example-home");
+    defer config.deinit(std.testing.allocator);
+
+    var daemon = Daemon.init(std.testing.allocator, config);
+    defer daemon.deinit();
+
+    const created = try daemon.handleControlPayload(std.testing.allocator,
+        \\{"id":"1","method":"create","session_id":"plain-shell","terminal_id":"t-shell","cols":80,"rows":24}
+    );
+    defer std.testing.allocator.free(created);
+
+    try std.testing.expect(daemon.sessions.find("plain-shell") != null);
+    try std.testing.expect(std.mem.indexOf(u8, created, "\"ok\":true") != null);
+}
+
 test "daemon control RPC ping reports protocol identity" {
     var config = try Config.fromHome(std.testing.allocator, "/tmp/example-home");
     defer config.deinit(std.testing.allocator);
@@ -698,7 +601,7 @@ test "daemon control RPC ping reports protocol identity" {
     defer std.testing.allocator.free(response);
 
     try std.testing.expect(std.mem.indexOf(u8, response, "\"ok\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, response, "\"protocol_version\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"protocol_version\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "\"daemon_version\":\"1.0.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "\"capabilities\":[\"sessions-v1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "\"stream_diagnostics\"") != null);
@@ -742,7 +645,6 @@ test "daemon stream diagnostics report output backlog and totals" {
     const item = try daemon.sessions.create(.{
         .session_id = "diag-session",
         .terminal_id = "diag-terminal",
-        .workspace_id = "workspace-1",
         .cols = 80,
         .rows = 24,
         .cwd = null,
@@ -776,7 +678,6 @@ test "daemon stream diagnostics report pending output truncation" {
     const item = try daemon.sessions.create(.{
         .session_id = "truncated-session",
         .terminal_id = "truncated-terminal",
-        .workspace_id = "workspace-1",
         .cols = 80,
         .rows = 24,
         .cwd = null,
@@ -794,28 +695,12 @@ test "daemon stream diagnostics report pending output truncation" {
     );
     defer std.testing.allocator.free(response);
 
-    try std.testing.expect(std.mem.indexOf(u8, response, "\"pending_output_frames\":1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, response, "\"pending_output_bytes\":1048576") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"pending_output_frames\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"pending_output_bytes\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "\"output_frames_total\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "\"output_bytes_total\":1048583") != null);
-    try std.testing.expect(std.mem.indexOf(u8, response, "\"pending_output_truncated_bytes_total\":7") != null);
-}
-
-test "daemon control RPC rejects session creation without workspace" {
-    var config = try Config.fromHome(std.testing.allocator, "/tmp/example-home");
-    defer config.deinit(std.testing.allocator);
-
-    var daemon = Daemon.init(std.testing.allocator, config);
-    defer daemon.deinit();
-
-    const response = try daemon.handleControlPayload(std.testing.allocator,
-        \\{"id":"1","method":"create","session_id":"s1","terminal_id":"t1","cols":80,"rows":24}
-    );
-    defer std.testing.allocator.free(response);
-
-    try std.testing.expect(daemon.sessions.find("s1") == null);
-    try std.testing.expect(std.mem.indexOf(u8, response, "\"ok\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, response, "missing field: workspace_id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"pending_output_dropped_frames_total\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"pending_output_truncated_bytes_total\":1048583") != null);
 }
 
 test "daemon control RPC reports missing sessions" {
@@ -875,7 +760,7 @@ test "daemon persistence privacy toggle avoids session log creation" {
     try std.testing.expect(std.mem.indexOf(u8, configured, "\"persistence_enabled\":false") != null);
 
     const created = try daemon.handleControlPayload(std.testing.allocator,
-        \\{"id":"1","method":"create","session_id":"private-session","terminal_id":"private-terminal","workspace_id":"workspace-1","cols":80,"rows":24}
+        \\{"id":"1","method":"create","session_id":"private-session","terminal_id":"private-terminal","cols":80,"rows":24}
     );
     defer std.testing.allocator.free(created);
 
@@ -893,7 +778,7 @@ test "daemon drops failed stream subscribers without blocking pending output" {
     defer daemon.deinit();
 
     const created = try daemon.handleControlPayload(std.testing.allocator,
-        \\{"id":"1","method":"create","session_id":"stream-session","terminal_id":"stream-terminal","workspace_id":"workspace-1","cols":80,"rows":24}
+        \\{"id":"1","method":"create","session_id":"stream-session","terminal_id":"stream-terminal","cols":80,"rows":24}
     );
     defer std.testing.allocator.free(created);
 
@@ -925,7 +810,7 @@ test "daemon synthetic exit clears PTY ownership before exited transition" {
     defer daemon.deinit();
 
     const created = try daemon.handleControlPayload(std.testing.allocator,
-        \\{"id":"1","method":"create","session_id":"exit-session","terminal_id":"exit-terminal","workspace_id":"workspace-1","cols":80,"rows":24}
+        \\{"id":"1","method":"create","session_id":"exit-session","terminal_id":"exit-terminal","cols":80,"rows":24}
     );
     defer std.testing.allocator.free(created);
 
@@ -953,85 +838,7 @@ test "daemon synthetic exit clears PTY ownership before exited transition" {
     item.assertInvariants();
 }
 
-test "daemon falls back to saved command when agent resume metadata is corrupt" {
-    if (!fileExists("/bin/sh")) return;
-
-    var tmp = std.testing.tmpDir(.{ .iterate = true });
-    defer tmp.cleanup();
-
-    const home = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}/home", .{tmp.sub_path});
-    defer std.testing.allocator.free(home);
-
-    var config = try Config.fromHome(std.testing.allocator, home);
-    defer config.deinit(std.testing.allocator);
-
-    var daemon = Daemon.init(std.testing.allocator, config);
-    defer daemon.deinit();
-    try daemon.prepareStorage();
-
-    if (daemon.database) |*database| {
-        try database.insertWorkspace(.{
-            .id = "workspace-resume",
-            .name = "resume",
-            .root_path = home,
-            .git_common_dir = null,
-            .workspace_slug = "resume",
-            .default_branch = null,
-            .order_index = 0,
-        });
-        try database.insertWorktree(.{
-            .id = "worktree-resume",
-            .workspace_id = "workspace-resume",
-            .title = "Resume worktree",
-            .folder_name = "resume-worktree-a13f",
-            .path = home,
-            .branch = "resume-worktree-a13f",
-            .base_branch = "main",
-            .target_branch = "main",
-            .state = "active",
-            .order_index = 0,
-        });
-        try database.recordTerminalSession(.{
-            .id = "resume-session",
-            .terminal_id = "resume-terminal",
-            .workspace_id = "workspace-resume",
-            .worktree_id = "worktree-resume",
-            .argv_json = "[\"/bin/sh\",\"-c\",\"sleep 2\"]",
-            .status = "exited",
-            .cols = 80,
-            .rows = 24,
-            .event_log_path = "/tmp/tau-resume-session/events.tauev",
-            .last_seq = 0,
-        });
-        try database.recordAgentSession(.{
-            .id = "agent-resume-session-pi",
-            .terminal_session_id = "resume-session",
-            .provider = "pi",
-            .native_session_id = "native-123",
-            .resume_argv_json = "[",
-            .status = "resumable",
-        });
-    } else unreachable;
-
-    const attached = try daemon.handleControlPayload(std.testing.allocator,
-        \\{"id":"attach","type":"attach","sessionId":"resume-session","terminalId":"resume-terminal","cols":80,"rows":24}
-    );
-    defer std.testing.allocator.free(attached);
-
-    try std.testing.expect(std.mem.indexOf(u8, attached, "\"ok\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, attached, "\"attach_kind\":\"command-resume\"") != null);
-    const restored = daemon.sessions.find("resume-session").?;
-    try std.testing.expectEqualStrings("workspace-resume", restored.workspace_id.?);
-    try std.testing.expectEqualStrings("worktree-resume", restored.worktree_id.?);
-
-    const killed = try daemon.handleControlPayload(std.testing.allocator,
-        \\{"id":"kill","type":"kill","sessionId":"resume-session"}
-    );
-    defer std.testing.allocator.free(killed);
-    try std.testing.expect(std.mem.indexOf(u8, killed, "\"ok\":true") != null);
-}
-
-test "daemon requires workspace to restore legacy persisted sessions" {
+test "daemon restores persisted mux sessions from saved argv" {
     if (!fileExists("/bin/sh")) return;
 
     var tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -1060,30 +867,12 @@ test "daemon requires workspace to restore legacy persisted sessions" {
         });
     } else unreachable;
 
-    const missing_workspace = try daemon.handleControlPayload(std.testing.allocator,
-        \\{"id":"attach","type":"attach","sessionId":"legacy-session","terminalId":"legacy-terminal","cols":80,"rows":24}
-    );
-    defer std.testing.allocator.free(missing_workspace);
-
-    try std.testing.expect(std.mem.indexOf(u8, missing_workspace, "\"ok\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, missing_workspace, "\"session_not_found\"") != null);
-    try std.testing.expect(daemon.sessions.find("legacy-session") == null);
-
     const attached = try daemon.handleControlPayload(std.testing.allocator,
-        \\{"id":"attach","type":"attach","sessionId":"legacy-session","terminalId":"legacy-terminal","workspaceId":"workspace-resume","cols":80,"rows":24}
+        \\{"id":"attach","type":"attach","sessionId":"legacy-session","terminalId":"legacy-terminal","cols":80,"rows":24}
     );
     defer std.testing.allocator.free(attached);
 
     try std.testing.expect(std.mem.indexOf(u8, attached, "\"ok\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, attached, "\"attach_kind\":\"command-resume\"") != null);
-    const restored = daemon.sessions.find("legacy-session").?;
-    try std.testing.expectEqualStrings("workspace-resume", restored.workspace_id.?);
-
-    const killed = try daemon.handleControlPayload(std.testing.allocator,
-        \\{"id":"kill","type":"kill","sessionId":"legacy-session"}
-    );
-    defer std.testing.allocator.free(killed);
-    try std.testing.expect(std.mem.indexOf(u8, killed, "\"ok\":true") != null);
 }
 
 test "daemon detach checkpoints current-screen snapshot" {
@@ -1103,7 +892,7 @@ test "daemon detach checkpoints current-screen snapshot" {
     try daemon.prepareStorage();
 
     const created = try daemon.handleControlPayload(std.testing.allocator,
-        \\{"id":"1","method":"create","session_id":"snapshot-session","terminal_id":"snapshot-terminal","workspace_id":"workspace-1","cols":24,"rows":4}
+        \\{"id":"1","method":"create","session_id":"snapshot-session","terminal_id":"snapshot-terminal","cols":24,"rows":4}
     );
     defer std.testing.allocator.free(created);
 
@@ -1129,4 +918,39 @@ test "daemon detach checkpoints current-screen snapshot" {
     const text = try restored.plainTextAlloc(std.testing.allocator);
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "snapshot text") != null);
+}
+
+test "daemon mux graph mutations are revision checked and durable" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}/home", .{tmp.sub_path});
+    defer std.testing.allocator.free(home);
+
+    var config = try Config.fromHome(std.testing.allocator, home);
+    defer config.deinit(std.testing.allocator);
+    var daemon = Daemon.init(std.testing.allocator, config);
+    defer daemon.deinit();
+    try daemon.prepareStorage();
+
+    const graph_snapshot =
+        \\{"schemaVersion":1,"graphRev":0,"eventSeq":0,"tabs":[{"id":"tab-1","name":"Shell","order":0,"root":"pane-1","activePaneId":"pane-1"}],"panes":[{"id":"pane-1","tabId":"tab-1","terminalId":"term-1","type":"terminal","name":"Shell","sessionId":"session-1"}],"activeTabId":"tab-1","activePaneId":"pane-1"}
+    ;
+    const replace_request = try std.fmt.allocPrint(std.testing.allocator,
+        \\{{"id":"graph-1","type":"graph-replace","expectedRev":0,"graphSnapshotJson":{f}}}
+    , .{std.json.fmt(graph_snapshot, .{})});
+    defer std.testing.allocator.free(replace_request);
+    const replaced = try daemon.handleControlPayload(std.testing.allocator, replace_request);
+    defer std.testing.allocator.free(replaced);
+    try std.testing.expect(std.mem.indexOf(u8, replaced, "\"graph_rev\":1") != null);
+    try std.testing.expect(fileExists(config.graph_path));
+
+    const conflict = try daemon.handleControlPayload(std.testing.allocator, replace_request);
+    defer std.testing.allocator.free(conflict);
+    try std.testing.expect(std.mem.indexOf(u8, conflict, "\"error_code\":\"revision_conflict\"") != null);
+
+    const current = try daemon.handleControlPayload(std.testing.allocator,
+        \\{"id":"graph-2","type":"graph-get","afterEventSeq":0}
+    );
+    defer std.testing.allocator.free(current);
+    try std.testing.expect(std.mem.indexOf(u8, current, "\"event_seq\":1") != null);
 }

@@ -5,46 +5,19 @@
 
 import type { AppCommand } from '@tau/shared/app-command'
 import type { TaudPtyBridgeDiagnostics } from '../main/pty-protocol'
-import type { PaneLayoutData, SettingsData } from '@tau/shared/session'
+import type { SettingsData } from '@tau/shared/session'
+import type { MuxGraphSnapshot } from '@tau/shared/mux-graph'
 import type {
   AttachSessionInput,
   AttachSessionResult,
-  AgentStatus,
   CreateSessionInput,
   CreateSessionResult,
   CurrentScreenSnapshotFrame,
   ExitInfo,
   OutputFrame,
-  PiThread,
-  PiThreadListInput,
   TaudLifecycleDiagnostics,
   TaudLifecycleRecoveryInput,
 } from '@tau/shared/taud-protocol'
-import type {
-  WorkspaceDiffPatchResponse,
-  WorkspaceDiffPatchInput,
-  WorkspaceAddInput,
-  WorkspaceGitPathActionInput,
-  WorkspaceGitPathActionResponse,
-  WorkspaceGitBranchResponse,
-  WorkspaceGitBranchesResponse,
-  WorkspaceFileTreeResponse,
-  WorkspaceGitStatusResponse,
-  WorkspaceGitWorktreesResponse,
-  WorkspaceIpcResponse,
-  WorkspaceListResponse,
-  WorkspacePortsResponse,
-  WorkspacePullRequestResponse,
-  WorkspaceRecord,
-  WorkspaceRecordResponse,
-  WorkspaceRefreshInput,
-  WorkspaceRemoveInput,
-  WorkspaceWatcherDiagnostics,
-  WorktreeCreateInput,
-  WorktreeRefreshInput,
-  WorktreeRemoveInput,
-  WorkspaceWorktreeResponse,
-} from '@tau/shared/workspace'
 
 type TerminalPreloadDiagnostics = {
   pendingClientMessages: number
@@ -68,11 +41,12 @@ export interface ElectronAPI {
   createSession(input: CreateSessionInput): Promise<CreateSessionResult>
   attachSession(input: AttachSessionInput): Promise<AttachSessionResult>
   detachSession(sessionId: string): Promise<void>
-  writeSessionInput(sessionId: string, data: Uint8Array): void
+  writeSessionInput(sessionId: string, data: string, encoding?: 'utf8' | 'binary'): void
+  acknowledgeSessionOutput(sessionId: string, seq: number): void
+  requestSessionResync(sessionId: string, appliedSeq: number): void
   resizeSession(sessionId: string, cols: number, rows: number): void
   killSession(sessionId: string): Promise<void>
   clearSessionHistory(sessionId: string): Promise<void>
-  clearWorkspaceSessionHistory(sessionIds: string[]): Promise<void>
   clearAllSessionHistory(): Promise<void>
   onSessionOutput(sessionId: string, callback: (frame: OutputFrame) => void): () => void
   onSessionSnapshot(
@@ -83,16 +57,18 @@ export interface ElectronAPI {
   onSessionTitle(sessionId: string, callback: (title: string) => void): () => void
   onSessionExit(sessionId: string, callback: (info: ExitInfo) => void): () => void
   onSessionError(sessionId: string, callback: (error: string) => void): () => void
-  onAgentStatus(sessionId: string, callback: (status: AgentStatus) => void): () => void
+  /** @deprecated Prefer createSession/attachSession. Kept for benchmarks. */
   spawnPty(
     sessionId: string,
     cols: number,
     rows: number,
     cwd?: string,
   ): Promise<{ cols: number; rows: number }>
+  /** @deprecated Prefer writeSessionInput. Kept for benchmarks. */
   sendPtyInput(sessionId: string, data: string): void
   resizePty(sessionId: string, cols: number, rows: number): void
   killPty(sessionId: string): void
+  /** @deprecated Prefer onSessionOutput. Kept for benchmarks. */
   onPtyData(sessionId: string, callback: (data: string) => void): () => void
   onPtyError(sessionId: string, callback: (error: string) => void): () => void
   onPtyExit(
@@ -101,34 +77,13 @@ export interface ElectronAPI {
   ): () => void
   signalReady(): Promise<void>
   onAppCommand(callback: (command: AppCommand) => void): () => void
-  onWorkspaceChanged(callback: (workspace: WorkspaceRecord) => void): () => void
   getTerminalPreloadDiagnostics(): TerminalPreloadDiagnostics
   getTaudDiagnostics(): Promise<TaudLifecycleDiagnostics | null>
   getTaudPtyBridgeDiagnostics(): Promise<TaudPtyBridgeDiagnostics | null>
   recoverTaud(action: TaudLifecycleRecoveryInput): Promise<TaudLifecycleDiagnostics | null>
-  getWorkspaceWatcherDiagnostics(): Promise<WorkspaceWatcherDiagnostics | null>
-  pickWorkspaceDirectory(): Promise<string | null>
-  getGitBranch(workspacePath: string): Promise<WorkspaceGitBranchResponse>
-  getGitBranches(workspacePath: string): Promise<WorkspaceGitBranchesResponse>
-  getGitWorktrees(workspacePath: string): Promise<WorkspaceGitWorktreesResponse>
-  getGitStatus(workspacePath: string): Promise<WorkspaceGitStatusResponse>
-  getWorkspaceFileTree(workspacePath: string): Promise<WorkspaceFileTreeResponse>
-  getWorkspaceDiffPatch(input: WorkspaceDiffPatchInput): Promise<WorkspaceDiffPatchResponse>
-  stagePath(input: WorkspaceGitPathActionInput): Promise<WorkspaceGitPathActionResponse>
-  unstagePath(input: WorkspaceGitPathActionInput): Promise<WorkspaceGitPathActionResponse>
-  revertPath(input: WorkspaceGitPathActionInput): Promise<WorkspaceGitPathActionResponse>
-  getWorkspacePorts(workspacePath: string): Promise<WorkspacePortsResponse>
-  getPullRequestInfo(workspacePath: string): Promise<WorkspacePullRequestResponse>
-  listWorkspaces(): Promise<WorkspaceListResponse>
-  addWorkspace(input: WorkspaceAddInput): Promise<WorkspaceRecordResponse>
-  refreshWorkspace(workspaceId: WorkspaceRefreshInput): Promise<WorkspaceRecordResponse>
-  removeWorkspace(workspaceId: WorkspaceRemoveInput): Promise<WorkspaceIpcResponse<void>>
-  createWorktree(input: WorktreeCreateInput): Promise<WorkspaceWorktreeResponse>
-  refreshWorktree(worktreeId: WorktreeRefreshInput): Promise<WorkspaceWorktreeResponse>
-  removeWorktree(input: WorktreeRemoveInput): Promise<WorkspaceIpcResponse<void>>
-  listPiThreads(input?: PiThreadListInput): Promise<WorkspaceIpcResponse<readonly PiThread[]>>
-  readLayout(): Promise<PaneLayoutData | null>
-  writeLayout(data: PaneLayoutData): Promise<void>
+  getMuxGraph(): Promise<MuxGraphSnapshot>
+  replaceMuxGraph(snapshot: MuxGraphSnapshot, expectedRev: number): Promise<MuxGraphSnapshot>
+  waitMuxGraph(afterEventSeq: number): Promise<MuxGraphSnapshot>
   readSettings(): Promise<SettingsData | null>
   writeSettings(data: SettingsData): Promise<void>
 }

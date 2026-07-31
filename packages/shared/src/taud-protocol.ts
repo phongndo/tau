@@ -8,14 +8,12 @@ export const TAUD_STREAM_SESSION_ID_SIZE = 64
 export const TAUD_STREAM_HEADER_SIZE = 88
 export const TAUD_STREAM_MAX_PAYLOAD_BYTES = 64 * 1024 * 1024
 
-export const TAUD_CONTROL_PROTOCOL_VERSION = 1
+export const TAUD_CONTROL_PROTOCOL_VERSION = 2
 export const TAUD_CONTROL_CAPABILITIES = [
   'sessions-v1',
   'stream-frames-v1',
-  'workspaces-v1',
-  'worktrees-v1',
   'persistence-v1',
-  'pi-threads-v1',
+  'mux-graph-v2',
 ] as const
 
 export const TaudStreamFrameKind = {
@@ -24,7 +22,6 @@ export const TaudStreamFrameKind = {
   Resize: 3,
   Snapshot: 4,
   Exit: 5,
-  Agent: 6,
 } as const
 
 export type TaudStreamFrameKind = (typeof TaudStreamFrameKind)[keyof typeof TaudStreamFrameKind]
@@ -89,10 +86,15 @@ export const TaudStreamDiagnosticsSchema = Schema.Struct({
   inputBytesTotal: Schema.Number,
   outputFramesTotal: Schema.Number,
   outputBytesTotal: Schema.Number,
+  lastPtyReadNs: Schema.optional(Schema.Number),
   slowSubscriberDropsTotal: Schema.Number,
   pendingOutputDroppedFramesTotal: Schema.Number,
   pendingOutputDroppedBytesTotal: Schema.Number,
   pendingOutputTruncatedBytesTotal: Schema.Number,
+  /** Latest output seq acknowledged by the renderer (Phase 2.5). */
+  acknowledgedSeq: Schema.optional(Schema.Number),
+  /** Age of oldest unreacked queued frame in ms. */
+  oldestPendingAgeMs: Schema.optional(Schema.Number),
 })
 
 export const TaudDaemonControlDiagnosticsSchema = Schema.Struct({
@@ -149,20 +151,16 @@ export const TaudStreamFrameKindSchema = Schema.Union([
   Schema.Literal(TaudStreamFrameKind.Resize),
   Schema.Literal(TaudStreamFrameKind.Snapshot),
   Schema.Literal(TaudStreamFrameKind.Exit),
-  Schema.Literal(TaudStreamFrameKind.Agent),
 ])
 
 export const AttachSessionModeSchema = Schema.Union([
   Schema.Literal('live'),
   Schema.Literal('fresh'),
   Schema.Literal('command-resume'),
-  Schema.Literal('agent-resume'),
 ])
 
 export const CreateSessionInputSchema = Schema.Struct({
   terminalId: NonEmptyString,
-  workspaceId: NonEmptyString,
-  worktreeId: Schema.optional(NonEmptyString),
   cols: Schema.Number,
   rows: Schema.Number,
   cwd: Schema.optional(Schema.String),
@@ -177,8 +175,6 @@ export const CreateSessionResultSchema = Schema.Struct({
 export const AttachSessionInputSchema = Schema.Struct({
   sessionId: Schema.optional(NonEmptyString),
   terminalId: Schema.optional(NonEmptyString),
-  workspaceId: Schema.optional(NonEmptyString),
-  worktreeId: Schema.optional(NonEmptyString),
   cols: Schema.optional(Schema.Number),
   rows: Schema.optional(Schema.Number),
   cwd: Schema.optional(Schema.String),
@@ -193,42 +189,18 @@ export const AttachSessionResultSchema = Schema.Struct({
   rows: Schema.Number,
   archived: Schema.optional(Schema.Boolean),
   attachMode: Schema.optional(AttachSessionModeSchema),
-  agentProvider: Schema.optional(Schema.String),
-  nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
 })
 
 export const OutputFrameSchema = Schema.Struct({
   sessionId: NonEmptyString,
   seq: Schema.Number,
-  data: Schema.String,
-})
-
-export const PiThreadListInputSchema = Schema.Struct({
-  workspaceId: Schema.optional(NonEmptyString),
-  worktreeId: Schema.optional(NonEmptyString),
-  rootPath: Schema.optional(NonEmptyString),
-})
-
-export const PiThreadSchema = Schema.Struct({
-  id: NonEmptyString,
-  terminalSessionId: NonEmptyString,
-  terminalId: NonEmptyString,
-  workspaceId: Schema.optional(Schema.String),
-  worktreeId: Schema.optional(Schema.String),
-  cwd: Schema.optional(Schema.String),
-  terminalStatus: Schema.String,
-  agentStatus: Schema.String,
-  nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
-  resumeArgv: Schema.optional(Schema.Array(Schema.String)),
-  title: Schema.optional(Schema.String),
-  lastSeq: Schema.Number,
-  lastActivityAt: Schema.optional(Schema.String),
+  data: Schema.Uint8Array,
 })
 
 export const CurrentScreenSnapshotFrameSchema = Schema.Struct({
   sessionId: NonEmptyString,
   seq: Schema.Number,
-  dataBase64: Schema.String,
+  data: Schema.Uint8Array,
   live: Schema.optional(Schema.Boolean),
 })
 
@@ -237,23 +209,14 @@ export const ExitInfoSchema = Schema.Struct({
   signal: Schema.optional(Schema.Number),
 })
 
-export const AgentStatusSchema = Schema.Struct({
-  provider: Schema.String,
-  status: Schema.String,
-  nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
-})
-
 export type CreateSessionInput = Schema.Schema.Type<typeof CreateSessionInputSchema>
 export type CreateSessionResult = Schema.Schema.Type<typeof CreateSessionResultSchema>
 export type AttachSessionMode = Schema.Schema.Type<typeof AttachSessionModeSchema>
 export type AttachSessionInput = Schema.Schema.Type<typeof AttachSessionInputSchema>
 export type AttachSessionResult = Schema.Schema.Type<typeof AttachSessionResultSchema>
-export type PiThreadListInput = Schema.Schema.Type<typeof PiThreadListInputSchema>
-export type PiThread = Schema.Schema.Type<typeof PiThreadSchema>
 export type OutputFrame = Schema.Schema.Type<typeof OutputFrameSchema>
 export type CurrentScreenSnapshotFrame = Schema.Schema.Type<typeof CurrentScreenSnapshotFrameSchema>
 export type ExitInfo = Schema.Schema.Type<typeof ExitInfoSchema>
-export type AgentStatus = Schema.Schema.Type<typeof AgentStatusSchema>
 export type TaudLifecycleState = Schema.Schema.Type<typeof TaudLifecycleStateSchema>
 export type TaudDaemonOwnership = Schema.Schema.Type<typeof TaudDaemonOwnershipSchema>
 export type TaudLifecycleRecoveryAction = Schema.Schema.Type<

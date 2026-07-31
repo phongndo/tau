@@ -1,5 +1,5 @@
 import { Schema } from 'effect'
-import { AgentStatusSchema, AttachSessionModeSchema } from '@tau/shared/taud-protocol'
+import { AttachSessionModeSchema } from '@tau/shared/taud-protocol'
 
 export const PtySizeSchema = Schema.Struct({
   cols: Schema.Number,
@@ -20,8 +20,6 @@ export const PtyClientMessageSchema = Schema.Union([
     type: Schema.Literal('spawn'),
     sessionId: SessionIdSchema,
     terminalId: Schema.optional(SessionIdSchema),
-    workspaceId: SessionIdSchema,
-    worktreeId: Schema.optional(SessionIdSchema),
     cols: Schema.Number,
     rows: Schema.Number,
     cwd: Schema.optional(CwdSchema),
@@ -31,8 +29,6 @@ export const PtyClientMessageSchema = Schema.Union([
     type: Schema.Literal('attach'),
     sessionId: SessionIdSchema,
     terminalId: Schema.optional(SessionIdSchema),
-    workspaceId: SessionIdSchema,
-    worktreeId: Schema.optional(SessionIdSchema),
     cols: Schema.Number,
     rows: Schema.Number,
     cwd: Schema.optional(CwdSchema),
@@ -65,8 +61,6 @@ export const PtyServiceMessageSchema = Schema.Union([
     seq: Schema.optional(Schema.Number),
     archived: Schema.optional(Schema.Boolean),
     attachMode: Schema.optional(AttachSessionModeSchema),
-    agentProvider: Schema.optional(Schema.String),
-    nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
   }),
   Schema.Struct({
     type: Schema.Literal('data'),
@@ -105,11 +99,6 @@ export const PtyServiceMessageSchema = Schema.Union([
     sessionId: SessionIdSchema,
     info: PtyExitInfoSchema,
   }),
-  Schema.Struct({
-    type: Schema.Literal('agent'),
-    sessionId: SessionIdSchema,
-    status: AgentStatusSchema,
-  }),
 ])
 
 export const TaudPtyBridgeDiagnosticsSchema = Schema.Struct({
@@ -123,6 +112,9 @@ export const TaudPtyBridgeDiagnosticsSchema = Schema.Struct({
   snapshotBytesPostedTotal: Schema.Number,
   messagesDroppedNoPortTotal: Schema.Number,
   postFailuresTotal: Schema.Number,
+  sessionChannels: Schema.Number,
+  maxUnacknowledgedSeq: Schema.Number,
+  maxQueueAgeMs: Schema.Number,
   lastMessageType: Schema.optional(Schema.String),
   lastDataChars: Schema.optional(Schema.Number),
   lastPostedAt: Schema.optional(Schema.Number),

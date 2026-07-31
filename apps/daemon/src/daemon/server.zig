@@ -50,10 +50,7 @@ pub fn prepareStorage(self: anytype) !void {
     try ensureOwnerOnlyDir(self.allocator, self.config.root_dir);
     try ensureOwnerOnlyDir(self.allocator, self.config.run_dir);
     try std.fs.cwd().makePath(self.config.sessions_dir);
-    try std.fs.cwd().makePath(self.config.adapters_dir);
-    const worktrees_dir = try std.fs.path.join(self.allocator, &.{ self.config.root_dir, "worktrees" });
-    defer self.allocator.free(worktrees_dir);
-    try std.fs.cwd().makePath(worktrees_dir);
+    _ = try self.mux_graph.restore(self.config.graph_path, self.config.graph_previous_path);
     self.reloadPersistencePolicyFromSettingsLocked();
     if (self.database == null) self.database = try db.Database.open(self.allocator, self.config.database_path);
     try self.writePidFile();
@@ -61,13 +58,13 @@ pub fn prepareStorage(self: anytype) !void {
 
 pub fn printConfig(self: anytype) void {
     std.debug.print(
-        "root={s}\ndatabase={s}\nrun={s}\nsessions={s}\nadapters={s}\nsocket={s}\npid={s}\n",
+        "root={s}\ndatabase={s}\nrun={s}\nsessions={s}\ngraph={s}\nsocket={s}\npid={s}\n",
         .{
             self.config.root_dir,
             self.config.database_path,
             self.config.run_dir,
             self.config.sessions_dir,
-            self.config.adapters_dir,
+            self.config.graph_path,
             self.config.socket_path,
             self.config.pid_path,
         },
@@ -154,6 +151,15 @@ pub fn handleControlRequest(self: anytype, allocator: std.mem.Allocator, request
         logControlRequestIfNeeded(request_type, trace_id, duration_ms, ok);
     }
 
+    if (validateControlRequest(request)) |validation_error| {
+        return rpc.responseJsonAlloc(allocator, .{
+            .id = request.requestId(),
+            .ok = false,
+            .error_code = "invalid_request",
+            .error_message = validation_error,
+        });
+    }
+
     const response = try switch (request_type) {
         .create => self.handleCreateLocked(allocator, request),
         .attach => self.handleAttachLocked(allocator, request),
@@ -163,30 +169,9 @@ pub fn handleControlRequest(self: anytype, allocator: std.mem.Allocator, request
         .clear_history => self.handleClearHistoryLocked(allocator, request),
         .cleanup => self.handleCleanupLocked(allocator, request),
         .configure_persistence => self.handleConfigurePersistenceLocked(allocator, request),
-        .workspace_list => self.handleWorkspaceListLocked(allocator, request),
-        .workspace_add => self.handleWorkspaceAddLocked(allocator, request),
-        .workspace_remove => self.handleWorkspaceRemoveLocked(allocator, request),
-        .workspace_refresh => self.handleWorkspaceRefreshLocked(allocator, request),
-        .workspace_reorder => self.handleWorkspaceReorderLocked(allocator, request),
-        .workspace_branch => self.handleWorkspaceBranchLocked(allocator, request),
-        .workspace_branches => self.handleWorkspaceBranchesLocked(allocator, request),
-        .workspace_git_worktrees => self.handleWorkspaceGitWorktreesLocked(allocator, request),
-        .workspace_status => self.handleWorkspaceStatusLocked(allocator, request),
-        .workspace_file_tree => self.handleWorkspaceFileTreeLocked(allocator, request),
-        .workspace_diff => self.handleWorkspaceDiffLocked(allocator, request),
-        .workspace_stage_path => self.handleWorkspaceStagePathLocked(allocator, request),
-        .workspace_unstage_path => self.handleWorkspaceUnstagePathLocked(allocator, request),
-        .workspace_revert_path => self.handleWorkspaceRevertPathLocked(allocator, request),
-        .workspace_ports => self.handleWorkspacePortsLocked(allocator, request),
-        .workspace_pull_request => self.handleWorkspacePullRequestLocked(allocator, request),
-        .worktree_list => self.handleWorktreeListLocked(allocator, request),
-        .worktree_create => self.handleWorktreeCreateLocked(allocator, request),
-        .worktree_remove => self.handleWorktreeRemoveLocked(allocator, request),
-        .worktree_adopt => self.handleWorktreeAdoptLocked(allocator, request),
-        .worktree_handoff => self.handleWorktreeHandoffLocked(allocator, request),
-        .worktree_refresh => self.handleWorktreeRefreshLocked(allocator, request),
-        .worktree_reorder => self.handleWorktreeReorderLocked(allocator, request),
-        .pi_thread_list => self.handlePiThreadListLocked(allocator, request),
+        .graph_get => self.handleGraphGetLocked(allocator, request),
+        .graph_replace => self.handleGraphReplaceLocked(allocator, request),
+        .graph_wait => self.handleGraphWaitLocked(allocator, request),
         .ping => blk: {
             const response = try rpc.responseJsonAlloc(allocator, .{
                 .id = request.requestId(),
@@ -203,11 +188,38 @@ pub fn handleControlRequest(self: anytype, allocator: std.mem.Allocator, request
         .unknown => rpc.responseJsonAlloc(allocator, .{
             .id = request.requestId(),
             .ok = false,
+            .error_code = "unknown_method",
             .error_message = "unknown method",
         }),
     };
     ok = responsePayloadOk(allocator, response);
     return response;
+}
+
+fn validateBoundedText(value: ?[]const u8, max_len: usize) bool {
+    const text = value orelse return true;
+    return text.len > 0 and text.len <= max_len and std.mem.indexOfScalar(u8, text, 0) == null;
+}
+
+fn validateControlRequest(request: rpc.ControlRequestJson) ?[]const u8 {
+    // Session IDs must fit the fixed stream header field so create/attach can always open a stream.
+    if (!validateBoundedText(request.requestSessionId(), rpc.stream_session_id_size)) return "invalid session id";
+    if (!validateBoundedText(request.requestTerminalId(), limits.graph_id_bytes_max)) return "invalid terminal id";
+    if (request.cwd) |cwd| {
+        if (!validateBoundedText(cwd, limits.control_path_bytes_max) or !std.fs.path.isAbsolute(cwd)) return "cwd must be a bounded absolute path";
+    }
+    if (request.argv) |argv| {
+        if (argv.len == 0 or argv.len > limits.control_argv_items_max) return "invalid argv length";
+        for (argv) |arg| {
+            if (arg.len == 0 or arg.len > limits.control_argv_item_bytes_max or std.mem.indexOfScalar(u8, arg, 0) != null) return "invalid argv item";
+        }
+    }
+    if (request.requestGraphSnapshotJson()) |graph_json| {
+        if (graph_json.len == 0 or graph_json.len > limits.graph_snapshot_bytes_max) return "invalid graph snapshot size";
+    }
+    if (request.cols) |cols| if (cols == 0) return "cols must be positive";
+    if (request.rows) |rows| if (rows == 0) return "rows must be positive";
+    return null;
 }
 
 fn responsePayloadOk(allocator: std.mem.Allocator, response: []const u8) bool {
@@ -256,9 +268,24 @@ pub fn handleStream(self: anytype, stream: std.net.Stream) !void {
 }
 
 pub fn writePidFile(self: anytype) !void {
-    var buffer: [64]u8 = undefined;
-    const pid_text = try std.fmt.bufPrint(&buffer, "{d}\n", .{std.c.getpid()});
-    try std.fs.cwd().writeFile(.{ .sub_path = self.config.pid_path, .data = pid_text });
+    if (lstatPath(self.config.pid_path)) |stat| {
+        if (!std.posix.S.ISREG(stat.mode) or stat.uid != std.c.geteuid()) return error.UnsafePidPath;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+
+    var pid_buffer: [64]u8 = undefined;
+    const pid_text = try std.fmt.bufPrint(&pid_buffer, "{d}\n", .{std.c.getpid()});
+    const temporary_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp-{d}", .{ self.config.pid_path, std.c.getpid() });
+    defer self.allocator.free(temporary_path);
+    std.fs.cwd().deleteFile(temporary_path) catch {};
+    errdefer std.fs.cwd().deleteFile(temporary_path) catch {};
+    var file = try std.fs.cwd().createFile(temporary_path, .{ .truncate = true, .mode = 0o600 });
+    defer file.close();
+    try file.writeAll(pid_text);
+    try file.sync();
+    try std.fs.cwd().rename(temporary_path, self.config.pid_path);
 }
 
 fn ensureOwnerOnlyDir(allocator: std.mem.Allocator, path: []const u8) !void {

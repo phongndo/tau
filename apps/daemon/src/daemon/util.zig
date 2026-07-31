@@ -111,9 +111,3 @@ pub fn isLiveAttachable(item: *const session.TerminalSession) bool {
         .exited, .crashed, .archived, .killed => false,
     };
 }
-
-pub fn isResumableAgentStatus(status: []const u8) bool {
-    return std.mem.eql(u8, status, "running") or
-        std.mem.eql(u8, status, "detected") or
-        std.mem.eql(u8, status, "ended");
-}

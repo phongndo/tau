@@ -31,6 +31,9 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const daemonRoot = resolve(repoRoot, 'apps/daemon')
 const [command = 'build', ...rawArgs] = process.argv.slice(2)
 const passthroughArgs = rawArgs[0] === '--' ? rawArgs.slice(1) : rawArgs
+const optimizeMode = process.env.TAUD_OPTIMIZE ?? (command === 'build' ? 'ReleaseFast' : 'Debug')
+const validOptimizeModes = new Set(['Debug', 'ReleaseFast', 'ReleaseSmall'])
+if (!validOptimizeModes.has(optimizeMode)) fail(`Invalid TAUD_OPTIMIZE mode: ${optimizeMode}`)
 
 function fail(message: string): never {
   console.error(message)
@@ -383,6 +386,7 @@ function directCompileArgs({
   ]
 
   if (binPath) args.push(`-femit-bin=${binPath}`)
+  args.push(`-O${optimizeMode}`)
 
   if (root === 'main') {
     args.push(
@@ -430,6 +434,12 @@ function buildDirect(): string {
   const exeName = process.platform === 'win32' ? 'taud.exe' : 'taud'
   const binPath = resolve(binDir, exeName)
   run('zig', directCompileArgs({ root: 'main', binPath }))
+  if (optimizeMode !== 'Debug' && process.platform === 'darwin') {
+    const symbolsDir = resolve(daemonRoot, 'zig-out/symbols')
+    mkdirSync(symbolsDir, { recursive: true })
+    runForStatus('dsymutil', [binPath, '-o', resolve(symbolsDir, `${exeName}.dSYM`)], { cwd: daemonRoot })
+    runForStatus('strip', ['-x', binPath], { cwd: daemonRoot })
+  }
   return binPath
 }
 
@@ -504,7 +514,11 @@ if (process.platform === 'win32') {
 if (process.platform !== 'darwin' || process.env.TAUD_USE_ZIG_BUILD === '1') {
   switch (command) {
     case 'build':
-      run('zig', ['build'])
+      run('zig', [
+        'build',
+        `-Doptimize=${optimizeMode}`,
+        ...(optimizeMode === 'Debug' ? [] : ['-Dstrip=true']),
+      ])
       break
     case 'test':
       run('zig', ['build', 'test'])

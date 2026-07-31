@@ -12,30 +12,9 @@ pub const RequestType = enum {
     clear_history,
     cleanup,
     configure_persistence,
-    workspace_list,
-    workspace_add,
-    workspace_remove,
-    workspace_refresh,
-    workspace_reorder,
-    workspace_branch,
-    workspace_branches,
-    workspace_git_worktrees,
-    workspace_status,
-    workspace_file_tree,
-    workspace_diff,
-    workspace_stage_path,
-    workspace_unstage_path,
-    workspace_revert_path,
-    workspace_ports,
-    workspace_pull_request,
-    worktree_list,
-    worktree_create,
-    worktree_remove,
-    worktree_adopt,
-    worktree_handoff,
-    worktree_refresh,
-    worktree_reorder,
-    pi_thread_list,
+    graph_get,
+    graph_replace,
+    graph_wait,
     ping,
     unknown,
 
@@ -45,90 +24,12 @@ pub const RequestType = enum {
         if (std.mem.eql(u8, text, "resize")) return .resize;
         if (std.mem.eql(u8, text, "detach")) return .detach;
         if (std.mem.eql(u8, text, "kill")) return .kill;
-        if (std.mem.eql(u8, text, "clear-history")) return .clear_history;
-        if (std.mem.eql(u8, text, "clearHistory")) return .clear_history;
-        if (std.mem.eql(u8, text, "clear_history")) return .clear_history;
+        if (std.mem.eql(u8, text, "clear-history") or std.mem.eql(u8, text, "clearHistory") or std.mem.eql(u8, text, "clear_history")) return .clear_history;
         if (std.mem.eql(u8, text, "cleanup")) return .cleanup;
-        if (std.mem.eql(u8, text, "configure-persistence")) return .configure_persistence;
-        if (std.mem.eql(u8, text, "configurePersistence")) return .configure_persistence;
-        if (std.mem.eql(u8, text, "configure_persistence")) return .configure_persistence;
-        if (std.mem.eql(u8, text, "workspace.list")) return .workspace_list;
-        if (std.mem.eql(u8, text, "workspace:list")) return .workspace_list;
-        if (std.mem.eql(u8, text, "workspace-list")) return .workspace_list;
-        if (std.mem.eql(u8, text, "workspace.add")) return .workspace_add;
-        if (std.mem.eql(u8, text, "workspace:add")) return .workspace_add;
-        if (std.mem.eql(u8, text, "workspace-add")) return .workspace_add;
-        if (std.mem.eql(u8, text, "workspace.remove")) return .workspace_remove;
-        if (std.mem.eql(u8, text, "workspace:remove")) return .workspace_remove;
-        if (std.mem.eql(u8, text, "workspace-remove")) return .workspace_remove;
-        if (std.mem.eql(u8, text, "workspace.refresh")) return .workspace_refresh;
-        if (std.mem.eql(u8, text, "workspace:refresh")) return .workspace_refresh;
-        if (std.mem.eql(u8, text, "workspace-refresh")) return .workspace_refresh;
-        if (std.mem.eql(u8, text, "workspace.reorder")) return .workspace_reorder;
-        if (std.mem.eql(u8, text, "workspace:reorder")) return .workspace_reorder;
-        if (std.mem.eql(u8, text, "workspace-reorder")) return .workspace_reorder;
-        if (std.mem.eql(u8, text, "workspace.branch")) return .workspace_branch;
-        if (std.mem.eql(u8, text, "workspace:branch")) return .workspace_branch;
-        if (std.mem.eql(u8, text, "workspace-branch")) return .workspace_branch;
-        if (std.mem.eql(u8, text, "workspace.branches")) return .workspace_branches;
-        if (std.mem.eql(u8, text, "workspace:branches")) return .workspace_branches;
-        if (std.mem.eql(u8, text, "workspace-branches")) return .workspace_branches;
-        if (std.mem.eql(u8, text, "workspace.gitWorktrees")) return .workspace_git_worktrees;
-        if (std.mem.eql(u8, text, "workspace:gitWorktrees")) return .workspace_git_worktrees;
-        if (std.mem.eql(u8, text, "workspace.git-worktrees")) return .workspace_git_worktrees;
-        if (std.mem.eql(u8, text, "workspace.status")) return .workspace_status;
-        if (std.mem.eql(u8, text, "workspace:status")) return .workspace_status;
-        if (std.mem.eql(u8, text, "workspace-status")) return .workspace_status;
-        if (std.mem.eql(u8, text, "workspace.fileTree")) return .workspace_file_tree;
-        if (std.mem.eql(u8, text, "workspace:fileTree")) return .workspace_file_tree;
-        if (std.mem.eql(u8, text, "workspace.file-tree")) return .workspace_file_tree;
-        if (std.mem.eql(u8, text, "workspace.files")) return .workspace_file_tree;
-        if (std.mem.eql(u8, text, "workspace-files")) return .workspace_file_tree;
-        if (std.mem.eql(u8, text, "workspace.diff")) return .workspace_diff;
-        if (std.mem.eql(u8, text, "workspace:diff")) return .workspace_diff;
-        if (std.mem.eql(u8, text, "workspace-diff")) return .workspace_diff;
-        if (std.mem.eql(u8, text, "workspace.stagePath")) return .workspace_stage_path;
-        if (std.mem.eql(u8, text, "workspace:stagePath")) return .workspace_stage_path;
-        if (std.mem.eql(u8, text, "workspace.stage-path")) return .workspace_stage_path;
-        if (std.mem.eql(u8, text, "workspace.unstagePath")) return .workspace_unstage_path;
-        if (std.mem.eql(u8, text, "workspace:unstagePath")) return .workspace_unstage_path;
-        if (std.mem.eql(u8, text, "workspace.unstage-path")) return .workspace_unstage_path;
-        if (std.mem.eql(u8, text, "workspace.revertPath")) return .workspace_revert_path;
-        if (std.mem.eql(u8, text, "workspace:revertPath")) return .workspace_revert_path;
-        if (std.mem.eql(u8, text, "workspace.revert-path")) return .workspace_revert_path;
-        if (std.mem.eql(u8, text, "workspace.ports")) return .workspace_ports;
-        if (std.mem.eql(u8, text, "workspace:ports")) return .workspace_ports;
-        if (std.mem.eql(u8, text, "workspace-ports")) return .workspace_ports;
-        if (std.mem.eql(u8, text, "workspace.pullRequest")) return .workspace_pull_request;
-        if (std.mem.eql(u8, text, "workspace:pullRequest")) return .workspace_pull_request;
-        if (std.mem.eql(u8, text, "workspace.pull-request")) return .workspace_pull_request;
-        if (std.mem.eql(u8, text, "workspace-pr")) return .workspace_pull_request;
-        if (std.mem.eql(u8, text, "worktree.list")) return .worktree_list;
-        if (std.mem.eql(u8, text, "worktree:list")) return .worktree_list;
-        if (std.mem.eql(u8, text, "worktree-list")) return .worktree_list;
-        if (std.mem.eql(u8, text, "worktree.create")) return .worktree_create;
-        if (std.mem.eql(u8, text, "worktree:create")) return .worktree_create;
-        if (std.mem.eql(u8, text, "worktree-create")) return .worktree_create;
-        if (std.mem.eql(u8, text, "worktree.remove")) return .worktree_remove;
-        if (std.mem.eql(u8, text, "worktree:remove")) return .worktree_remove;
-        if (std.mem.eql(u8, text, "worktree-remove")) return .worktree_remove;
-        if (std.mem.eql(u8, text, "worktree.adopt")) return .worktree_adopt;
-        if (std.mem.eql(u8, text, "worktree:adopt")) return .worktree_adopt;
-        if (std.mem.eql(u8, text, "worktree-adopt")) return .worktree_adopt;
-        if (std.mem.eql(u8, text, "worktree.handoff")) return .worktree_handoff;
-        if (std.mem.eql(u8, text, "worktree:handoff")) return .worktree_handoff;
-        if (std.mem.eql(u8, text, "worktree-handoff")) return .worktree_handoff;
-        if (std.mem.eql(u8, text, "worktree.refresh")) return .worktree_refresh;
-        if (std.mem.eql(u8, text, "worktree:refresh")) return .worktree_refresh;
-        if (std.mem.eql(u8, text, "worktree-refresh")) return .worktree_refresh;
-        if (std.mem.eql(u8, text, "worktree.reorder")) return .worktree_reorder;
-        if (std.mem.eql(u8, text, "worktree:reorder")) return .worktree_reorder;
-        if (std.mem.eql(u8, text, "worktree-reorder")) return .worktree_reorder;
-        if (std.mem.eql(u8, text, "pi.thread.list")) return .pi_thread_list;
-        if (std.mem.eql(u8, text, "pi:thread:list")) return .pi_thread_list;
-        if (std.mem.eql(u8, text, "pi-thread-list")) return .pi_thread_list;
-        if (std.mem.eql(u8, text, "pi.sessions")) return .pi_thread_list;
-        if (std.mem.eql(u8, text, "pi-sessions")) return .pi_thread_list;
+        if (std.mem.eql(u8, text, "configure-persistence") or std.mem.eql(u8, text, "configurePersistence") or std.mem.eql(u8, text, "configure_persistence")) return .configure_persistence;
+        if (std.mem.eql(u8, text, "graph-get")) return .graph_get;
+        if (std.mem.eql(u8, text, "graph-replace")) return .graph_replace;
+        if (std.mem.eql(u8, text, "graph-wait")) return .graph_wait;
         if (std.mem.eql(u8, text, "ping")) return .ping;
         return .unknown;
     }
@@ -144,35 +45,14 @@ pub const ControlRequestJson = struct {
     sessionId: ?[]const u8 = null,
     terminal_id: ?[]const u8 = null,
     terminalId: ?[]const u8 = null,
-    workspace_id: ?[]const u8 = null,
-    workspaceId: ?[]const u8 = null,
-    worktree_id: ?[]const u8 = null,
-    worktreeId: ?[]const u8 = null,
-    root_path: ?[]const u8 = null,
-    rootPath: ?[]const u8 = null,
-    path: ?[]const u8 = null,
-    paths: ?[][]const u8 = null,
-    git_paths: ?[][]const u8 = null,
-    gitPaths: ?[][]const u8 = null,
-    name: ?[]const u8 = null,
-    title: ?[]const u8 = null,
-    folder_name: ?[]const u8 = null,
-    folderName: ?[]const u8 = null,
-    branch: ?[]const u8 = null,
-    base_branch: ?[]const u8 = null,
-    baseBranch: ?[]const u8 = null,
-    target_branch: ?[]const u8 = null,
-    targetBranch: ?[]const u8 = null,
-    compare_branch: ?[]const u8 = null,
-    compareBranch: ?[]const u8 = null,
-    start_point: ?[]const u8 = null,
-    startPoint: ?[]const u8 = null,
-    scope: ?[]const u8 = null,
-    order_index: ?i64 = null,
-    orderIndex: ?i64 = null,
-    force: ?bool = null,
-    delete_branch: ?bool = null,
-    deleteBranch: ?bool = null,
+    expected_rev: ?u64 = null,
+    expectedRev: ?u64 = null,
+    after_event_seq: ?u64 = null,
+    afterEventSeq: ?u64 = null,
+    wait_timeout_ms: ?u32 = null,
+    waitTimeoutMs: ?u32 = null,
+    graph_snapshot_json: ?[]const u8 = null,
+    graphSnapshotJson: ?[]const u8 = null,
     cols: ?u16 = null,
     rows: ?u16 = null,
     cwd: ?[]const u8 = null,
@@ -211,56 +91,20 @@ pub const ControlRequestJson = struct {
         return self.terminal_id orelse self.terminalId;
     }
 
-    pub fn requestWorkspaceId(self: ControlRequestJson) ?[]const u8 {
-        return self.workspace_id orelse self.workspaceId;
+    pub fn requestExpectedRev(self: ControlRequestJson) ?u64 {
+        return self.expected_rev orelse self.expectedRev;
     }
 
-    pub fn requestWorktreeId(self: ControlRequestJson) ?[]const u8 {
-        return self.worktree_id orelse self.worktreeId;
+    pub fn requestAfterEventSeq(self: ControlRequestJson) ?u64 {
+        return self.after_event_seq orelse self.afterEventSeq;
     }
 
-    pub fn requestRootPath(self: ControlRequestJson) ?[]const u8 {
-        return self.root_path orelse self.rootPath orelse self.path;
+    pub fn requestWaitTimeoutMs(self: ControlRequestJson) ?u32 {
+        return self.wait_timeout_ms orelse self.waitTimeoutMs;
     }
 
-    pub fn requestGitPaths(self: ControlRequestJson) ?[][]const u8 {
-        return self.paths orelse self.git_paths orelse self.gitPaths;
-    }
-
-    pub fn requestFolderName(self: ControlRequestJson) ?[]const u8 {
-        return self.folder_name orelse self.folderName;
-    }
-
-    pub fn requestBaseBranch(self: ControlRequestJson) ?[]const u8 {
-        return self.base_branch orelse self.baseBranch;
-    }
-
-    pub fn requestTargetBranch(self: ControlRequestJson) ?[]const u8 {
-        return self.target_branch orelse self.targetBranch;
-    }
-
-    pub fn requestCompareBranch(self: ControlRequestJson) ?[]const u8 {
-        return self.compare_branch orelse self.compareBranch;
-    }
-
-    pub fn requestScope(self: ControlRequestJson) ?[]const u8 {
-        return self.scope;
-    }
-
-    pub fn requestStartPoint(self: ControlRequestJson) ?[]const u8 {
-        return self.start_point orelse self.startPoint;
-    }
-
-    pub fn requestOrderIndex(self: ControlRequestJson) ?i64 {
-        return self.order_index orelse self.orderIndex;
-    }
-
-    pub fn requestForce(self: ControlRequestJson) bool {
-        return self.force orelse false;
-    }
-
-    pub fn requestDeleteBranch(self: ControlRequestJson) bool {
-        return self.delete_branch orelse self.deleteBranch orelse false;
+    pub fn requestGraphSnapshotJson(self: ControlRequestJson) ?[]const u8 {
+        return self.graph_snapshot_json orelse self.graphSnapshotJson;
     }
 
     pub fn requestSessionIds(self: ControlRequestJson) ?[][]const u8 {
@@ -291,8 +135,6 @@ pub const ControlRequestJson = struct {
 pub const CreateRequest = struct {
     session_id: []const u8,
     terminal_id: []const u8,
-    workspace_id: ?[]const u8 = null,
-    worktree_id: ?[]const u8 = null,
     cols: u16,
     rows: u16,
     cwd: ?[]const u8 = null,
@@ -340,12 +182,17 @@ pub const ControlResponse = struct {
     rows: ?u16 = null,
     last_seq: ?u64 = null,
     attach_kind: ?[]const u8 = null,
-    agent_provider: ?[]const u8 = null,
-    native_session_id: ?[]const u8 = null,
     removed_sessions: ?u64 = null,
     removed_bytes: ?u64 = null,
     persistence_enabled: ?bool = null,
     persist_input: ?bool = null,
+    graph_snapshot_json: ?[]const u8 = null,
+    graph_events_json: ?[]const u8 = null,
+    graph_rev: ?u64 = null,
+    event_seq: ?u64 = null,
+    oldest_event_seq: ?u64 = null,
+    graph_changed: ?bool = null,
+    requires_resync: ?bool = null,
     stream_diagnostics: ?StreamDiagnostics = null,
     error_code: ?[]const u8 = null,
     error_message: ?[]const u8 = null,
@@ -360,26 +207,11 @@ pub const StreamDiagnostics = struct {
     input_bytes_total: u64 = 0,
     output_frames_total: u64 = 0,
     output_bytes_total: u64 = 0,
+    last_pty_read_ns: u64 = 0,
     slow_subscriber_drops_total: u64 = 0,
     pending_output_dropped_frames_total: u64 = 0,
     pending_output_dropped_bytes_total: u64 = 0,
     pending_output_truncated_bytes_total: u64 = 0,
-};
-
-pub const PiThreadResponse = struct {
-    id: []const u8,
-    terminal_session_id: []const u8,
-    terminal_id: []const u8,
-    workspace_id: ?[]const u8 = null,
-    worktree_id: ?[]const u8 = null,
-    cwd: ?[]const u8 = null,
-    terminal_status: []const u8,
-    agent_status: []const u8,
-    native_session_id: ?[]const u8 = null,
-    resume_argv: ?[]const []const u8 = null,
-    title: ?[]const u8 = null,
-    last_seq: u64,
-    last_activity_at: ?[]const u8 = null,
 };
 
 pub const ControlDiagnostics = struct {
@@ -392,15 +224,13 @@ pub const ControlDiagnostics = struct {
     last_recorded_at_ms: ?u64 = null,
 };
 
-pub const control_protocol_version: u16 = 1;
+pub const control_protocol_version: u16 = 2;
 pub const daemon_version: []const u8 = "1.0.0";
 pub const control_capabilities = [_][]const u8{
     "sessions-v1",
     "stream-frames-v1",
-    "workspaces-v1",
-    "worktrees-v1",
     "persistence-v1",
-    "pi-threads-v1",
+    "mux-graph-v2",
 };
 
 pub fn responseJsonAlloc(allocator: std.mem.Allocator, response: ControlResponse) ![]u8 {
@@ -440,7 +270,6 @@ pub const StreamKind = enum(u16) {
     resize = 3,
     snapshot = 4,
     exit = 5,
-    agent = 6,
 
     pub fn fromRaw(raw: u16) ?StreamKind {
         return switch (raw) {
@@ -449,7 +278,6 @@ pub const StreamKind = enum(u16) {
             3 => .resize,
             4 => .snapshot,
             5 => .exit,
-            6 => .agent,
             else => null,
         };
     }
@@ -622,16 +450,10 @@ test "request type decoding is stable" {
     try std.testing.expectEqual(RequestType.clear_history, RequestType.fromText("clearHistory"));
     try std.testing.expectEqual(RequestType.cleanup, RequestType.fromText("cleanup"));
     try std.testing.expectEqual(RequestType.configure_persistence, RequestType.fromText("configure-persistence"));
-    try std.testing.expectEqual(RequestType.workspace_branch, RequestType.fromText("workspace.branch"));
-    try std.testing.expectEqual(RequestType.workspace_git_worktrees, RequestType.fromText("workspace.gitWorktrees"));
-    try std.testing.expectEqual(RequestType.workspace_status, RequestType.fromText("workspace.status"));
-    try std.testing.expectEqual(RequestType.workspace_file_tree, RequestType.fromText("workspace.fileTree"));
-    try std.testing.expectEqual(RequestType.workspace_diff, RequestType.fromText("workspace.diff"));
-    try std.testing.expectEqual(RequestType.workspace_stage_path, RequestType.fromText("workspace.stagePath"));
-    try std.testing.expectEqual(RequestType.workspace_unstage_path, RequestType.fromText("workspace.unstagePath"));
-    try std.testing.expectEqual(RequestType.workspace_revert_path, RequestType.fromText("workspace.revertPath"));
-    try std.testing.expectEqual(RequestType.workspace_ports, RequestType.fromText("workspace.ports"));
-    try std.testing.expectEqual(RequestType.workspace_pull_request, RequestType.fromText("workspace.pullRequest"));
+    try std.testing.expectEqual(RequestType.graph_get, RequestType.fromText("graph-get"));
+    try std.testing.expectEqual(RequestType.graph_replace, RequestType.fromText("graph-replace"));
+    try std.testing.expectEqual(RequestType.graph_wait, RequestType.fromText("graph-wait"));
+    try std.testing.expectEqual(RequestType.unknown, RequestType.fromText("workspace.status"));
     try std.testing.expectEqual(RequestType.ping, RequestType.fromText("ping"));
     try std.testing.expectEqual(RequestType.unknown, RequestType.fromText("other"));
 }
@@ -680,16 +502,10 @@ test "control request JSON deterministic shape sweep" {
         .{ .json = "{\"method\":\"resize\",\"session_id\":\"s\",\"cols\":1,\"rows\":1}", .request_type = .resize },
         .{ .json = "{\"type\":\"clearHistory\",\"sessionIds\":[\"s\"]}", .request_type = .clear_history },
         .{ .json = "{\"type\":\"configurePersistence\",\"enabled\":true,\"persistInput\":false}", .request_type = .configure_persistence },
-        .{ .json = "{\"type\":\"workspace.status\",\"rootPath\":\"/tmp/repo\"}", .request_type = .workspace_status },
-        .{ .json = "{\"type\":\"workspace.branch\",\"rootPath\":\"/tmp/repo\"}", .request_type = .workspace_branch },
-        .{ .json = "{\"type\":\"workspace.gitWorktrees\",\"rootPath\":\"/tmp/repo\"}", .request_type = .workspace_git_worktrees },
-        .{ .json = "{\"type\":\"workspace.fileTree\",\"rootPath\":\"/tmp/repo\"}", .request_type = .workspace_file_tree },
-        .{ .json = "{\"type\":\"workspace.diff\",\"rootPath\":\"/tmp/repo\",\"scope\":\"staged\"}", .request_type = .workspace_diff },
-        .{ .json = "{\"type\":\"workspace.stagePath\",\"rootPath\":\"/tmp/repo\",\"paths\":[\"a.txt\"]}", .request_type = .workspace_stage_path },
-        .{ .json = "{\"type\":\"workspace.unstagePath\",\"rootPath\":\"/tmp/repo\",\"paths\":[\"a.txt\"]}", .request_type = .workspace_unstage_path },
-        .{ .json = "{\"type\":\"workspace.revertPath\",\"rootPath\":\"/tmp/repo\",\"paths\":[\"a.txt\"]}", .request_type = .workspace_revert_path },
-        .{ .json = "{\"type\":\"workspace.ports\",\"rootPath\":\"/tmp/repo\"}", .request_type = .workspace_ports },
-        .{ .json = "{\"type\":\"workspace.pullRequest\",\"rootPath\":\"/tmp/repo\"}", .request_type = .workspace_pull_request },
+        .{ .json = "{\"type\":\"graph-get\"}", .request_type = .graph_get },
+        .{ .json = "{\"type\":\"graph-replace\",\"expectedRev\":0,\"graphSnapshotJson\":\"{}\"}", .request_type = .graph_replace },
+        .{ .json = "{\"type\":\"graph-wait\",\"afterEventSeq\":1}", .request_type = .graph_wait },
+        .{ .json = "{\"type\":\"workspace.status\"}", .request_type = .unknown },
         .{ .json = "{\"method\":\"unknown\"}", .request_type = .unknown },
     };
 
@@ -719,7 +535,7 @@ test "control response formats as newline-delimited JSON" {
 
     try std.testing.expect(std.mem.endsWith(u8, json, "\n"));
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ok\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"protocol_version\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"protocol_version\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"capabilities\":[\"sessions-v1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"session_id\":\"s1\"") != null);
 }
@@ -808,7 +624,6 @@ test "protocol spec matches Zig constants and fixture files" {
         .{ .name = "resize", .value = @intFromEnum(StreamKind.resize) },
         .{ .name = "snapshot", .value = @intFromEnum(StreamKind.snapshot) },
         .{ .name = "exit", .value = @intFromEnum(StreamKind.exit) },
-        .{ .name = "agent", .value = @intFromEnum(StreamKind.agent) },
     };
     try std.testing.expectEqual(expected_kinds.len, spec.stream.frameKinds.len);
     for (expected_kinds, spec.stream.frameKinds) |expected, actual| {
@@ -922,20 +737,6 @@ test "maintenance and persistence control responses match shared golden fixtures
                 .persist_input = false,
             },
         },
-        .{
-            .fixture = "control-workspace-remove-response.ndjson",
-            .response = .{
-                .id = "workspace-remove-fixture",
-                .ok = true,
-            },
-        },
-        .{
-            .fixture = "control-worktree-remove-response.ndjson",
-            .response = .{
-                .id = "worktree-remove-fixture",
-                .ok = true,
-            },
-        },
     };
 
     for (cases) |case| {
@@ -944,49 +745,6 @@ test "maintenance and persistence control responses match shared golden fixtures
         const golden = try readProtocolFixtureAlloc(std.testing.allocator, case.fixture);
         defer std.testing.allocator.free(golden);
         try std.testing.expectEqualStrings(golden, json);
-    }
-}
-
-test "workspace control request fixtures decode to stable request types" {
-    const cases = [_]struct {
-        fixture: []const u8,
-        request_type: RequestType,
-    }{
-        .{ .fixture = "control-workspace-branches-request.ndjson", .request_type = .workspace_branches },
-        .{ .fixture = "control-workspace-branch-request.ndjson", .request_type = .workspace_branch },
-        .{ .fixture = "control-workspace-git-worktrees-request.ndjson", .request_type = .workspace_git_worktrees },
-        .{ .fixture = "control-workspace-status-request.ndjson", .request_type = .workspace_status },
-        .{ .fixture = "control-workspace-file-tree-request.ndjson", .request_type = .workspace_file_tree },
-        .{ .fixture = "control-workspace-diff-request.ndjson", .request_type = .workspace_diff },
-        .{ .fixture = "control-workspace-ports-request.ndjson", .request_type = .workspace_ports },
-        .{ .fixture = "control-workspace-pull-request-request.ndjson", .request_type = .workspace_pull_request },
-        .{ .fixture = "control-workspace-stage-path-request.ndjson", .request_type = .workspace_stage_path },
-        .{ .fixture = "control-workspace-unstage-path-request.ndjson", .request_type = .workspace_unstage_path },
-        .{ .fixture = "control-workspace-revert-path-request.ndjson", .request_type = .workspace_revert_path },
-    };
-
-    for (cases) |case| {
-        const fixture = try readProtocolFixtureAlloc(std.testing.allocator, case.fixture);
-        defer std.testing.allocator.free(fixture);
-        const line = std.mem.trim(u8, fixture, " \n\r\t");
-
-        var parsed = try std.json.parseFromSlice(ControlRequestJson, std.testing.allocator, line, .{
-            .ignore_unknown_fields = true,
-        });
-        defer parsed.deinit();
-
-        try std.testing.expectEqual(case.request_type, parsed.value.requestType());
-        try std.testing.expectEqualStrings("/tmp/tau-workspace", parsed.value.requestRootPath().?);
-        if (case.request_type == .workspace_stage_path or case.request_type == .workspace_unstage_path or case.request_type == .workspace_revert_path) {
-            const paths = parsed.value.requestGitPaths().?;
-            try std.testing.expectEqual(@as(usize, 2), paths.len);
-            try std.testing.expectEqualStrings("src/app.ts", paths[0]);
-            try std.testing.expectEqualStrings("README.md", paths[1]);
-        }
-        if (case.request_type == .workspace_diff) {
-            try std.testing.expectEqualStrings("staged", parsed.value.requestScope().?);
-            try std.testing.expectEqualStrings("main", parsed.value.requestCompareBranch().?);
-        }
     }
 }
 
@@ -1171,7 +929,7 @@ test "stream parser leaves partial tails unread" {
 
 test "stream parser rejects corrupt CRC payloads" {
     var buffer: [128]u8 = undefined;
-    const encoded = try encodeStreamFrame(&buffer, .agent, "session-1", 10, "{\"ok\":true}");
+    const encoded = try encodeStreamFrame(&buffer, .output, "session-1", 10, "{\"ok\":true}");
     buffer[stream_header_size] ^= 0xff;
 
     var recorder = struct {

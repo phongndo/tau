@@ -123,8 +123,7 @@ function isKnownKind(kind: number): kind is TaudStreamFrameKindValue {
     kind === TaudStreamFrameKind.Input ||
     kind === TaudStreamFrameKind.Resize ||
     kind === TaudStreamFrameKind.Snapshot ||
-    kind === TaudStreamFrameKind.Exit ||
-    kind === TaudStreamFrameKind.Agent
+    kind === TaudStreamFrameKind.Exit
   )
 }
 

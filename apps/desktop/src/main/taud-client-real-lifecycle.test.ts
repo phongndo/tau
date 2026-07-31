@@ -245,16 +245,8 @@ test(
       assert.equal(initial.recoveryAction, 'none')
       assert.ok(initial.spawnedPid, 'expected owned daemon pid')
 
-      const portsRequest = client.getWorkspacePorts(home)
       await sleep(100)
       process.kill(initial.spawnedPid, 'SIGTERM')
-
-      await assert.rejects(portsRequest)
-
-      const failed = client.getLifecycleDiagnostics()
-      assert.equal(failed.controlRequestFailureCount, 1)
-      assert.equal(failed.lastControlRequest?.type, 'workspace.ports')
-      assert.equal(failed.lastControlRequest?.ok, false)
 
       await waitFor('crash lifecycle state after mid-request exit', () => {
         const diagnostics = client.getLifecycleDiagnostics()

@@ -20,6 +20,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const sanitize_thread = b.option(bool, "sanitize-thread", "Build taud tests with ThreadSanitizer") orelse false;
     const fuzz = b.option(bool, "fuzz", "Build taud tests with Zig fuzz instrumentation") orelse false;
+    const strip_binary = b.option(bool, "strip", "Strip the installed taud binary") orelse false;
 
     const options = b.addOptions();
     options.addOption([]const u8, "vt_backend", "ghostty_native");
@@ -49,6 +50,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .sanitize_thread = sanitize_thread,
         .fuzz = fuzz,
+        .strip = strip_binary,
     });
     mod.addOptions("build_options", options);
     mod.addImport("sqlite", sqlite_module);

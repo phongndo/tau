@@ -33,28 +33,6 @@ pub fn Context(comptime Daemon: type) type {
             defer env_pairs.deinit(daemon.allocator);
             try env_pairs.append(daemon.allocator, .{ .name = "TERM", .value = "xterm-256color" });
             try env_pairs.append(daemon.allocator, .{ .name = "COLORTERM", .value = "truecolor" });
-            var workspace_row: ?@import("../db.zig").WorkspaceRow = null;
-            defer if (workspace_row) |*row| row.deinit(daemon.allocator);
-            var worktree_row: ?@import("../db.zig").WorktreeRow = null;
-            defer if (worktree_row) |*row| row.deinit(daemon.allocator);
-            if (daemon.database) |*database| {
-                if (item.workspace_id) |workspace_id| {
-                    workspace_row = database.findWorkspaceById(daemon.allocator, workspace_id) catch null;
-                }
-                if (item.worktree_id) |worktree_id| {
-                    worktree_row = database.findWorktreeById(daemon.allocator, worktree_id) catch null;
-                }
-            }
-            if (item.workspace_id) |workspace_id| try env_pairs.append(daemon.allocator, .{ .name = "TAU_WORKSPACE_ID", .value = workspace_id });
-            if (workspace_row) |row| try env_pairs.append(daemon.allocator, .{ .name = "TAU_WORKSPACE_ROOT", .value = row.root_path });
-            if (worktree_row) |row| {
-                try env_pairs.append(daemon.allocator, .{ .name = "TAU_WORKTREE_ID", .value = row.id });
-                try env_pairs.append(daemon.allocator, .{ .name = "TAU_WORKTREE_PATH", .value = row.path });
-                try env_pairs.append(daemon.allocator, .{ .name = "TAU_WORKTREE_BRANCH", .value = row.branch });
-                if (row.base_branch) |value| try env_pairs.append(daemon.allocator, .{ .name = "TAU_BASE_BRANCH", .value = value });
-                if (row.target_branch) |value| try env_pairs.append(daemon.allocator, .{ .name = "TAU_TARGET_BRANCH", .value = value });
-            }
-
             item.pty_child = try daemon.pty_driver.spawn(.{
                 .argv = argv,
                 .env = env_pairs.items,
@@ -134,6 +112,7 @@ pub fn Context(comptime Daemon: type) type {
             }
 
             const payload = buffer[0..amount];
+            daemon.recordPtyRead();
             daemon.lock();
             defer daemon.unlock();
 
@@ -191,15 +170,9 @@ pub fn Context(comptime Daemon: type) type {
                 std.log.warn("failed to prepare search excerpt indexing for {s}: {t}", .{ item.id, err });
                 break :blk null;
             };
-            var agent_snapshot = daemon.agentDetectionSnapshotFromStoredArgvLocked(item, "ended") catch |err| blk: {
-                std.log.warn("failed to prepare agent metadata refresh for {s}: {t}", .{ item.id, err });
-                break :blk null;
-            };
             daemon.unlock();
             defer if (search_snapshot) |*value| value.deinit(daemon.allocator);
-            defer if (agent_snapshot) |*value| value.deinit(daemon.allocator);
             if (search_snapshot) |*value| daemon.indexSearchExcerptFromSnapshot(value);
-            if (agent_snapshot) |*value| daemon.recordAgentSessionFromSnapshot(value);
             return true;
         }
 
@@ -234,15 +207,9 @@ pub fn Context(comptime Daemon: type) type {
                 std.log.warn("failed to prepare search excerpt indexing for {s}: {t}", .{ item.id, err });
                 break :blk null;
             };
-            var agent_snapshot = daemon.agentDetectionSnapshotFromStoredArgvLocked(item, "ended") catch |err| blk: {
-                std.log.warn("failed to prepare agent metadata refresh for {s}: {t}", .{ item.id, err });
-                break :blk null;
-            };
             daemon.unlock();
             defer if (search_snapshot) |*value| value.deinit(daemon.allocator);
-            defer if (agent_snapshot) |*value| value.deinit(daemon.allocator);
             if (search_snapshot) |*value| daemon.indexSearchExcerptFromSnapshot(value);
-            if (agent_snapshot) |*value| daemon.recordAgentSessionFromSnapshot(value);
             return true;
         }
 

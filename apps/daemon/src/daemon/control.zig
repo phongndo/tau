@@ -2,6 +2,8 @@ const std = @import("std");
 const cleanup = @import("../cleanup.zig");
 const db = @import("../db.zig");
 const event_log = @import("../event_log.zig");
+const limits = @import("../limits.zig");
+const mux_graph = @import("../mux_graph.zig");
 const pty = @import("../pty.zig");
 const rpc = @import("../rpc.zig");
 const session = @import("../session.zig");
@@ -29,19 +31,16 @@ pub fn handleCreateLocked(self: anytype, allocator: std.mem.Allocator, request: 
     defer if (generated_session_id) |value| allocator.free(value);
 
     const terminal_id = request.requestTerminalId() orelse return missingField(allocator, request, "terminal_id");
-    const workspace_id = request.requestWorkspaceId() orelse return missingField(allocator, request, "workspace_id");
     const cols = request.cols orelse return missingField(allocator, request, "cols");
     const rows = request.rows orelse return missingField(allocator, request, "rows");
 
     const created = if (self.sessions.find(session_id)) |existing| blk: {
         existing.transitionTo(.live);
-        try existing.updateCreateMetadata(self.allocator, terminal_id, workspace_id, request.requestWorktreeId(), request.cwd, cols, rows);
+        try existing.updateCreateMetadata(self.allocator, terminal_id, request.cwd, cols, rows);
         break :blk existing;
     } else try self.sessions.create(.{
         .session_id = session_id,
         .terminal_id = terminal_id,
-        .workspace_id = workspace_id,
-        .worktree_id = request.requestWorktreeId(),
         .cols = cols,
         .rows = rows,
         .cwd = request.cwd,
@@ -59,19 +58,8 @@ pub fn handleCreateLocked(self: anytype, allocator: std.mem.Allocator, request: 
     const argv_json = try argvJsonAlloc(self.allocator, request.argv orelse &.{});
     defer if (argv_json) |json| self.allocator.free(json);
     self.recordTerminalSessionLocked(created, argv_json);
-    var agent_snapshot = self.agentDetectionSnapshotFromArgvLocked(created, request.argv orelse &.{}, argv_json, "running") catch |err| blk: {
-        std.log.warn("failed to prepare agent metadata for {s}: {t}", .{ created.id, err });
-        break :blk null;
-    };
     try self.startSessionReaderLocked(created);
-    const response = try sessionResponse(allocator, request, created, .{});
-
-    self.unlock();
-    defer if (agent_snapshot) |*value| value.deinit(self.allocator);
-    if (agent_snapshot) |*value| self.recordAgentSessionFromSnapshot(value);
-    self.lock();
-
-    return response;
+    return try sessionResponse(allocator, request, created, .{});
 }
 
 pub fn handleAttachLocked(self: anytype, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
@@ -92,38 +80,19 @@ pub fn handleAttachLocked(self: anytype, allocator: std.mem.Allocator, request: 
         });
     }
     const terminal_id = request.requestTerminalId() orelse attached.terminal_id;
-    const workspace_id = request.requestWorkspaceId() orelse attached.workspace_id;
-    const workspace_changed = !optionalTextEql(workspace_id, attached.workspace_id);
-    const worktree_id = if (request.requestWorktreeId()) |requested_worktree_id| blk: {
-        if (workspace_id) |selected_workspace_id| {
-            if (self.database) |*database| {
-                var row = (try database.findWorktreeById(self.allocator, requested_worktree_id)) orelse return rpc.responseJsonAlloc(allocator, .{
-                    .id = request.requestId(),
-                    .ok = false,
-                    .error_code = "invalid-worktree",
-                    .error_message = "worktree not found",
-                });
-                defer row.deinit(self.allocator);
-                if (!std.mem.eql(u8, row.workspace_id, selected_workspace_id)) {
-                    return rpc.responseJsonAlloc(allocator, .{
-                        .id = request.requestId(),
-                        .ok = false,
-                        .error_code = "invalid-worktree",
-                        .error_message = "worktree does not belong to workspace",
-                    });
-                }
-            }
-        }
-        break :blk requested_worktree_id;
-    } else if (workspace_changed) null else attached.worktree_id;
     const cols = request.cols orelse attached.cols;
     const rows = request.rows orelse attached.rows;
-    try attached.updateCreateMetadata(self.allocator, terminal_id, workspace_id, worktree_id, request.cwd orelse attached.cwd, cols, rows);
+    // Preserve any legacy optional workspace/worktree metadata already on the session.
+    try attached.updateCreateMetadata(
+        self.allocator,
+        terminal_id,
+        request.cwd orelse attached.cwd,
+        cols,
+        rows,
+    );
     self.recordTerminalSessionLocked(attached, null);
     const metadata: SessionResponseMetadata = if (restored_result) |result| .{
         .attach_kind = result.attach_kind,
-        .agent_provider = result.agent_provider,
-        .native_session_id = result.native_session_id,
     } else .{ .attach_kind = .live };
     return sessionResponse(allocator, request, attached, metadata);
 }
@@ -218,14 +187,6 @@ fn reapPtyChildUnlocked(self: anytype, item: *session.TerminalSession, child: *p
         std.log.warn("failed to synchronously reap {s} PTY for {s}: {t}", .{ reason, item.id, wait_err });
     };
     detached_child.close();
-}
-
-fn optionalTextEql(left: ?[]const u8, right: ?[]const u8) bool {
-    if (left) |left_value| {
-        const right_value = right orelse return false;
-        return std.mem.eql(u8, left_value, right_value);
-    }
-    return right == null;
 }
 
 pub fn handleClearHistoryLocked(self: anytype, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
@@ -366,74 +327,75 @@ pub fn handleConfigurePersistenceLocked(self: anytype, allocator: std.mem.Alloca
     });
 }
 
-pub fn handlePiThreadListLocked(self: anytype, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
-    const database = if (self.database) |*database| database else return piThreadListResponseJsonAlloc(allocator, request.requestId(), &.{});
-
-    const rows = try database.listPiThreads(allocator, .{
-        .workspace_id = request.requestWorkspaceId(),
-        .worktree_id = request.requestWorktreeId(),
-        .root_path = request.requestRootPath(),
-    });
-    defer {
-        for (rows) |*row| row.deinit(allocator);
-        allocator.free(rows);
-    }
-
-    const responses = try allocator.alloc(rpc.PiThreadResponse, rows.len);
-    defer allocator.free(responses);
-    const resume_argvs = try allocator.alloc(util.ParsedArgv, rows.len);
-    defer {
-        for (resume_argvs) |*resume_argv| resume_argv.deinit();
-        allocator.free(resume_argvs);
-    }
-    @memset(resume_argvs, .{});
-
-    for (rows, 0..) |row, index| {
-        if (row.resume_argv_json) |resume_argv_json| {
-            resume_argvs[index] = util.parseArgvJson(allocator, resume_argv_json) catch .{};
-        }
-        responses[index] = piThreadResponseFromRow(row, resume_argvs[index].items());
-    }
-
-    return piThreadListResponseJsonAlloc(allocator, request.requestId(), responses);
-}
-
-fn piThreadResponseFromRow(row: db.PiThreadRow, resume_argv: []const []const u8) rpc.PiThreadResponse {
-    return .{
-        .id = row.id,
-        .terminal_session_id = row.terminal_session_id,
-        .terminal_id = row.terminal_id,
-        .workspace_id = row.workspace_id,
-        .worktree_id = row.worktree_id,
-        .cwd = row.cwd,
-        .terminal_status = row.terminal_status,
-        .agent_status = row.agent_status,
-        .native_session_id = row.native_session_id,
-        .resume_argv = if (resume_argv.len > 0) resume_argv else null,
-        .title = row.title,
-        .last_seq = row.last_seq,
-        .last_activity_at = row.last_activity_at,
-    };
-}
-
-fn piThreadListResponseJsonAlloc(
-    allocator: std.mem.Allocator,
-    request_id: ?[]const u8,
-    pi_threads: []const rpc.PiThreadResponse,
-) ![]u8 {
-    const Response = struct {
-        id: ?[]const u8 = null,
-        ok: bool,
-        pi_threads: []const rpc.PiThreadResponse,
-    };
-
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    errdefer out.deinit();
-
-    try out.writer.print("{f}\n", .{std.json.fmt(Response{
-        .id = request_id,
+fn graphResponse(self: anytype, allocator: std.mem.Allocator, request: rpc.ControlRequestJson, replay: mux_graph.Replay) ![]u8 {
+    const events_json = try self.mux_graph.eventsJsonAlloc(request.requestAfterEventSeq() orelse 0);
+    defer self.allocator.free(events_json);
+    return rpc.responseJsonAlloc(allocator, .{
+        .id = request.requestId(),
         .ok = true,
-        .pi_threads = pi_threads,
-    }, .{})});
-    return out.toOwnedSlice();
+        .graph_snapshot_json = replay.snapshot_json,
+        .graph_events_json = events_json,
+        .graph_rev = replay.graph_rev,
+        .event_seq = replay.event_seq,
+        .oldest_event_seq = replay.oldest_event_seq,
+        .graph_changed = replay.changed,
+        .requires_resync = replay.requires_resync,
+    });
+}
+
+pub fn handleGraphGetLocked(self: anytype, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
+    return graphResponse(self, allocator, request, self.mux_graph.replay(request.requestAfterEventSeq()));
+}
+
+pub fn handleGraphReplaceLocked(self: anytype, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
+    const snapshot_json = request.requestGraphSnapshotJson() orelse return missingField(allocator, request, "graph_snapshot_json");
+    const old_snapshot = try self.allocator.dupe(u8, self.mux_graph.snapshot());
+    defer self.allocator.free(old_snapshot);
+    const old_rev = self.mux_graph.graph_rev;
+    const old_seq = self.mux_graph.event_seq;
+    // Full event history copy: shrink-to-old-len cannot restore an entry evicted at the 256 cap.
+    const old_events = try self.allocator.dupe(mux_graph.Event, self.mux_graph.events.items);
+    defer self.allocator.free(old_events);
+
+    self.mux_graph.replaceSnapshot(snapshot_json, request.requestExpectedRev()) catch |err| {
+        return rpc.responseJsonAlloc(allocator, .{
+            .id = request.requestId(),
+            .ok = false,
+            .graph_snapshot_json = self.mux_graph.snapshot(),
+            .graph_rev = self.mux_graph.graph_rev,
+            .event_seq = self.mux_graph.event_seq,
+            .error_code = if (err == mux_graph.Error.Conflict) "revision_conflict" else "invalid_graph",
+            .error_message = @errorName(err),
+        });
+    };
+    self.mux_graph.persist(self.config.graph_path, self.config.graph_previous_path) catch |err| {
+        if (self.mux_graph.snapshot_json) |current| self.allocator.free(current);
+        self.mux_graph.snapshot_json = try self.allocator.dupe(u8, old_snapshot);
+        self.mux_graph.graph_rev = old_rev;
+        self.mux_graph.event_seq = old_seq;
+        self.mux_graph.events.clearRetainingCapacity();
+        self.mux_graph.events.appendSlice(self.allocator, old_events) catch {
+            // Best-effort history restore already failed; leave events empty so clients resync.
+            self.mux_graph.events.clearRetainingCapacity();
+        };
+        return rpc.responseJsonAlloc(allocator, .{
+            .id = request.requestId(),
+            .ok = false,
+            .error_code = "persistence_failed",
+            .error_message = @errorName(err),
+        });
+    };
+    self.graph_condition.broadcast();
+    return graphResponse(self, allocator, request, self.mux_graph.replay(old_seq));
+}
+
+pub fn handleGraphWaitLocked(self: anytype, allocator: std.mem.Allocator, request: rpc.ControlRequestJson) ![]u8 {
+    const after = request.requestAfterEventSeq() orelse 0;
+    if (after == self.mux_graph.event_seq) {
+        const timeout_ms = @min(request.requestWaitTimeoutMs() orelse 25_000, limits.graph_wait_timeout_ms_max);
+        self.graph_condition.timedWait(&self.mutex, @as(u64, timeout_ms) * std.time.ns_per_ms) catch |err| switch (err) {
+            error.Timeout => {},
+        };
+    }
+    return graphResponse(self, allocator, request, self.mux_graph.replay(after));
 }

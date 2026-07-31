@@ -24,7 +24,9 @@ function traceName(name: string): string {
 
 export function markRendererEvent(name: string): void {
   if (typeof performance === 'undefined' || typeof performance.mark !== 'function') return
-  performance.mark(traceName(name))
+  const normalized = traceName(name)
+  performance.clearMarks(normalized)
+  performance.mark(normalized)
 }
 
 export function startRendererSpan(name: string): () => void {

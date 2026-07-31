@@ -5,7 +5,10 @@
   "description": "Tau persistence daemon",
   "type": "module",
   "scripts": {
-    "build": "node --experimental-strip-types ../../scripts/taud.ts build",
+    "build": "TAUD_OPTIMIZE=ReleaseFast node --experimental-strip-types ../../scripts/taud.ts build",
+    "build:debug": "TAUD_OPTIMIZE=Debug node --experimental-strip-types ../../scripts/taud.ts build",
+    "build:fast": "TAUD_OPTIMIZE=ReleaseFast node --experimental-strip-types ../../scripts/taud.ts build",
+    "build:small": "TAUD_OPTIMIZE=ReleaseSmall node --experimental-strip-types ../../scripts/taud.ts build",
     "check": "node --experimental-strip-types ../../scripts/taud.ts check",
     "fmt": "node --experimental-strip-types ../../scripts/zig-tools.ts fmt apps/daemon",
     "fmt:check": "node --experimental-strip-types ../../scripts/zig-tools.ts fmt:check apps/daemon",

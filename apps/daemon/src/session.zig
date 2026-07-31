@@ -75,8 +75,6 @@ pub const Status = enum {
 pub const TerminalSession = struct {
     id: []const u8,
     terminal_id: []const u8,
-    workspace_id: ?[]const u8,
-    worktree_id: ?[]const u8,
     cwd: ?[]const u8,
     session_dir: ?[]const u8,
     event_log_path: ?[]const u8,
@@ -85,6 +83,7 @@ pub const TerminalSession = struct {
     subscribers: std.ArrayList(std.c.fd_t),
     pending_output: std.ArrayList(PendingOutputFrame),
     pending_output_bytes: usize,
+    pending_requires_snapshot: bool,
     pty_child: ?pty.Child,
     cols: u16,
     rows: u16,
@@ -142,8 +141,6 @@ pub const TerminalSession = struct {
         self.subscribers.deinit(allocator);
         allocator.free(self.id);
         allocator.free(self.terminal_id);
-        if (self.workspace_id) |value| allocator.free(value);
-        if (self.worktree_id) |value| allocator.free(value);
         if (self.cwd) |cwd| allocator.free(cwd);
         if (self.session_dir) |path| allocator.free(path);
         if (self.event_log_path) |path| allocator.free(path);
@@ -203,8 +200,6 @@ pub const TerminalSession = struct {
         self: *TerminalSession,
         allocator: std.mem.Allocator,
         terminal_id: []const u8,
-        workspace_id: ?[]const u8,
-        worktree_id: ?[]const u8,
         cwd: ?[]const u8,
         cols: u16,
         rows: u16,
@@ -225,18 +220,6 @@ pub const TerminalSession = struct {
             self.cwd = next_cwd;
         }
 
-        if (!optionalTextEql(self.workspace_id, workspace_id)) {
-            const next_workspace_id = if (workspace_id) |value| try allocator.dupe(u8, value) else null;
-            if (self.workspace_id) |value| allocator.free(value);
-            self.workspace_id = next_workspace_id;
-        }
-
-        if (!optionalTextEql(self.worktree_id, worktree_id)) {
-            const next_worktree_id = if (worktree_id) |value| try allocator.dupe(u8, value) else null;
-            if (self.worktree_id) |value| allocator.free(value);
-            self.worktree_id = next_worktree_id;
-        }
-
         try self.resizeVt(allocator, cols, rows);
         self.assertInvariants();
     }
@@ -245,30 +228,27 @@ pub const TerminalSession = struct {
         self.assertInvariants();
         if (payload.len == 0) return .{};
 
-        var result: PendingOutputBufferResult = .{};
+        if (self.pending_requires_snapshot or payload.len > max_pending_output_bytes or
+            self.pending_output_bytes > max_pending_output_bytes - payload.len or
+            self.pending_output.items.len >= pending_output_frames_max)
+        {
+            var result: PendingOutputBufferResult = .{
+                .dropped_frames = @intCast(self.pending_output.items.len + 1),
+                .dropped_bytes = @intCast(self.pending_output_bytes + payload.len),
+            };
+            if (payload.len > max_pending_output_bytes) result.truncated_bytes = @intCast(payload.len);
+            self.clearPendingOutput(allocator);
+            self.pending_requires_snapshot = true;
+            self.assertInvariants();
+            return result;
+        }
 
-        const bounded_payload = if (payload.len > max_pending_output_bytes) blk: {
-            result.truncated_bytes = @intCast(payload.len - max_pending_output_bytes);
-            break :blk payload[payload.len - max_pending_output_bytes ..];
-        } else payload;
-        const owned = try allocator.dupe(u8, bounded_payload);
+        const owned = try allocator.dupe(u8, payload);
         errdefer allocator.free(owned);
         try self.pending_output.append(allocator, .{ .seq = seq, .payload = owned });
         self.pending_output_bytes += owned.len;
-
-        while ((self.pending_output_bytes > max_pending_output_bytes or
-            self.pending_output.items.len > pending_output_frames_max) and
-            self.pending_output.items.len > 1)
-        {
-            var frame = self.pending_output.orderedRemove(0);
-            assert(self.pending_output_bytes >= frame.payload.len);
-            self.pending_output_bytes -= frame.payload.len;
-            result.dropped_frames += 1;
-            result.dropped_bytes += @intCast(frame.payload.len);
-            frame.deinit(allocator);
-        }
         self.assertInvariants();
-        return result;
+        return .{};
     }
 
     pub fn clearPendingOutput(self: *TerminalSession, allocator: std.mem.Allocator) void {
@@ -346,10 +326,6 @@ pub const Manager = struct {
         errdefer self.allocator.free(id);
         const terminal_id = try self.allocator.dupe(u8, input.terminal_id);
         errdefer self.allocator.free(terminal_id);
-        const workspace_id = if (input.workspace_id) |value| try self.allocator.dupe(u8, value) else null;
-        errdefer if (workspace_id) |value| self.allocator.free(value);
-        const worktree_id = if (input.worktree_id) |value| try self.allocator.dupe(u8, value) else null;
-        errdefer if (worktree_id) |value| self.allocator.free(value);
         const cwd = if (input.cwd) |value| try self.allocator.dupe(u8, value) else null;
         errdefer if (cwd) |value| self.allocator.free(value);
         var vt_terminal = try vt.Terminal.init(self.allocator, input.cols, input.rows);
@@ -358,8 +334,6 @@ pub const Manager = struct {
         try self.sessions.append(self.allocator, .{
             .id = id,
             .terminal_id = terminal_id,
-            .workspace_id = workspace_id,
-            .worktree_id = worktree_id,
             .cwd = cwd,
             .session_dir = null,
             .event_log_path = null,
@@ -368,6 +342,7 @@ pub const Manager = struct {
             .subscribers = .empty,
             .pending_output = .empty,
             .pending_output_bytes = 0,
+            .pending_requires_snapshot = false,
             .pty_child = null,
             .cols = input.cols,
             .rows = input.rows,
@@ -556,7 +531,7 @@ test "terminal session create metadata can be refreshed for restart fallback" {
         .argv = &.{},
     });
 
-    try created.updateCreateMetadata(std.testing.allocator, "term-new", null, null, "/new", 100, 40);
+    try created.updateCreateMetadata(std.testing.allocator, "term-new", "/new", 100, 40);
     try std.testing.expectEqualStrings("term-new", created.terminal_id);
     try std.testing.expectEqualStrings("/new", created.cwd.?);
     try std.testing.expectEqual(@as(u16, 100), created.cols);
@@ -609,13 +584,12 @@ test "terminal session bounds a single oversized pending-output frame" {
 
     const result = try created.bufferPendingOutput(std.testing.allocator, 42, oversized);
 
-    try std.testing.expectEqual(@as(usize, 1), created.pending_output.items.len);
-    try std.testing.expectEqual(@as(usize, max_pending_output_bytes), created.pending_output_bytes);
-    try std.testing.expectEqual(@as(u64, 42), created.pending_output.items[0].seq);
-    try std.testing.expectEqual(@as(u8, 'z'), created.pending_output.items[0].payload[created.pending_output.items[0].payload.len - 1]);
-    try std.testing.expectEqual(@as(u64, 257), result.truncated_bytes);
-    try std.testing.expectEqual(@as(u64, 0), result.dropped_frames);
-    try std.testing.expectEqual(@as(u64, 0), result.dropped_bytes);
+    try std.testing.expectEqual(@as(usize, 0), created.pending_output.items.len);
+    try std.testing.expectEqual(@as(usize, 0), created.pending_output_bytes);
+    try std.testing.expect(created.pending_requires_snapshot);
+    try std.testing.expectEqual(@as(u64, oversized_len), result.truncated_bytes);
+    try std.testing.expectEqual(@as(u64, 1), result.dropped_frames);
+    try std.testing.expectEqual(@as(u64, oversized_len), result.dropped_bytes);
 }
 
 test "terminal session bounds pending output frame count" {
@@ -636,9 +610,9 @@ test "terminal session bounds pending output frame count" {
         _ = try created.bufferPendingOutput(std.testing.allocator, seq, "x");
     }
 
-    try std.testing.expectEqual(@as(usize, pending_output_frames_max), created.pending_output.items.len);
-    try std.testing.expectEqual(@as(usize, pending_output_frames_max), created.pending_output_bytes);
-    try std.testing.expectEqual(@as(u64, 11), created.pending_output.items[0].seq);
+    try std.testing.expectEqual(@as(usize, 0), created.pending_output.items.len);
+    try std.testing.expectEqual(@as(usize, 0), created.pending_output_bytes);
+    try std.testing.expect(created.pending_requires_snapshot);
 }
 
 test "terminal session owns VT state for output and resize" {
@@ -679,8 +653,33 @@ fn sessionCreateForAllocationFailure(allocator: std.mem.Allocator) !void {
         .argv = &.{},
     });
     _ = try created.bufferPendingOutput(allocator, 1, "owned pending output");
-    try created.updateCreateMetadata(allocator, "term-oom-2", null, null, "/tmp/next", 24, 6);
+    try created.updateCreateMetadata(allocator, "term-oom-2", "/tmp/next", 24, 6);
     try std.testing.expect(manager.remove("session-oom"));
+}
+
+test "detached session state remains bounded at 10 100 and 500 sessions" {
+    for ([_]usize{ 10, 100, 500 }) |count| {
+        var manager = Manager.init(std.testing.allocator);
+        defer manager.deinit();
+        var index: usize = 0;
+        while (index < count) : (index += 1) {
+            const session_id = try std.fmt.allocPrint(std.testing.allocator, "scale-session-{d}", .{index});
+            defer std.testing.allocator.free(session_id);
+            const terminal_id = try std.fmt.allocPrint(std.testing.allocator, "scale-terminal-{d}", .{index});
+            defer std.testing.allocator.free(terminal_id);
+            const created = try manager.create(.{
+                .session_id = session_id,
+                .terminal_id = terminal_id,
+                .cols = 80,
+                .rows = 24,
+                .argv = &.{},
+            });
+            created.transitionTo(.detached);
+            try std.testing.expectEqual(@as(usize, 0), created.pending_output_bytes);
+            try std.testing.expectEqual(@as(usize, 0), created.subscribers.items.len);
+        }
+        try std.testing.expectEqual(count, manager.sessions.items.len);
+    }
 }
 
 test "session creation and owned buffers clean up on OOM" {

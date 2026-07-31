@@ -1,93 +1,44 @@
-import { Effect, Schema } from 'effect'
-import { clipboard, contextBridge, ipcRenderer, shell } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 import type {
   PtyClientMessage,
   PtyExitInfo,
   PtySize,
   TaudPtyBridgeDiagnostics,
 } from '../main/pty-protocol'
-import {
-  type PtyServiceMessage,
-  PtyServiceMessageSchema,
-  TaudPtyBridgeDiagnosticsSchema,
-} from '../main/pty-protocol'
+import type { PtyServiceMessage } from '../main/pty-protocol'
 import type { AppCommand } from '@tau/shared/app-command'
-import type { PaneLayoutData, SettingsData } from '@tau/shared/session'
-import {
-  PiThreadListInputSchema,
-  TaudLifecycleDiagnosticsSchema,
-  TaudLifecycleRecoveryInputSchema,
-} from '@tau/shared/taud-protocol'
+import type { SettingsData } from '@tau/shared/session'
+import type { MuxGraphSnapshot } from '@tau/shared/mux-graph'
 import type {
   AttachSessionInput,
   AttachSessionMode,
   AttachSessionResult,
-  AgentStatus,
   CreateSessionInput,
   CreateSessionResult,
   CurrentScreenSnapshotFrame,
   ExitInfo,
   OutputFrame,
-  PiThread,
-  PiThreadListInput,
   TaudLifecycleDiagnostics,
   TaudLifecycleRecoveryInput,
 } from '@tau/shared/taud-protocol'
-import {
-  WorkspaceError,
-  WorkspaceAddInputSchema,
-  WorkspacePickDirectoryResponseSchema,
-  WorkspaceRecordSchema,
-  WorkspaceRefreshInputSchema,
-  WorkspaceRemoveInputSchema,
-  WorkspaceWatcherDiagnosticsSchema,
-  WorktreeCreateInputSchema,
-  WorktreeRefreshInputSchema,
-  WorktreeRemoveInputSchema,
-  decodeWorkspaceIpcResponse,
-  workspaceIpcFailure,
-  workspaceErrorFromUnknown,
-  type WorkspaceDiffPatchResponse,
-  type WorkspaceDiffPatchInput,
-  type WorkspaceFileTreeResponse,
-  type WorkspaceGitBranchResponse,
-  type WorkspaceGitBranchesResponse,
-  type WorkspaceGitStatusResponse,
-  type WorkspaceGitWorktreesResponse,
-  type WorkspaceGitPathActionResponse,
-  type WorkspaceGitPathActionInput,
-  type WorkspaceIpcResponse,
-  type WorkspaceListResponse,
-  type WorkspacePortsResponse,
-  type WorkspacePullRequestResponse,
-  type WorkspaceAddInput,
-  type WorkspaceRecord,
-  type WorkspaceRecordResponse,
-  type WorkspaceRefreshInput,
-  type WorkspaceRemoveInput,
-  type WorkspaceWatcherDiagnostics,
-  type WorktreeCreateInput,
-  type WorktreeRefreshInput,
-  type WorktreeRemoveInput,
-  type WorkspaceWorktreeResponse,
-} from '@tau/shared/workspace'
-import { PreloadWorkspaceIpc, runPreloadEffect } from './runtime'
 
 type PtyDataCallback = (data: string) => void
+
+type SessionPortRequest = {
+  promise: Promise<MessagePort>
+  resolve(port: MessagePort): void
+  reject(error: Error): void
+  timeout: ReturnType<typeof setTimeout>
+}
 type SessionOutputCallback = (frame: OutputFrame) => void
 type SessionSnapshotCallback = (frame: CurrentScreenSnapshotFrame) => void
 type SessionResizeCallback = (cols: number, rows: number) => void
 type SessionTitleCallback = (title: string) => void
 type SessionExitCallback = (info: ExitInfo) => void
 type SessionErrorCallback = (error: string) => void
-type AgentStatusCallback = (status: AgentStatus) => void
 type PtyErrorCallback = (error: string) => void
 type PtyExitCallback = (info: PtyExitInfo) => void
 type AppCommandCallback = (command: AppCommand) => void
-type WorkspaceChangedCallback = (workspace: WorkspaceRecord) => void
-type WorkspaceIpcProgram<T> = (
-  workspaceIpc: typeof PreloadWorkspaceIpc.Service,
-) => Effect.Effect<T, WorkspaceError>
 
 type PendingDataState = {
   chunks: string[]
@@ -96,7 +47,7 @@ type PendingDataState = {
 
 type PendingOutputState = {
   frames: OutputFrame[]
-  bufferedChars: number
+  bufferedBytes: number
 }
 
 type TerminalPreloadDiagnostics = {
@@ -120,8 +71,6 @@ type ReadyState = {
   seq: number
   archived: boolean
   attachMode: AttachSessionMode
-  agentProvider?: string
-  nativeSessionId?: string | null
   promise: Promise<PtySize>
   resolve: ((size: PtySize) => void) | null
   reject: ((err: Error) => void) | null
@@ -131,7 +80,7 @@ type ReadyState = {
 const INITIAL_SIZE_TIMEOUT_MS = 5000
 const PTY_PORT_REQUEST_TIMEOUT_MS = 5000
 const MAX_PENDING_DATA_CHARS = 1024 * 1024
-const MAX_PENDING_OUTPUT_CHARS = 1024 * 1024
+const MAX_PENDING_OUTPUT_BYTES = 1024 * 1024
 
 type PtyPortRequest = {
   promise: Promise<void>
@@ -155,8 +104,9 @@ const rendererShownWaiters: Array<() => void> = []
 const readyStates = new Map<string, ReadyState>()
 const pendingData = new Map<string, PendingDataState>()
 const pendingSessionOutput = new Map<string, PendingOutputState>()
+const sessionPorts = new Map<string, MessagePort>()
+const sessionPortRequests = new Map<string, SessionPortRequest>()
 const pendingSnapshots = new Map<string, CurrentScreenSnapshotFrame>()
-const pendingAgentStatuses = new Map<string, AgentStatus>()
 const ptyDataCallbacks = new Map<string, PtyDataCallback[]>()
 const sessionOutputCallbacks = new Map<string, SessionOutputCallback[]>()
 const sessionSnapshotCallbacks = new Map<string, SessionSnapshotCallback[]>()
@@ -164,9 +114,15 @@ const sessionResizeCallbacks = new Map<string, SessionResizeCallback[]>()
 const sessionTitleCallbacks = new Map<string, SessionTitleCallback[]>()
 const sessionExitCallbacks = new Map<string, SessionExitCallback[]>()
 const sessionErrorCallbacks = new Map<string, SessionErrorCallback[]>()
-const agentStatusCallbacks = new Map<string, AgentStatusCallback[]>()
 const ptyErrorCallbacks = new Map<string, PtyErrorCallback[]>()
 const ptyExitCallbacks = new Map<string, PtyExitCallback[]>()
+
+function base64ToBytes(dataBase64: string): Uint8Array {
+  const binary = atob(dataBase64)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return bytes
+}
 
 function isValidTerminalSize(cols: unknown, rows: unknown): cols is number {
   return (
@@ -197,17 +153,14 @@ function createReadyState(): ReadyState {
     reject: null,
     timeout: null,
   }
-
   state.resolve = resolveReady
   state.reject = rejectReady
-
   return state
 }
 
 function beginReadyState(sessionId: string): ReadyState {
   const existingState = readyStates.get(sessionId)
   if (existingState?.resolve || existingState?.reject) return existingState
-
   if (existingState) clearReadyTimeout(existingState)
   const state = createReadyState()
   readyStates.set(sessionId, state)
@@ -217,7 +170,6 @@ function beginReadyState(sessionId: string): ReadyState {
 function armReadyTimeout(sessionId: string) {
   const state = readyStates.get(sessionId)
   if (!state || state.size || state.timeout !== null || (!state.resolve && !state.reject)) return
-
   state.timeout = setTimeout(() => {
     rejectPtyReady(sessionId, new Error(`Timed out waiting for PTY ${sessionId} to become ready`))
   }, INITIAL_SIZE_TIMEOUT_MS)
@@ -244,8 +196,6 @@ function resolvePtyReady(
   seq = 0,
   archived = false,
   attachMode: AttachSessionMode = 'live',
-  agentProvider?: string,
-  nativeSessionId?: string | null,
 ) {
   const state = readyStates.get(sessionId)
   if (!state) return
@@ -253,8 +203,6 @@ function resolvePtyReady(
   state.seq = seq
   state.archived = archived
   state.attachMode = attachMode
-  state.agentProvider = agentProvider
-  state.nativeSessionId = nativeSessionId
   clearReadyTimeout(state)
   state.resolve?.(size)
   state.resolve = null
@@ -275,18 +223,14 @@ function queuePtyMessage(message: PtyClientMessage) {
 
 function flushPendingClientMessages() {
   if (!ptyPort || pendingClientMessages.length === 0) return
-
   const messages = pendingClientMessages
   pendingClientMessages = []
-  for (const message of messages) {
-    postToPty(message)
-  }
+  for (const message of messages) postToPty(message)
 }
 
 function callbacksFor<T>(callbacksBySession: Map<string, T[]>, sessionId: string): T[] {
   const callbacks = callbacksBySession.get(sessionId)
   if (callbacks) return callbacks
-
   const nextCallbacks: T[] = []
   callbacksBySession.set(sessionId, nextCallbacks)
   return nextCallbacks
@@ -295,7 +239,6 @@ function callbacksFor<T>(callbacksBySession: Map<string, T[]>, sessionId: string
 function pendingDataFor(sessionId: string): PendingDataState {
   const existingState = pendingData.get(sessionId)
   if (existingState) return existingState
-
   const state: PendingDataState = { chunks: [], bufferedChars: 0 }
   pendingData.set(sessionId, state)
   return state
@@ -304,8 +247,7 @@ function pendingDataFor(sessionId: string): PendingDataState {
 function pendingOutputFor(sessionId: string): PendingOutputState {
   const existingState = pendingSessionOutput.get(sessionId)
   if (existingState) return existingState
-
-  const state: PendingOutputState = { frames: [], bufferedChars: 0 }
+  const state: PendingOutputState = { frames: [], bufferedBytes: 0 }
   pendingSessionOutput.set(sessionId, state)
   return state
 }
@@ -313,28 +255,21 @@ function pendingOutputFor(sessionId: string): PendingOutputState {
 function removeCallback<T>(callbacksBySession: Map<string, T[]>, sessionId: string, callback: T) {
   const currentCallbacks = callbacksBySession.get(sessionId)
   if (!currentCallbacks) return
-
-  const nextCallbacks = currentCallbacks.filter((registeredCallback) => {
-    return registeredCallback !== callback
-  })
+  const nextCallbacks = currentCallbacks.filter((registeredCallback) => registeredCallback !== callback)
   if (nextCallbacks.length === 0) {
     callbacksBySession.delete(sessionId)
     return
   }
-
   callbacksBySession.set(sessionId, nextCallbacks)
 }
 
 function clearSessionState(sessionId: string) {
   const state = readyStates.get(sessionId)
-  if (state) {
-    clearReadyTimeout(state)
-  }
+  if (state) clearReadyTimeout(state)
   readyStates.delete(sessionId)
   pendingData.delete(sessionId)
   pendingSessionOutput.delete(sessionId)
   pendingSnapshots.delete(sessionId)
-  pendingAgentStatuses.delete(sessionId)
   ptyDataCallbacks.delete(sessionId)
   sessionOutputCallbacks.delete(sessionId)
   sessionSnapshotCallbacks.delete(sessionId)
@@ -342,9 +277,10 @@ function clearSessionState(sessionId: string) {
   sessionTitleCallbacks.delete(sessionId)
   sessionExitCallbacks.delete(sessionId)
   sessionErrorCallbacks.delete(sessionId)
-  agentStatusCallbacks.delete(sessionId)
   ptyErrorCallbacks.delete(sessionId)
   ptyExitCallbacks.delete(sessionId)
+  // Drop the fast-lane port so main's SessionChannel is released on exit/error as well as detach/kill.
+  closeSessionPort(sessionId)
 }
 
 function rejectAndClearSessionState(sessionId: string, error: Error) {
@@ -355,10 +291,8 @@ function rejectAndClearSessionState(sessionId: string, error: Error) {
 function getTerminalPreloadDiagnostics(): TerminalPreloadDiagnostics {
   let pendingDataChars = 0
   for (const pending of pendingData.values()) pendingDataChars += pending.bufferedChars
-
   let pendingOutputChars = 0
-  for (const pending of pendingSessionOutput.values()) pendingOutputChars += pending.bufferedChars
-
+  for (const pending of pendingSessionOutput.values()) pendingOutputChars += pending.bufferedBytes
   return {
     pendingClientMessages: pendingClientMessages.length,
     pendingDataSessions: pendingData.size,
@@ -380,23 +314,19 @@ function flushPendingData(sessionId: string) {
   const pending = pendingData.get(sessionId)
   const callbacks = ptyDataCallbacks.get(sessionId)
   if (!pending || pending.chunks.length === 0 || !callbacks || callbacks.length === 0) return
-
   const data = pending.chunks.length === 1 ? pending.chunks[0] : pending.chunks.join('')
   pending.chunks = []
   pending.bufferedChars = 0
-  for (const callback of callbacks) {
-    callback(data)
-  }
+  for (const callback of callbacks) callback(data)
 }
 
 function flushPendingSessionOutput(sessionId: string) {
   const pending = pendingSessionOutput.get(sessionId)
   const callbacks = sessionOutputCallbacks.get(sessionId)
   if (!pending || pending.frames.length === 0 || !callbacks || callbacks.length === 0) return
-
   const frames = pending.frames
   pending.frames = []
-  pending.bufferedChars = 0
+  pending.bufferedBytes = 0
   for (const frame of frames) {
     for (const callback of callbacks) callback(frame)
   }
@@ -405,6 +335,7 @@ function flushPendingSessionOutput(sessionId: string) {
 function handlePtyData(sessionId: string, data: string) {
   const callbacks = ptyDataCallbacks.get(sessionId)
   if (!callbacks || callbacks.length === 0) {
+    // Phase 1.7: only buffer for benchmark/compat onPtyData subscribers.
     const pending = pendingDataFor(sessionId)
     pending.chunks.push(data)
     pending.bufferedChars += data.length
@@ -414,48 +345,28 @@ function handlePtyData(sessionId: string, data: string) {
       pendingDataDroppedChunksTotal += 1
       pendingDataDroppedCharsTotal += droppedChars
     }
-    if (pending.bufferedChars > MAX_PENDING_DATA_CHARS && pending.chunks.length === 1) {
-      const truncatedChars = pending.bufferedChars - MAX_PENDING_DATA_CHARS
-      pending.chunks[0] = pending.chunks[0].slice(-MAX_PENDING_DATA_CHARS)
-      pending.bufferedChars = pending.chunks[0].length
-      pendingDataTruncatedCharsTotal += truncatedChars
-    }
     return
   }
-
-  for (const callback of callbacks) {
-    callback(data)
-  }
+  for (const callback of callbacks) callback(data)
 }
 
 function handleSessionOutput(frame: OutputFrame) {
   const callbacks = sessionOutputCallbacks.get(frame.sessionId)
   if (!callbacks || callbacks.length === 0) {
     const pending = pendingOutputFor(frame.sessionId)
+    if (pending.bufferedBytes + frame.data.byteLength > MAX_PENDING_OUTPUT_BYTES) {
+      pendingOutputDroppedFramesTotal += pending.frames.length + 1
+      pendingOutputDroppedCharsTotal += pending.bufferedBytes + frame.data.byteLength
+      pending.frames = []
+      pending.bufferedBytes = 0
+      sessionPorts.get(frame.sessionId)?.postMessage({ type: 'resync', seq: 0 })
+      return
+    }
     pending.frames.push(frame)
-    pending.bufferedChars += frame.data.length
-    while (pending.bufferedChars > MAX_PENDING_OUTPUT_CHARS && pending.frames.length > 1) {
-      const droppedChars = pending.frames.shift()?.data.length ?? 0
-      pending.bufferedChars -= droppedChars
-      pendingOutputDroppedFramesTotal += 1
-      pendingOutputDroppedCharsTotal += droppedChars
-    }
-    if (pending.bufferedChars > MAX_PENDING_OUTPUT_CHARS && pending.frames.length === 1) {
-      const onlyFrame = pending.frames[0]!
-      const truncatedChars = pending.bufferedChars - MAX_PENDING_OUTPUT_CHARS
-      pending.frames[0] = {
-        ...onlyFrame,
-        data: onlyFrame.data.slice(-MAX_PENDING_OUTPUT_CHARS),
-      }
-      pending.bufferedChars = pending.frames[0]!.data.length
-      pendingOutputTruncatedCharsTotal += truncatedChars
-    }
+    pending.bufferedBytes += frame.data.byteLength
     return
   }
-
-  for (const callback of callbacks) {
-    callback(frame)
-  }
+  for (const callback of callbacks) callback(frame)
 }
 
 function handleSessionSnapshot(frame: CurrentScreenSnapshotFrame) {
@@ -464,28 +375,11 @@ function handleSessionSnapshot(frame: CurrentScreenSnapshotFrame) {
     pendingSnapshots.set(frame.sessionId, frame)
     return
   }
-
-  for (const callback of callbacks) {
-    callback(frame)
-  }
-}
-
-function handleAgentStatus(sessionId: string, status: AgentStatus) {
-  const callbacks = agentStatusCallbacks.get(sessionId)
-  if (!callbacks || callbacks.length === 0) {
-    pendingAgentStatuses.set(sessionId, status)
-    return
-  }
-
-  for (const callback of callbacks) {
-    callback(status)
-  }
+  for (const callback of callbacks) callback(frame)
 }
 
 function handleSessionTitle(sessionId: string, title: string) {
-  for (const callback of sessionTitleCallbacks.get(sessionId) ?? []) {
-    callback(title)
-  }
+  for (const callback of sessionTitleCallbacks.get(sessionId) ?? []) callback(title)
 }
 
 function handlePtyMessage(message: PtyServiceMessage) {
@@ -497,25 +391,21 @@ function handlePtyMessage(message: PtyServiceMessage) {
         message.seq ?? 0,
         message.archived ?? false,
         message.attachMode ?? 'live',
-        message.agentProvider,
-        message.nativeSessionId,
       )
-      if (message.agentProvider) {
-        handleAgentStatus(message.sessionId, {
-          provider: message.agentProvider,
-          status: message.attachMode === 'agent-resume' ? 'resumed' : 'running',
-          nativeSessionId: message.nativeSessionId,
-        })
-      }
       break
-    case 'data':
+    case 'data': {
+      // Compatibility-only path; production output uses a per-session binary MessagePort.
+      const bytes = new TextEncoder().encode(message.data)
       handleSessionOutput({
         sessionId: message.sessionId,
         seq: message.seq ?? 0,
-        data: message.data,
+        data: bytes,
       })
-      handlePtyData(message.sessionId, message.data)
+      if ((ptyDataCallbacks.get(message.sessionId)?.length ?? 0) > 0) {
+        handlePtyData(message.sessionId, message.data)
+      }
       break
+    }
     case 'resize':
       for (const callback of sessionResizeCallbacks.get(message.sessionId) ?? []) {
         callback(message.cols, message.rows)
@@ -528,18 +418,14 @@ function handlePtyMessage(message: PtyServiceMessage) {
       handleSessionSnapshot({
         sessionId: message.sessionId,
         seq: message.seq ?? 0,
-        dataBase64: message.dataBase64,
+        data: base64ToBytes(message.dataBase64),
         live: message.live ?? true,
       })
       break
     case 'error':
       rejectPtyReady(message.sessionId, new Error(message.error))
-      for (const callback of ptyErrorCallbacks.get(message.sessionId) ?? []) {
-        callback(message.error)
-      }
-      for (const callback of sessionErrorCallbacks.get(message.sessionId) ?? []) {
-        callback(message.error)
-      }
+      for (const callback of ptyErrorCallbacks.get(message.sessionId) ?? []) callback(message.error)
+      for (const callback of sessionErrorCallbacks.get(message.sessionId) ?? []) callback(message.error)
       clearSessionState(message.sessionId)
       break
     case 'exit': {
@@ -548,31 +434,86 @@ function handlePtyMessage(message: PtyServiceMessage) {
         rejectPtyReady(
           message.sessionId,
           new Error(
-            `PTY ${message.sessionId} exited before ready (exitCode=${
-              message.info.exitCode
-            }, signal=${message.info.signal ?? 'none'})`,
+            `PTY ${message.sessionId} exited before ready (exitCode=${message.info.exitCode}, signal=${message.info.signal ?? 'none'})`,
           ),
         )
       }
-      for (const callback of ptyExitCallbacks.get(message.sessionId) ?? []) {
-        callback(message.info)
-      }
-      for (const callback of sessionExitCallbacks.get(message.sessionId) ?? []) {
-        callback(message.info)
-      }
+      for (const callback of ptyExitCallbacks.get(message.sessionId) ?? []) callback(message.info)
+      for (const callback of sessionExitCallbacks.get(message.sessionId) ?? []) callback(message.info)
       clearSessionState(message.sessionId)
       break
     }
-    case 'agent':
-      handleAgentStatus(message.sessionId, message.status)
-      break
   }
 }
 
-function decodePtyServiceMessage(message: unknown): PtyServiceMessage | null {
-  const decoded = Schema.decodeUnknownOption(PtyServiceMessageSchema)(message)
-  return decoded._tag === 'Some' ? decoded.value : null
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
+
+function decodePtyServiceMessage(message: unknown): PtyServiceMessage | null {
+  if (!isRecord(message) || typeof message.type !== 'string') return null
+  if (typeof message.sessionId !== 'string' || message.sessionId.length === 0) return null
+  switch (message.type) {
+    case 'ready':
+      if (!isRecord(message.size) || !isValidTerminalSize(message.size.cols, message.size.rows)) return null
+      break
+    case 'data':
+      if (typeof message.data !== 'string') return null
+      break
+    case 'resize':
+      if (!isValidTerminalSize(message.cols, message.rows)) return null
+      break
+    case 'title':
+      if (typeof message.title !== 'string') return null
+      break
+    case 'snapshot':
+      if (typeof message.dataBase64 !== 'string') return null
+      break
+    case 'error':
+      if (typeof message.error !== 'string') return null
+      break
+    case 'exit':
+      if (!isRecord(message.info) || typeof message.info.exitCode !== 'number') return null
+      break
+    default:
+      return null
+  }
+  return message as PtyServiceMessage
+}
+
+function assertMuxGraphSnapshot(value: unknown): MuxGraphSnapshot {
+  if (!isRecord(value) || value.schemaVersion !== 1) throw new Error('Invalid mux graph snapshot')
+  if (!Number.isSafeInteger(value.graphRev) || !Number.isSafeInteger(value.eventSeq)) {
+    throw new Error('Invalid mux graph revision')
+  }
+  if (!Array.isArray(value.tabs) || !Array.isArray(value.panes)) throw new Error('Invalid mux graph arrays')
+  return value as MuxGraphSnapshot
+}
+
+function assertLifecycleDiagnostics(value: unknown): TaudLifecycleDiagnostics {
+  if (!isRecord(value) || typeof value.state !== 'string') {
+    throw new Error('Invalid taud diagnostics payload')
+  }
+  return value as TaudLifecycleDiagnostics
+}
+
+function assertBridgeDiagnostics(value: unknown): TaudPtyBridgeDiagnostics {
+  if (!isRecord(value) || typeof value.portConnected !== 'boolean') {
+    throw new Error('Invalid taud bridge diagnostics payload')
+  }
+  return value as TaudPtyBridgeDiagnostics
+}
+
+const RECOVERY_ACTIONS = new Set<TaudLifecycleRecoveryInput>([
+  'none',
+  'start-daemon',
+  'wait-for-start',
+  'reuse-external-daemon',
+  'keep-detached-daemon',
+  'clear-stale-socket-and-start',
+  'restart-owned-daemon',
+  'replace-incompatible-daemon',
+])
 
 function createSessionId(): string {
   const randomUUID = globalThis.crypto?.randomUUID?.()
@@ -583,7 +524,6 @@ function createSessionId(): string {
 ipcRenderer.on('pty:port', (event) => {
   const [port] = event.ports
   if (!port) return
-
   ptyPort = port
   const request = ptyPortRequest
   ptyPortRequest = null
@@ -600,6 +540,79 @@ ipcRenderer.on('pty:port', (event) => {
   flushPendingClientMessages()
 })
 
+ipcRenderer.on('pty:session-port', (event, sessionId: unknown) => {
+  const [port] = event.ports
+  if (!port || typeof sessionId !== 'string' || sessionId.length === 0) {
+    port?.close()
+    return
+  }
+  sessionPorts.get(sessionId)?.close()
+  sessionPorts.set(sessionId, port)
+  const request = sessionPortRequests.get(sessionId)
+  if (request) {
+    clearTimeout(request.timeout)
+    sessionPortRequests.delete(sessionId)
+    request.resolve(port)
+  }
+  port.onmessage = (messageEvent) => {
+    const message = messageEvent.data as { type?: unknown; seq?: unknown; data?: unknown }
+    if (!message || typeof message.seq !== 'number' || !(message.data instanceof ArrayBuffer)) return
+    const frame = {
+      sessionId,
+      seq: message.seq,
+      data: new Uint8Array(message.data),
+    }
+    if (message.type === 'output') {
+      handleSessionOutput(frame)
+      // Compatibility path: keep onPtyData fed after the fast-lane migration (reload smoke / benches).
+      if (frame.data.byteLength > 0) {
+        handlePtyData(sessionId, new TextDecoder().decode(frame.data))
+      }
+    } else if (message.type === 'snapshot') {
+      handleSessionSnapshot({ ...frame, live: true })
+    }
+  }
+  port.start()
+})
+
+function requestSessionPort(sessionId: string): Promise<MessagePort> {
+  const existing = sessionPorts.get(sessionId)
+  if (existing) return Promise.resolve(existing)
+  const pending = sessionPortRequests.get(sessionId)
+  if (pending) return pending.promise
+
+  let resolveRequest!: (port: MessagePort) => void
+  let rejectRequest!: (error: Error) => void
+  const promise = new Promise<MessagePort>((resolve, reject) => {
+    resolveRequest = resolve
+    rejectRequest = reject
+  })
+  const request: SessionPortRequest = {
+    promise,
+    resolve: resolveRequest,
+    reject: rejectRequest,
+    timeout: setTimeout(() => {
+      if (sessionPortRequests.get(sessionId) !== request) return
+      sessionPortRequests.delete(sessionId)
+      rejectRequest(new Error(`Timed out waiting for terminal fast lane ${sessionId}`))
+    }, PTY_PORT_REQUEST_TIMEOUT_MS),
+  }
+  sessionPortRequests.set(sessionId, request)
+  ipcRenderer.send('pty:requestSessionPort', sessionId)
+  return promise
+}
+
+function closeSessionPort(sessionId: string): void {
+  sessionPorts.get(sessionId)?.close()
+  sessionPorts.delete(sessionId)
+  const request = sessionPortRequests.get(sessionId)
+  if (request) {
+    clearTimeout(request.timeout)
+    sessionPortRequests.delete(sessionId)
+    request.reject(new Error(`Terminal fast lane ${sessionId} closed`))
+  }
+}
+
 ipcRenderer.on('renderer:shown', () => {
   rendererShown = true
   const waiters = rendererShownWaiters.splice(0)
@@ -608,7 +621,6 @@ ipcRenderer.on('renderer:shown', () => {
 
 function waitForRendererShown(): Promise<void> {
   if (rendererShown) return Promise.resolve()
-
   return new Promise((resolve) => {
     let wrappedResolve: (() => void) | null = null
     const timeout = setTimeout(() => {
@@ -631,7 +643,6 @@ function removeRendererShownWaiter(resolve: () => void) {
 function requestPtyPort(): Promise<void> {
   if (ptyPort) return Promise.resolve()
   if (ptyPortRequest) return ptyPortRequest.promise
-
   let resolveRequest: (() => void) | null = null
   let rejectRequest: ((error: Error) => void) | null = null
   const promise = new Promise<void>((resolve, reject) => {
@@ -648,54 +659,40 @@ function requestPtyPort(): Promise<void> {
       request.reject(new Error('Timed out waiting for PTY bridge port'))
     }, PTY_PORT_REQUEST_TIMEOUT_MS),
   }
-
   ptyPortRequest = request
   ipcRenderer.send('pty:requestPort')
   return promise
 }
 
-/**
- * The API exposed to the renderer process via contextBridge.
- * This is a minimal, typed surface — the renderer can only call
- * these specific methods, nothing else.
- */
 const electronAPI = {
   async openExternalUrl(url: string): Promise<void> {
     const parsed = new URL(url)
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       throw new Error(`Unsupported external URL protocol: ${parsed.protocol}`)
     }
-    await shell.openExternal(parsed.href)
+    await ipcRenderer.invoke('host:openExternal', parsed.href)
   },
 
   writeClipboardText(text: string): Promise<void> {
-    clipboard.writeText(text)
-    return Promise.resolve()
+    return ipcRenderer.invoke('host:writeClipboard', text) as Promise<void>
   },
 
   async createSession(input: CreateSessionInput): Promise<CreateSessionResult> {
     if (!input || typeof input.terminalId !== 'string' || input.terminalId.length === 0) {
       return Promise.reject(new Error('terminalId is required'))
     }
-    const workspaceId = typeof input.workspaceId === 'string' ? input.workspaceId.trim() : ''
-    if (workspaceId.length === 0) {
-      return Promise.reject(new Error('workspaceId is required'))
-    }
     if (!isValidTerminalSize(input.cols, input.rows)) {
       return Promise.reject(new Error('Session size must use positive integer cols and rows'))
     }
-
     const sessionId = createSessionId()
     const trimmedCwd = typeof input.cwd === 'string' ? input.cwd.trim() : ''
-    const worktreeId = typeof input.worktreeId === 'string' ? input.worktreeId.trim() : ''
     await requestPtyPort()
+    await requestSessionPort(sessionId)
     const state = beginReadyState(sessionId)
     queuePtyMessage({
       type: 'spawn',
       sessionId,
       terminalId: input.terminalId,
-      workspaceId,
-      ...(worktreeId.length > 0 ? { worktreeId } : {}),
       cols: input.cols,
       rows: input.rows,
       ...(trimmedCwd.length > 0 ? { cwd: trimmedCwd } : {}),
@@ -712,7 +709,6 @@ const electronAPI = {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       return Promise.reject(new Error('sessionId is required'))
     }
-
     const cols = typeof input.cols === 'number' ? input.cols : 80
     const rows = typeof input.rows === 'number' ? input.rows : 24
     if (!isValidTerminalSize(cols, rows)) {
@@ -720,19 +716,13 @@ const electronAPI = {
     }
     const trimmedCwd = typeof input.cwd === 'string' ? input.cwd.trim() : ''
     const terminalId = typeof input.terminalId === 'string' ? input.terminalId.trim() : ''
-    const workspaceId = typeof input.workspaceId === 'string' ? input.workspaceId.trim() : ''
-    if (workspaceId.length === 0) {
-      return Promise.reject(new Error('workspaceId is required'))
-    }
-    const worktreeId = typeof input.worktreeId === 'string' ? input.worktreeId.trim() : ''
     await requestPtyPort()
+    await requestSessionPort(sessionId)
     const state = beginReadyState(sessionId)
     queuePtyMessage({
       type: 'attach',
       sessionId,
       ...(terminalId.length > 0 ? { terminalId } : {}),
-      workspaceId,
-      ...(worktreeId.length > 0 ? { worktreeId } : {}),
       cols,
       rows,
       ...(trimmedCwd.length > 0 ? { cwd: trimmedCwd } : {}),
@@ -746,8 +736,6 @@ const electronAPI = {
       rows: size.rows,
       archived: state.archived,
       attachMode: state.attachMode,
-      agentProvider: state.agentProvider,
-      nativeSessionId: state.nativeSessionId,
     }
   },
 
@@ -755,13 +743,32 @@ const electronAPI = {
     if (typeof sessionId !== 'string' || sessionId.length === 0) return Promise.resolve()
     rejectAndClearSessionState(sessionId, new Error(`Session ${sessionId} detached before ready`))
     queuePtyMessage({ type: 'detach', sessionId })
+    closeSessionPort(sessionId)
     return Promise.resolve()
   },
 
-  writeSessionInput(sessionId: string, data: Uint8Array): void {
-    if (!(data instanceof Uint8Array) || data.length === 0) return
+  writeSessionInput(sessionId: string, data: string, encoding: 'utf8' | 'binary' = 'utf8'): void {
+    // Keep contextBridge arguments primitive. The session MessagePort carries binary input separately.
+    if (typeof data !== 'string' || data.length === 0) return
     if (typeof sessionId !== 'string' || sessionId.length === 0) return
-    queuePtyMessage({ type: 'write', sessionId, data })
+    const port = sessionPorts.get(sessionId)
+    if (!port) return
+    const bytes =
+      encoding === 'binary'
+        ? Uint8Array.from(data, (character) => character.charCodeAt(0) & 0xff)
+        : new TextEncoder().encode(data)
+    // Prefer transferable ArrayBuffer over number[] so large pastes are not subject to array limits.
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    port.postMessage({ type: 'input', data: buffer }, [buffer])
+  },
+
+  acknowledgeSessionOutput(sessionId: string, seq: number): void {
+    if (!Number.isSafeInteger(seq) || seq < 0) return
+    sessionPorts.get(sessionId)?.postMessage({ type: 'ack', seq })
+  },
+
+  requestSessionResync(sessionId: string, appliedSeq: number): void {
+    sessionPorts.get(sessionId)?.postMessage({ type: 'resync', seq: appliedSeq })
   },
 
   resizeSession(sessionId: string, cols: number, rows: number): void {
@@ -772,11 +779,9 @@ const electronAPI = {
 
   killSession(sessionId: string): Promise<void> {
     if (typeof sessionId === 'string' && sessionId.length > 0) {
-      rejectAndClearSessionState(
-        sessionId,
-        new Error(`Session ${sessionId} was killed before ready`),
-      )
+      rejectAndClearSessionState(sessionId, new Error(`Session ${sessionId} was killed before ready`))
       queuePtyMessage({ type: 'kill', sessionId })
+      closeSessionPort(sessionId)
     }
     return Promise.resolve()
   },
@@ -784,19 +789,6 @@ const electronAPI = {
   clearSessionHistory(sessionId: string): Promise<void> {
     if (typeof sessionId !== 'string' || sessionId.length === 0) return Promise.resolve()
     queuePtyMessage({ type: 'clear-history', sessionIds: [sessionId] })
-    return Promise.resolve()
-  },
-
-  clearWorkspaceSessionHistory(sessionIds: string[]): Promise<void> {
-    if (!Array.isArray(sessionIds)) return Promise.resolve()
-    const uniqueSessionIds = Array.from(
-      new Set(
-        sessionIds.filter((sessionId) => typeof sessionId === 'string' && sessionId.length > 0),
-      ),
-    )
-    if (uniqueSessionIds.length === 0) return Promise.resolve()
-
-    queuePtyMessage({ type: 'clear-history', sessionIds: uniqueSessionIds })
     return Promise.resolve()
   },
 
@@ -850,30 +842,21 @@ const electronAPI = {
     return () => removeCallback(sessionErrorCallbacks, sessionId, callback)
   },
 
-  onAgentStatus(sessionId: string, callback: (status: AgentStatus) => void): () => void {
-    const callbacks = callbacksFor(agentStatusCallbacks, sessionId)
-    callbacks.push(callback)
-    const pendingStatus = pendingAgentStatuses.get(sessionId)
-    if (pendingStatus) {
-      pendingAgentStatuses.delete(sessionId)
-      callback(pendingStatus)
-    }
-    return () => removeCallback(agentStatusCallbacks, sessionId, callback)
-  },
-
   spawnPty(sessionId: string, _cols: number, _rows: number, _cwd?: string): Promise<PtySize> {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       return Promise.reject(new Error('PTY sessionId is required'))
     }
-    return Promise.reject(
-      new Error('spawnPty is deprecated; use createSession with a workspaceId instead'),
-    )
+    return Promise.reject(new Error('spawnPty is deprecated; use createSession instead'))
   },
 
   sendPtyInput(sessionId: string, data: string): void {
     if (typeof sessionId !== 'string' || sessionId.length === 0) return
     if (typeof data !== 'string' || data.length === 0) return
-    queuePtyMessage({ type: 'write', sessionId, data })
+    const port = sessionPorts.get(sessionId)
+    if (!port) return
+    const bytes = new TextEncoder().encode(data)
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    port.postMessage({ type: 'input', data: buffer }, [buffer])
   },
 
   resizePty(sessionId: string, cols: number, rows: number): void {
@@ -907,10 +890,6 @@ const electronAPI = {
     return () => removeCallback(ptyExitCallbacks, sessionId, callback)
   },
 
-  /**
-   * Signal the main process that the renderer has mounted.
-   * This triggers the window to be shown for an instant-open feel.
-   */
   signalReady(): Promise<void> {
     queuePtyMessage({ type: 'renderer-ready' })
     const shown = waitForRendererShown()
@@ -921,9 +900,6 @@ const electronAPI = {
     return shown
   },
 
-  /**
-   * Register a callback for a tab/pane command handled before terminal input.
-   */
   onAppCommand(callback: AppCommandCallback): () => void {
     const listener = (_event: Electron.IpcRendererEvent, command: AppCommand) => {
       callback(command)
@@ -934,180 +910,42 @@ const electronAPI = {
     }
   },
 
-  onWorkspaceChanged(callback: WorkspaceChangedCallback): () => void {
-    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => {
-      const decoded = Schema.decodeUnknownOption(WorkspaceRecordSchema)(payload)
-      if (decoded._tag === 'Some') {
-        callback(decoded.value)
-      } else {
-        console.debug('[preload] Invalid workspace:changed payload received', payload)
-      }
-    }
-    ipcRenderer.on('workspace:changed', listener)
-    return () => {
-      ipcRenderer.removeListener('workspace:changed', listener)
-    }
-  },
-
   getTerminalPreloadDiagnostics(): TerminalPreloadDiagnostics {
     return getTerminalPreloadDiagnostics()
   },
 
   async getTaudDiagnostics(): Promise<TaudLifecycleDiagnostics | null> {
     const payload = await ipcRenderer.invoke('taud:getDiagnostics')
-    if (payload === null) return null
-    const decoded = Schema.decodeUnknownOption(TaudLifecycleDiagnosticsSchema)(payload)
-    if (decoded._tag === 'None') throw new Error('Invalid taud diagnostics payload')
-    return decoded.value
+    return payload === null ? null : assertLifecycleDiagnostics(payload)
   },
 
   async getTaudPtyBridgeDiagnostics(): Promise<TaudPtyBridgeDiagnostics | null> {
     const payload = await ipcRenderer.invoke('taud:getPtyBridgeDiagnostics')
-    if (payload === null) return null
-    const decoded = Schema.decodeUnknownOption(TaudPtyBridgeDiagnosticsSchema)(payload)
-    if (decoded._tag === 'None') throw new Error('Invalid taud bridge diagnostics payload')
-    return decoded.value
+    return payload === null ? null : assertBridgeDiagnostics(payload)
   },
 
   async recoverTaud(action: TaudLifecycleRecoveryInput): Promise<TaudLifecycleDiagnostics | null> {
-    const decodedInput = Schema.decodeUnknownOption(TaudLifecycleRecoveryInputSchema)(action)
-    if (decodedInput._tag === 'None') throw new Error('Invalid taud recovery action')
-    const payload = await ipcRenderer.invoke('taud:recover', decodedInput.value)
-    if (payload === null) return null
-    const decoded = Schema.decodeUnknownOption(TaudLifecycleDiagnosticsSchema)(payload)
-    if (decoded._tag === 'None') throw new Error('Invalid taud diagnostics payload')
-    return decoded.value
+    if (!RECOVERY_ACTIONS.has(action)) throw new Error('Invalid taud recovery action')
+    const payload = await ipcRenderer.invoke('taud:recover', action)
+    return payload === null ? null : assertLifecycleDiagnostics(payload)
   },
 
-  async getWorkspaceWatcherDiagnostics(): Promise<WorkspaceWatcherDiagnostics | null> {
-    const payload = await ipcRenderer.invoke('workspace:getWatcherDiagnostics')
-    if (payload === null) return null
-    const decoded = Schema.decodeUnknownOption(WorkspaceWatcherDiagnosticsSchema)(payload)
-    if (decoded._tag === 'None') throw new Error('Invalid workspace watcher diagnostics payload')
-    return decoded.value
+  async getMuxGraph(): Promise<MuxGraphSnapshot> {
+    return assertMuxGraphSnapshot(await ipcRenderer.invoke('mux-graph:get'))
   },
 
-  pickWorkspaceDirectory(): Promise<string | null> {
-    return pickWorkspaceDirectory()
+  async replaceMuxGraph(
+    snapshot: MuxGraphSnapshot,
+    expectedRev: number,
+  ): Promise<MuxGraphSnapshot> {
+    const decoded = assertMuxGraphSnapshot(snapshot)
+    return assertMuxGraphSnapshot(
+      await ipcRenderer.invoke('mux-graph:replace', decoded, expectedRev),
+    )
   },
 
-  getGitBranch(workspacePath: string): Promise<WorkspaceGitBranchResponse> {
-    return runWorkspaceIpc((workspaceIpc) => workspaceIpc.getGitBranch(workspacePath))
-  },
-
-  getGitBranches(workspacePath: string): Promise<WorkspaceGitBranchesResponse> {
-    return runWorkspaceIpc((workspaceIpc) => workspaceIpc.getGitBranches(workspacePath))
-  },
-
-  getGitWorktrees(workspacePath: string): Promise<WorkspaceGitWorktreesResponse> {
-    return runWorkspaceIpc((workspaceIpc) => workspaceIpc.getGitWorktrees(workspacePath))
-  },
-
-  getGitStatus(workspacePath: string): Promise<WorkspaceGitStatusResponse> {
-    return runWorkspaceIpc((workspaceIpc) => workspaceIpc.getGitStatus(workspacePath))
-  },
-
-  getWorkspaceFileTree(workspacePath: string): Promise<WorkspaceFileTreeResponse> {
-    return runWorkspaceIpc((workspaceIpc) => workspaceIpc.getWorkspaceFileTree(workspacePath))
-  },
-
-  getWorkspaceDiffPatch(input: WorkspaceDiffPatchInput): Promise<WorkspaceDiffPatchResponse> {
-    return runWorkspaceIpc((workspaceIpc) => workspaceIpc.getWorkspaceDiffPatch(input))
-  },
-
-  stagePath(input: WorkspaceGitPathActionInput): Promise<WorkspaceGitPathActionResponse> {
-    return runWorkspaceIpc((workspaceIpc) => workspaceIpc.stagePath(input))
-  },
-
-  unstagePath(input: WorkspaceGitPathActionInput): Promise<WorkspaceGitPathActionResponse> {
-    return runWorkspaceIpc((workspaceIpc) => workspaceIpc.unstagePath(input))
-  },
-
-  revertPath(input: WorkspaceGitPathActionInput): Promise<WorkspaceGitPathActionResponse> {
-    return runWorkspaceIpc((workspaceIpc) => workspaceIpc.revertPath(input))
-  },
-
-  getWorkspacePorts(workspacePath: string): Promise<WorkspacePortsResponse> {
-    return runWorkspaceIpc((workspaceIpc) => workspaceIpc.getWorkspacePorts(workspacePath))
-  },
-
-  getPullRequestInfo(workspacePath: string): Promise<WorkspacePullRequestResponse> {
-    return runWorkspaceIpc((workspaceIpc) => workspaceIpc.getPullRequestInfo(workspacePath))
-  },
-
-  listWorkspaces(): Promise<WorkspaceListResponse> {
-    return invokeWorkspaceDaemon('workspace:list') as Promise<WorkspaceListResponse>
-  },
-
-  addWorkspace(input: WorkspaceAddInput): Promise<WorkspaceRecordResponse> {
-    return invokeWorkspaceDaemon(
-      'workspace:add',
-      input,
-      WorkspaceAddInputSchema,
-      'invalid-workspace',
-    ) as Promise<WorkspaceRecordResponse>
-  },
-
-  refreshWorkspace(workspaceId: WorkspaceRefreshInput): Promise<WorkspaceRecordResponse> {
-    return invokeWorkspaceDaemon(
-      'workspace:refresh',
-      workspaceId,
-      WorkspaceRefreshInputSchema,
-      'invalid-workspace',
-    ) as Promise<WorkspaceRecordResponse>
-  },
-
-  removeWorkspace(workspaceId: WorkspaceRemoveInput): Promise<WorkspaceIpcResponse<void>> {
-    return invokeWorkspaceDaemon(
-      'workspace:remove',
-      workspaceId,
-      WorkspaceRemoveInputSchema,
-      'invalid-workspace',
-    ) as Promise<WorkspaceIpcResponse<void>>
-  },
-
-  createWorktree(input: WorktreeCreateInput): Promise<WorkspaceWorktreeResponse> {
-    return invokeWorkspaceDaemon(
-      'worktree:create',
-      input,
-      WorktreeCreateInputSchema,
-      'invalid-worktree',
-    ) as Promise<WorkspaceWorktreeResponse>
-  },
-
-  refreshWorktree(worktreeId: WorktreeRefreshInput): Promise<WorkspaceWorktreeResponse> {
-    return invokeWorkspaceDaemon(
-      'worktree:refresh',
-      worktreeId,
-      WorktreeRefreshInputSchema,
-      'invalid-worktree',
-    ) as Promise<WorkspaceWorktreeResponse>
-  },
-
-  removeWorktree(input: WorktreeRemoveInput): Promise<WorkspaceIpcResponse<void>> {
-    return invokeWorkspaceDaemon(
-      'worktree:remove',
-      input,
-      WorktreeRemoveInputSchema,
-      'invalid-worktree',
-    ) as Promise<WorkspaceIpcResponse<void>>
-  },
-
-  listPiThreads(input: PiThreadListInput = {}): Promise<WorkspaceIpcResponse<readonly PiThread[]>> {
-    return invokeWorkspaceDaemon(
-      'pi-thread:list',
-      input,
-      PiThreadListInputSchema,
-      'invalid-workspace',
-    ) as Promise<WorkspaceIpcResponse<readonly PiThread[]>>
-  },
-
-  readLayout(): Promise<PaneLayoutData | null> {
-    return ipcRenderer.invoke('layout:read') as Promise<PaneLayoutData | null>
-  },
-
-  writeLayout(data: PaneLayoutData): Promise<void> {
-    return ipcRenderer.invoke('layout:write', data) as Promise<void>
+  async waitMuxGraph(afterEventSeq: number): Promise<MuxGraphSnapshot> {
+    return assertMuxGraphSnapshot(await ipcRenderer.invoke('mux-graph:wait', afterEventSeq))
   },
 
   readSettings(): Promise<SettingsData | null> {
@@ -1119,58 +957,6 @@ const electronAPI = {
   },
 }
 
-function runWorkspaceIpc<T>(program: WorkspaceIpcProgram<T>): Promise<T> {
-  return runPreloadEffect(PreloadWorkspaceIpc.use(program)).catch(
-    (error) => workspaceIpcFailure(error, 'ipc-failed') as T,
-  )
-}
-
-function invokeWorkspaceDaemon<S extends Schema.Decoder<unknown, any>>(
-  channel: string,
-  input?: unknown,
-  inputSchema?: S,
-  fallbackKind: WorkspaceError['kind'] = 'ipc-failed',
-): Promise<unknown> {
-  let payload = input
-  if (inputSchema) {
-    const decoded = Schema.decodeUnknownOption(inputSchema as unknown as Schema.Decoder<unknown>)(
-      input,
-    )
-    if (decoded._tag === 'None') {
-      return Promise.resolve(
-        workspaceIpcFailure(
-          new WorkspaceError(fallbackKind, `Invalid payload for ${channel}`),
-          fallbackKind,
-        ),
-      )
-    }
-    payload = decoded.value
-  }
-
-  return (ipcRenderer.invoke(channel, payload) as Promise<unknown>).catch((error) =>
-    workspaceIpcFailure(error, 'ipc-failed'),
-  )
-}
-
-function pickWorkspaceDirectory(): Promise<string | null> {
-  const channel = 'workspace:pickDirectory'
-  return Effect.runPromise(
-    Effect.tryPromise({
-      try: () => ipcRenderer.invoke(channel) as Promise<unknown>,
-      catch: (error) => workspaceErrorFromUnknown(error, 'ipc-failed'),
-    }).pipe(
-      Effect.flatMap((response) =>
-        decodeWorkspaceIpcResponse(response, WorkspacePickDirectoryResponseSchema, channel),
-      ),
-    ),
-  ).catch((error) => {
-    // Preserve the existing public API: cancellation and selection failure are both null.
-    console.warn('[workspace] Failed to pick directory:', error)
-    return null
-  })
-}
-
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)
 
-// Type declaration for the renderer
 export type ElectronAPI = typeof electronAPI
