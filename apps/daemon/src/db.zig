@@ -367,7 +367,7 @@ pub const Database = struct {
 
     fn rebuildTerminalSessionsFromLegacy(self: *Database) !void {
         try self.exec("BEGIN IMMEDIATE;");
-        errdefer _ = self.exec("ROLLBACK;");
+        errdefer self.exec("ROLLBACK;") catch {};
         try self.exec("ALTER TABLE terminal_sessions RENAME TO terminal_sessions_pre_mux;");
         try self.exec(terminal_sessions_table_sql);
         try self.exec(copy_terminal_sessions_from_pre_mux_sql);
@@ -378,7 +378,7 @@ pub const Database = struct {
 
     fn finishTerminalSessionsRebuildFromPreMux(self: *Database) !void {
         try self.exec("BEGIN IMMEDIATE;");
-        errdefer _ = self.exec("ROLLBACK;");
+        errdefer self.exec("ROLLBACK;") catch {};
         // Incomplete new table from a crash after rename/create — discard and rebuild from backup.
         try self.exec("DROP TABLE IF EXISTS terminal_sessions;");
         try self.exec(terminal_sessions_table_sql);
@@ -389,33 +389,33 @@ pub const Database = struct {
     }
 
     fn tableExists(self: *Database, comptime name: []const u8) !bool {
-        const count = try self.handle.one(
+        const count = (try self.handle.one(
             u64,
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '" ++ name ++ "';",
             .{},
             .{},
-        );
+        )) orelse 0;
         return count > 0;
     }
 
     fn terminalSessionsNeedsRebuild(self: *Database) !bool {
         // Pre-mux tables kept workflow columns that CREATE IF NOT EXISTS never removed. New upserts
         // omit those fields and fail when they were NOT NULL / FK-backed on the retained schema.
-        const legacy_columns = try self.handle.one(
+        const legacy_columns = (try self.handle.one(
             u64,
             "SELECT COUNT(*) FROM pragma_table_info('terminal_sessions') WHERE name IN ('workspace_id', 'worktree_id');",
             .{},
             .{},
-        );
+        )) orelse 0;
         if (legacy_columns > 0) return true;
 
         // Also rebuild if a required mux column is missing (partial / foreign schemas).
-        const required_columns = try self.handle.one(
+        const required_columns = (try self.handle.one(
             u64,
             "SELECT COUNT(*) FROM pragma_table_info('terminal_sessions') WHERE name IN ('terminal_id', 'event_log_path', 'last_seq', 'snapshot_path', 'snapshot_seq', 'started_at');",
             .{},
             .{},
-        );
+        )) orelse 0;
         return required_columns < 6;
     }
 
@@ -571,12 +571,12 @@ test "sqlite database stores mux terminal sessions and FTS excerpts" {
 test "fresh mux schema contains no workflow tables" {
     var database = try Database.openInMemory(std.testing.allocator);
     defer database.deinit();
-    const workflow_count = try database.handle.one(
+    const workflow_count = (try database.handle.one(
         u64,
         "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('workspaces','worktrees','agent_sessions');",
         .{},
         .{},
-    );
+    )).?;
     try std.testing.expectEqual(@as(u64, 0), workflow_count);
 }
 
@@ -647,12 +647,12 @@ test "migrates legacy terminal_sessions with workspace columns" {
     var database = try Database.open(std.testing.allocator, path);
     defer database.deinit();
 
-    const legacy_columns = try database.handle.one(
+    const legacy_columns = (try database.handle.one(
         u64,
         "SELECT COUNT(*) FROM pragma_table_info('terminal_sessions') WHERE name = 'workspace_id';",
         .{},
         .{},
-    );
+    )).?;
     try std.testing.expectEqual(@as(u64, 0), legacy_columns);
 
     var row = (try database.findTerminalSessionById(std.testing.allocator, "legacy-1")).?;
@@ -752,12 +752,12 @@ test "resumes terminal_sessions rebuild from retained pre_mux backup" {
     var database = try Database.open(std.testing.allocator, path);
     defer database.deinit();
 
-    const pre_mux_left = try database.handle.one(
+    const pre_mux_left = (try database.handle.one(
         u64,
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'terminal_sessions_pre_mux';",
         .{},
         .{},
-    );
+    )).?;
     try std.testing.expectEqual(@as(u64, 0), pre_mux_left);
 
     var row = (try database.findTerminalSessionById(std.testing.allocator, "resume-1")).?;

@@ -757,7 +757,7 @@ const electronAPI = {
       encoding === 'binary'
         ? Uint8Array.from(data, (character) => character.charCodeAt(0) & 0xff)
         : new TextEncoder().encode(data)
-    // Prefer transferable ArrayBuffer over number[] so large pastes are not subject to array limits.
+    // Create an exact-sized ArrayBuffer before transferring ownership to the main process.
     const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
     port.postMessage({ type: 'input', data: buffer }, [buffer])
   },

@@ -13,14 +13,11 @@ import {
 } from './pty-protocol'
 import type { SettingsData } from '@tau/shared/session'
 import { TaudClient, type TaudControlResponse, type TaudSessionStream } from './taud-client'
+import { sessionChannelBacklogExceeded } from './session-channel-backpressure'
 import { decodeTaudExitPayload, decodeTaudResizePayload } from './taud-stream'
 
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 const ATTACH_STREAM_READY_TIMEOUT_MS = 500
-/** Bound MessagePort backlog so a stalled renderer cannot grow main-process memory without limit. */
-const SESSION_CHANNEL_MAX_UNACKED_FRAMES = 512
-const SESSION_CHANNEL_MAX_UNACKED_BYTES = 4 * 1024 * 1024
-const SESSION_CHANNEL_MAX_QUEUE_AGE_MS = 10_000
 /** Convert legacy number[] input in bounded chunks instead of dropping large pastes. */
 const SESSION_INPUT_ARRAY_CHUNK_BYTES = 64 * 1024
 
@@ -752,18 +749,11 @@ export class TaudPtyBridge {
   }
 
   private channelBacklogExceeded(channel: SessionChannel, nextBytes: number): boolean {
-    // Always allow a single in-flight frame so a large snapshot can land and so
-    // backpressure can always be cleared by a later ack (never hard-stuck).
-    if (channel.pendingFrames.length === 0) return false
-    if (channel.pendingFrames.length >= SESSION_CHANNEL_MAX_UNACKED_FRAMES) return true
-    if (channel.unackedBytes + nextBytes > SESSION_CHANNEL_MAX_UNACKED_BYTES) return true
-    if (
-      channel.oldestUnackedAt > 0 &&
-      Date.now() - channel.oldestUnackedAt > SESSION_CHANNEL_MAX_QUEUE_AGE_MS
-    ) {
-      return true
-    }
-    return false
+    return sessionChannelBacklogExceeded(
+      channel.pendingFrames.length,
+      channel.unackedBytes,
+      nextBytes,
+    )
   }
 
   private tripSessionChannelBackpressure(sessionId: string, channel: SessionChannel): void {
@@ -823,11 +813,12 @@ export class TaudPtyBridge {
       this.tripSessionChannelBackpressure(sessionId, channel)
       return
     }
-    // Exact-sized owned copy so we can transfer the buffer without retaining a view into `data`.
+    // Exact-sized owned copy so the posted message does not retain a view into `data`.
     const bytes = Uint8Array.from(data)
     try {
-      // MessagePortMain typings only list port transfer, but Chromium accepts ArrayBuffer transferables.
-      channel.port.postMessage({ type, seq, data: bytes.buffer }, [bytes.buffer] as unknown as MessagePortMain[])
+      // MessagePortMain's transfer list accepts MessagePorts only. ArrayBuffers are still cloned as
+      // message data, but passing one in the transfer list makes Electron reject the entire post.
+      channel.port.postMessage({ type, seq, data: bytes.buffer })
       channel.lastSentSeq = Math.max(channel.lastSentSeq, seq)
       channel.lastSentAt = Date.now()
       channel.unackedBytes += byteLength

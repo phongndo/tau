@@ -229,9 +229,19 @@ async function tryApplyCurrentScreenSnapshot(
     const envelope = decodeCurrentScreenSnapshot(frame.data)
     if (isGhosttyNativeCurrentScreenSnapshot(envelope)) {
       const snapshot = decodeGhosttyNativeCurrentScreenSnapshotPayload(envelope.payload)
-      if (snapshot.cols !== envelope.cols || snapshot.rows !== envelope.rows) return 0
+      if (snapshot.cols !== envelope.cols || snapshot.rows !== envelope.rows) {
+        console.warn('[terminal] ignored current-screen snapshot with inconsistent dimensions', {
+          envelope: { cols: envelope.cols, rows: envelope.rows },
+          snapshot: { cols: snapshot.cols, rows: snapshot.rows },
+        })
+        return 0
+      }
 
       if (term.cols !== snapshot.cols || term.rows !== snapshot.rows) {
+        console.warn('[terminal] deferred current-screen snapshot with stale dimensions', {
+          terminal: { cols: term.cols, rows: term.rows },
+          snapshot: { cols: snapshot.cols, rows: snapshot.rows },
+        })
         return 0
       }
 
@@ -245,9 +255,19 @@ async function tryApplyCurrentScreenSnapshot(
     }
 
     const snapshot = decodeFallbackCurrentScreenSnapshotPayload(envelope.payload)
-    if (snapshot.cols !== envelope.cols || snapshot.rows !== envelope.rows) return 0
+    if (snapshot.cols !== envelope.cols || snapshot.rows !== envelope.rows) {
+      console.warn('[terminal] ignored fallback snapshot with inconsistent dimensions', {
+        envelope: { cols: envelope.cols, rows: envelope.rows },
+        snapshot: { cols: snapshot.cols, rows: snapshot.rows },
+      })
+      return 0
+    }
 
     if (term.cols !== snapshot.cols || term.rows !== snapshot.rows) {
+      console.warn('[terminal] deferred fallback snapshot with stale dimensions', {
+        terminal: { cols: term.cols, rows: term.rows },
+        snapshot: { cols: snapshot.cols, rows: snapshot.rows },
+      })
       return 0
     }
 
@@ -874,8 +894,9 @@ export async function createTerminal(
     // in-progress prompt restore (notably zsh/starship right-prompt cursor movement), leaving the
     // visible cursor far to the right in brand-new tabs. Keep snapshots for live/resumed attaches,
     // where they are needed to hydrate an existing screen without replaying full scrollback.
+    const needsStartupSnapshot = !archived && attachedSession.attachMode !== 'fresh'
     if (pendingStartupSnapshot) {
-      if (!archived && attachedSession.attachMode !== 'fresh') {
+      if (needsStartupSnapshot) {
         suppressOutputThroughSeq = await tryApplyCurrentScreenSnapshot(term, pendingStartupSnapshot)
         if (suppressOutputThroughSeq > 0) {
           window.electronAPI.acknowledgeSessionOutput(sessionId, suppressOutputThroughSeq)
@@ -884,6 +905,11 @@ export async function createTerminal(
       pendingStartupSnapshot = null
     }
     await flushStartupOutput(suppressOutputThroughSeq)
+    if (needsStartupSnapshot && suppressOutputThroughSeq <= 0) {
+      // The ready control message and binary snapshot use different MessagePorts, so ready can win
+      // their cross-port race. Ask for a live resync rather than leaving a resumed terminal blank.
+      window.electronAPI.requestSessionResync(sessionId, 0)
+    }
     await revealTerminalAfterStableRender(container, term)
     markRendererEvent('terminal:ready')
     finishCreate()

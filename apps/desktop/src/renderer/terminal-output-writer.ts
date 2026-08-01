@@ -111,7 +111,13 @@ export function createSequencedTerminalWriter(
 
   return {
     write(data, seq) {
-      if (disposed || data.byteLength === 0 || seq <= lastAppliedSeq) return
+      if (disposed || data.byteLength === 0) return
+      if (seq <= lastAppliedSeq) {
+        // Re-acknowledge duplicate frames. Main may have posted this frame just after processing the
+        // previous ack; silently discarding it would leave that MessagePort backlog entry stuck.
+        options.onApplied(lastAppliedSeq)
+        return
+      }
       const owned = Uint8Array.from(data)
       if (queuedBytes + owned.byteLength > maxQueuedBytes) {
         droppedWriteQueueChunksTotal += queue.length

@@ -1,11 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { sessionChannelBacklogExceeded } from '../src/main/session-channel-backpressure'
 import {
   createBatchedTerminalWriter,
   createSequencedTerminalWriter,
 } from '../src/renderer/terminal-output-writer'
 
 const delay = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+test('an idle MessagePort frame does not deadlock the next terminal output', () => {
+  assert.equal(sessionChannelBacklogExceeded(1, 1024, 1024), false)
+  assert.equal(sessionChannelBacklogExceeded(511, 1024, 1024), false)
+  assert.equal(sessionChannelBacklogExceeded(512, 1024, 1024), true)
+  assert.equal(sessionChannelBacklogExceeded(1, 4 * 1024 * 1024, 1), true)
+})
 
 function installWindowTimers() {
   const previousWindow = (globalThis as { window?: unknown }).window
@@ -154,6 +162,9 @@ test('sequenced byte writer acknowledges applied frames and resyncs without slic
     callbacks.shift()?.()
     await delay()
     assert.deepEqual(acknowledgements, [1])
+    writer.write(Uint8Array.from([0xe2, 0x82, 0xac]), 1)
+    assert.deepEqual(acknowledgements, [1, 1])
+    assert.equal(writes.length, 1)
     writer.write(Uint8Array.from([1, 2, 3, 4, 5]), 2)
     writer.write(Uint8Array.from([6, 7, 8, 9, 10]), 3)
     assert.deepEqual(resyncs, [1])
