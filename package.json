@@ -77,10 +77,10 @@
   },
   "devDependencies": {
     "@types/bun": "1.4.2",
-    "@types/node": "^25.9.1",
-    "electron": "^42.3.0",
-    "oxfmt": "^0.53.0",
-    "typescript": "^6.0.3"
+    "@types/node": "^24.13.6",
+    "electron": "^44.4.5",
+    "oxfmt": "^0.70.0",
+    "typescript": "^7.0.2"
   },
   "packageManager": "bun@1.4.2",
   "trustedDependencies": [

@@ -1,7 +1,7 @@
 .{
     .name = .taud,
     .version = "0.1.0",
-    .fingerprint = 0x24b69be944f5f41c, // Changing this has security and trust implications.
+    .fingerprint = 0x949b613244f5f41c, // Name hash for .taud; preserve the package identity's random suffix.
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .ghostty = .{

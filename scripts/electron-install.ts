@@ -4,14 +4,24 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
-const require = createRequire(import.meta.url)
+// Match desktop dev/bench resolution even if Bun installs a workspace-local Electron.
+const require = createRequire(resolve(import.meta.dir, '../apps/desktop/package.json'))
 
 const electronPackageJsonPath = require.resolve('electron/package.json')
 const electronDir = dirname(electronPackageJsonPath)
 const electronPackage = JSON.parse(readFileSync(electronPackageJsonPath, 'utf8')) as {
   version: string
+}
+const rootElectronPackageJsonPath = createRequire(import.meta.url).resolve('electron/package.json')
+const rootElectronPackage = JSON.parse(readFileSync(rootElectronPackageJsonPath, 'utf8')) as {
+  version: string
+}
+if (rootElectronPackage.version !== electronPackage.version) {
+  throw new Error(
+    `[electron-install] Electron version mismatch: desktop ${electronPackage.version} at ${electronDir}, root ${rootElectronPackage.version} at ${dirname(rootElectronPackageJsonPath)}. Remove stale workspace-local Electron and rerun bun install.`,
+  )
 }
 
 const platform =
@@ -54,8 +64,12 @@ async function isElectronUsable(): Promise<boolean> {
       existsSync(executablePath) &&
       existsSync(requiredRuntimePath)
     )
-  } catch {
-    return false
+  } catch (error) {
+    // Missing install markers are repairable; other read failures should not trigger a download.
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false
+    throw new Error(`[electron-install] Cannot inspect Electron install at ${electronDir}`, {
+      cause: error,
+    })
   }
 }
 

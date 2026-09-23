@@ -29,7 +29,7 @@ jobs:
         with:
           bun-version-file: package.json
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with: { node-version: '22' }
+        with: { node-version: '24' }
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -63,7 +63,7 @@ jobs:
         with:
           bun-version-file: package.json
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with: { node-version: '22' }
+        with: { node-version: '24' }
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -114,7 +114,7 @@ jobs:
         with:
           bun-version-file: package.json
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with: { node-version: '22' }
+        with: { node-version: '24' }
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: ${{ env.ZIG_VERSION }}

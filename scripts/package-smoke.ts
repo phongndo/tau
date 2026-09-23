@@ -6,11 +6,10 @@ import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 
-const require = createRequire(import.meta.url)
-const electronPath = require('electron') as string
-
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const desktopRoot = resolve(repoRoot, 'apps/desktop')
+const require = createRequire(resolve(desktopRoot, 'package.json'))
+const electronPath = require('electron') as string
 const outRoot = resolve(desktopRoot, 'out')
 const taudPath = resolve(outRoot, 'bin', process.platform === 'win32' ? 'taud.exe' : 'taud')
 

@@ -148,9 +148,7 @@ A Tau extension is a TypeScript module with a default factory, following the use
 
 ```ts
 export default function (tau: ExtensionAPI) {
-  tau.commands.register('example.open', {
-    /* ... */
-  })
+  tau.commands.register('example.open', {/* ... */})
   tau.settings.register({ id: 'example.general' /* ... */ })
   tau.launchers.register({ id: 'example.shell' /* ... */ })
   tau.on('session:started', (event, context) => {

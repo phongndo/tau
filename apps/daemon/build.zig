@@ -63,6 +63,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .sanitize_thread = sanitize_thread,
         .fuzz = fuzz,
+        .strip = strip_binary,
         .imports = &.{.{ .name = "taud", .module = mod }},
     });
     exe_mod.addOptions("build_options", options);

@@ -66,6 +66,7 @@ See [docs](docs/README.md) for architecture notes and plans.
 - **TypeScript**: `oxlint` for linting and `oxfmt` for formatting.
 - **Zig**: `zig fmt`, `zig ast-check`, and `zig build test` are wired through `bun run zig:*` scripts.
 - **Nix**: `nix fmt` formats `flake.nix`; the dev shell provides `zig`, `zls`, `node` (compatibility), and the Bun version pinned in `package.json`.
+- **TypeScript editor diagnostics**: point your editor's LSP command at `./node_modules/.bin/tsc --lsp --stdio` from the repo root (after `bun install`). TypeScript 7 includes its own language server; the older standalone `typescript-language-server` uses a different compiler.
 - Run `bun run fmt` to auto-format TypeScript and Zig. Run `bun run zig:lsp` inside `nix develop` to verify the Zig language server is available.
 - **Commit messages**: [Conventional Commits](https://www.conventionalcommits.org/).
 

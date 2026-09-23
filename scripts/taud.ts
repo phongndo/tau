@@ -97,8 +97,8 @@ function output(command: string, args: readonly string[], cwd = daemonRoot): str
 
 function assertZigVersion(): string {
   const version = output('zig', ['version'])
-  if (!version.startsWith('0.15.')) {
-    fail(`taud requires Zig 0.15.x; found ${version}. Run: nix profile install nixpkgs#zig_0_15`)
+  if (version !== '0.15.2') {
+    fail(`taud requires Zig 0.15.2; found ${version}. Run inside nix develop`)
   }
   return version
 }

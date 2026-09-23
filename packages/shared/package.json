@@ -17,10 +17,10 @@
     "lint:fix": "oxlint . --fix"
   },
   "dependencies": {
-    "effect": "4.0.0-beta.66"
+    "effect": "4.0.0-rc.117"
   },
   "devDependencies": {
-    "oxlint": "^1.68.0",
-    "typescript": "^6.0.3"
+    "oxlint": "^1.85.0",
+    "typescript": "^7.0.2"
   }
 }

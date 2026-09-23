@@ -1,7 +1,7 @@
 /**
  * Tau — Electron Performance Research & Implementation
  *
- * Electron 42 (Chromium ~136) on macOS arm64.
+ * Electron desktop runtime on macOS arm64.
  *
  * This module applies every safe, measurable performance optimization
  * to the Electron shell. Organized by category with explanations.
@@ -40,6 +40,7 @@ import { disposeMainRuntime } from './runtime'
 import { defaultSettings, readSettings, writeSettings } from './settings-store'
 import { TaudPtyBridge } from './taud-pty-bridge'
 import { TaudClient } from './taud-client'
+import { observeSmokeOutput } from './smoke-output'
 import type { AppCommand, PaneFocusDirection } from '@tau/shared/app-command'
 import { SettingsDataSchema, type SettingsData } from '@tau/shared/session'
 import { MuxGraphSnapshotSchema, type MuxGraphSnapshot } from '@tau/shared/mux-graph'
@@ -670,6 +671,7 @@ while time.time() < deadline:
       const scriptStartedAt = performance.now()
       const api = window.electronAPI
       if (!api) throw new Error('window.electronAPI is unavailable')
+      const observeSmokeOutput = (${observeSmokeOutput.toString()})
       await api.signalReady()
       const rendererReadyMs = performance.now() - scriptStartedAt
       const created = await api.createSession({
@@ -734,10 +736,11 @@ while time.time() < deadline:
           })
           offData = api.onSessionOutput(sessionId, (frame) => {
             if (firstOutputMs === null) firstOutputMs = performance.now() - scriptStartedAt
-            outputTail = (outputTail + decoder.decode(frame.data, { stream: true })).slice(-4096)
+            const observed = observeSmokeOutput(outputTail, decoder.decode(frame.data, { stream: true }), ${JSON.stringify(input.token)})
+            outputTail = observed.tail
             receivedBytes += frame.data.byteLength
             api.acknowledgeSessionOutput(sessionId, frame.seq)
-            if (outputTail.includes(${JSON.stringify(input.token)})) sawToken = true
+            if (observed.sawToken) sawToken = true
             if (inputProbeEnabled && sawToken && !inputSent) {
               inputSent = true
               inputSentAt = performance.now()

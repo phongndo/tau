@@ -66,10 +66,10 @@
 
           # Build-time dependencies
           nativeBuildInputs = (with pkgs; [
-            nodejs_22 # Compatibility for third-party Node shebangs, not Tau's script runtime
+            nodejs_24 # LTS compatibility for third-party Node shebangs, not Tau's script runtime
             nixd # Nix language server
             bun # Package manager, TypeScript runtime, test runner and benchmark bundler
-            typescript-language-server # TypeScript language server
+            unzip # Electron's installer extracts its downloaded runtime with unzip
             zig_0_15 # taud daemon + Ghostty/Zig tooling
             zls_0_15 # Zig language server matching Zig 0.15.x
             nixpkgs-fmt # nix fmt / CI format check
@@ -134,6 +134,7 @@
             echo "   bun install && bun run dev"
             echo "   bun run check        # TS + Zig lint/format/type/test checks"
             echo "   bun run zig:lsp      # verify Zig language server availability"
+            echo "   TypeScript LSP: ./node_modules/.bin/tsc --lsp --stdio (after bun install)"
             echo ""
           '';
         };
