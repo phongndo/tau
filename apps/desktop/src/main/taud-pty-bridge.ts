@@ -1,9 +1,6 @@
 import { Schema } from 'effect'
 import type { MessagePortMain } from 'electron'
-import {
-  TaudStreamFrameKind,
-  type AttachSessionMode,
-} from '@tau/shared/taud-protocol'
+import { TaudStreamFrameKind, type AttachSessionMode } from '@tau/shared/taud-protocol'
 import { defaultSettings, readSettings } from './settings-store'
 import {
   type PtyClientMessage,
@@ -270,7 +267,8 @@ export class TaudPtyBridge {
     port.on('message', (event) => {
       const data = event.data
       if (data instanceof ArrayBuffer) {
-        if (data.byteLength > 0) this.sessions.get(sessionId)?.stream?.writeInput(new Uint8Array(data))
+        if (data.byteLength > 0)
+          this.sessions.get(sessionId)?.stream?.writeInput(new Uint8Array(data))
         return
       }
       if (ArrayBuffer.isView(data)) {
@@ -287,7 +285,11 @@ export class TaudPtyBridge {
         this.writeSessionInputPayload(sessionId, message.data)
         return
       }
-      if (message.type === 'ack' && typeof message.seq === 'number' && Number.isSafeInteger(message.seq)) {
+      if (
+        message.type === 'ack' &&
+        typeof message.seq === 'number' &&
+        Number.isSafeInteger(message.seq)
+      ) {
         this.acknowledgeSessionChannel(sessionId, channel, message.seq)
         return
       }
@@ -770,7 +772,10 @@ export class TaudPtyBridge {
     channel.lastAckSeq = Math.max(channel.lastAckSeq, seq)
     channel.lastAckAt = Date.now()
 
-    while (channel.pendingFrames.length > 0 && channel.pendingFrames[0]!.seq <= channel.lastAckSeq) {
+    while (
+      channel.pendingFrames.length > 0 &&
+      channel.pendingFrames[0]!.seq <= channel.lastAckSeq
+    ) {
       const frame = channel.pendingFrames.shift()!
       channel.unackedBytes = Math.max(0, channel.unackedBytes - frame.bytes)
     }

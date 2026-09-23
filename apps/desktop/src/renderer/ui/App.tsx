@@ -2,7 +2,10 @@ import { type ComponentType, memo, useCallback, useEffect, useMemo, useRef, useS
 import { Mosaic, type MosaicNode, type MosaicProps } from 'react-mosaic-component'
 import 'react-mosaic-component/react-mosaic-component.css'
 import type { AppCommand } from '@tau/shared/app-command'
-import type { TaudLifecycleDiagnostics, TaudLifecycleRecoveryAction } from '@tau/shared/taud-protocol'
+import type {
+  TaudLifecycleDiagnostics,
+  TaudLifecycleRecoveryAction,
+} from '@tau/shared/taud-protocol'
 import { sanitizeTerminalTitle } from '../osc-title'
 import { disposeTerminalRuntime } from '../terminal'
 import { markRendererEvent } from '../trace'
@@ -128,7 +131,9 @@ const DaemonRecoveryIndicator = memo(function DaemonRecoveryIndicator({
         <strong>{notice.title}</strong>
         {notice.detail ? <span>{notice.detail}</span> : null}
       </div>
-      {recoveryError ? <div className="daemon-recovery-panel-value-error">{recoveryError}</div> : null}
+      {recoveryError ? (
+        <div className="daemon-recovery-panel-value-error">{recoveryError}</div>
+      ) : null}
       {label && action !== 'none' ? (
         <button
           type="button"
@@ -197,7 +202,13 @@ const TabBar = memo(function TabBar({
         })}
       </div>
       <div className="tab-bar-actions">
-        <button type="button" className="icon-button" aria-label="New tab" title="New tab" onClick={onNew}>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="New tab"
+          title="New tab"
+          onClick={onNew}
+        >
           +
         </button>
         <button
@@ -403,7 +414,10 @@ export function App() {
           } catch (error) {
             // Another window likely won the empty-graph init race. Adopt whatever is authoritative
             // instead of treating a normal revision conflict as missing graph support.
-            console.warn('[mux-graph] Initial graph replace conflicted; adopting daemon snapshot:', error)
+            console.warn(
+              '[mux-graph] Initial graph replace conflicted; adopting daemon snapshot:',
+              error,
+            )
             graph = await window.electronAPI.getMuxGraph()
           }
         }
@@ -417,7 +431,10 @@ export function App() {
         applyingGraphRef.current = false
       } catch (error) {
         graphAvailableRef.current = false
-        console.warn('[mux-graph] Daemon lacks graph authority; using this window until it is upgraded:', error)
+        console.warn(
+          '[mux-graph] Daemon lacks graph authority; using this window until it is upgraded:',
+          error,
+        )
       } finally {
         if (!cancelled) setLayoutLoaded(true)
       }
@@ -489,7 +506,10 @@ export function App() {
               )
               authoritativeGraphRevRef.current = graph.graphRev
               authoritativeEventSeqRef.current = graph.eventSeq
-              subscribedEventSeqRef.current = Math.max(subscribedEventSeqRef.current, graph.eventSeq)
+              subscribedEventSeqRef.current = Math.max(
+                subscribedEventSeqRef.current,
+                graph.eventSeq,
+              )
               applyingGraphRef.current = true
               markMuxGraphRevision(graph.graphRev, graph.eventSeq)
               applyingGraphRef.current = false
@@ -500,7 +520,10 @@ export function App() {
                 if (cancelled) return
                 authoritativeGraphRevRef.current = graph.graphRev
                 authoritativeEventSeqRef.current = graph.eventSeq
-                subscribedEventSeqRef.current = Math.max(subscribedEventSeqRef.current, graph.eventSeq)
+                subscribedEventSeqRef.current = Math.max(
+                  subscribedEventSeqRef.current,
+                  graph.eventSeq,
+                )
                 // Drop candidates built on the pre-conflict base; the store is about to match the
                 // authoritative snapshot. Fresh local edits after apply will re-queue.
                 pendingGraphCandidateRef.current = null
@@ -517,10 +540,7 @@ export function App() {
           }
         })
         .finally(() => {
-          pendingGraphSubmissionsRef.current = Math.max(
-            0,
-            pendingGraphSubmissionsRef.current - 1,
-          )
+          pendingGraphSubmissionsRef.current = Math.max(0, pendingGraphSubmissionsRef.current - 1)
           if (pendingGraphSubmissionsRef.current === 0 && !cancelled) {
             applyDeferredRemoteGraph()
           }

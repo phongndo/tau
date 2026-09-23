@@ -626,7 +626,7 @@ test "migrates legacy terminal_sessions with workspace columns" {
             \\    created_at TEXT NOT NULL DEFAULT (datetime('now')),
             \\    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             \\);
-            ,
+        ,
             .{},
             .{},
         );
@@ -638,7 +638,7 @@ test "migrates legacy terminal_sessions with workspace columns" {
             \\    'legacy-1', 'term-1', 'ws-1', '/tmp', 'exited', 80, 24,
             \\    '/tmp/legacy.tauev', 3, datetime('now')
             \\);
-            ,
+        ,
             .{},
             .{},
         );
@@ -722,7 +722,7 @@ test "resumes terminal_sessions rebuild from retained pre_mux backup" {
             \\    created_at TEXT NOT NULL DEFAULT (datetime('now')),
             \\    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             \\);
-            ,
+        ,
             .{},
             .{},
         );
@@ -734,7 +734,7 @@ test "resumes terminal_sessions rebuild from retained pre_mux backup" {
             \\    'resume-1', 'term-resume', 'ws-1', '/tmp', 'exited', 80, 24,
             \\    '/tmp/resume.tauev', 9, datetime('now')
             \\);
-            ,
+        ,
             .{},
             .{},
         );
@@ -743,7 +743,7 @@ test "resumes terminal_sessions rebuild from retained pre_mux backup" {
             \\    id TEXT PRIMARY KEY,
             \\    terminal_id TEXT NOT NULL
             \\);
-            ,
+        ,
             .{},
             .{},
         );

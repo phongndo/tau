@@ -28,7 +28,6 @@ import {
   type TaudParsedStreamFrame,
 } from './taud-stream'
 
-
 const DEFAULT_CONNECT_TIMEOUT_MS = 500
 const DEFAULT_CONTROL_RESPONSE_TIMEOUT_MS = 5000
 const DEFAULT_START_TIMEOUT_MS = 3000
@@ -169,12 +168,6 @@ export type TaudMuxGraphState = {
   readonly changed: boolean
   readonly requiresResync: boolean
 }
-
-
-
-
-
-
 
 export type TaudSessionStreamEvents = {
   frame: [TaudParsedStreamFrame]
@@ -327,7 +320,6 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
-
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
@@ -423,7 +415,6 @@ function candidateTaudPaths(): string[] {
   )
 }
 
-
 function safeAppPath(): string | null {
   try {
     return electronApp?.getAppPath() ?? null
@@ -438,7 +429,6 @@ function findTaudBinary(): string | null {
   }
   return null
 }
-
 
 function defaultSocketPath(): string {
   return resolveTauStoragePaths(homedir()).socket
@@ -601,7 +591,11 @@ function readNdjsonResponse(
 /** Bound queued terminal input while the stream socket is write-blocked. */
 const SESSION_INPUT_QUEUE_MAX_BYTES = 1024 * 1024
 /** Chunk size for direct and queued writes; keeps frames under the daemon payload limit. */
-const SESSION_INPUT_CHUNK_MAX_BYTES = Math.min(256 * 1024, TAUD_STREAM_MAX_PAYLOAD_BYTES, SESSION_INPUT_QUEUE_MAX_BYTES)
+const SESSION_INPUT_CHUNK_MAX_BYTES = Math.min(
+  256 * 1024,
+  TAUD_STREAM_MAX_PAYLOAD_BYTES,
+  SESSION_INPUT_QUEUE_MAX_BYTES,
+)
 
 export class TaudSessionStream extends EventEmitter<TaudSessionStreamEvents> {
   private readonly parser = new TaudStreamFrameParser()
@@ -1200,7 +1194,8 @@ export class TaudClient {
     })
     if (!response.ok) {
       const error = responseError(response) as Error & { graph?: TaudMuxGraphState }
-      if (typeof response.graph_snapshot_json === 'string') error.graph = parseMuxGraphState(response)
+      if (typeof response.graph_snapshot_json === 'string')
+        error.graph = parseMuxGraphState(response)
       throw error
     }
     return parseMuxGraphState(response)
@@ -1432,6 +1427,4 @@ export class TaudClient {
   private withTrace(request: TaudRequest): TaudRequest {
     return { ...request, traceId: requestTraceId(this.clientTraceId, request) }
   }
-
-
 }

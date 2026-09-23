@@ -426,9 +426,10 @@ pub fn validateSnapshot(allocator: std.mem.Allocator, json: []const u8) !void {
 }
 
 fn validFixture() []const u8 {
-    return
-    \\{"schemaVersion":1,"tabs":[{"id":"t1","name":"Shell","order":0,"root":{"type":"split","direction":"row","children":["p1","p2"],"splitPercentages":[50,50]}}],"panes":[{"id":"p1","tabId":"t1","terminalId":"term1","type":"terminal","name":"one"},{"id":"p2","tabId":"t1","terminalId":"term2","type":"terminal","name":"two"}],"activeTabId":"t1","activePaneId":"p1"}
+    const fixture =
+        \\{"schemaVersion":1,"tabs":[{"id":"t1","name":"Shell","order":0,"root":{"type":"split","direction":"row","children":["p1","p2"],"splitPercentages":[50,50]}}],"panes":[{"id":"p1","tabId":"t1","terminalId":"term1","type":"terminal","name":"one"},{"id":"p2","tabId":"t1","terminalId":"term2","type":"terminal","name":"two"}],"activeTabId":"t1","activePaneId":"p1"}
     ;
+    return fixture;
 }
 
 test "graph validates and revisions are monotonic" {

@@ -42,13 +42,13 @@ Encode these in constructors and mutation functions, not UI assumptions.
 
 ## Lifecycle vocabulary
 
-| Verb | Meaning |
-| --- | --- |
-| detach | Stop delivering to a client; session stays live |
-| terminate / kill | End the child process |
-| archive | Persist exited/crashed session for later inspect/resume policy |
-| forget | Remove metadata after terminate/archive cleanup |
-| clear-history | Drop event log / scrollback per persistence policy |
+| Verb             | Meaning                                                        |
+| ---------------- | -------------------------------------------------------------- |
+| detach           | Stop delivering to a client; session stays live                |
+| terminate / kill | End the child process                                          |
+| archive          | Persist exited/crashed session for later inspect/resume policy |
+| forget           | Remove metadata after terminate/archive cleanup                |
+| clear-history    | Drop event log / scrollback per persistence policy             |
 
 ## Multi-attach
 

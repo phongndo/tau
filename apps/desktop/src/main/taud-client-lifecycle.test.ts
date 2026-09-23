@@ -320,10 +320,6 @@ test('TaudClient records control request timing for successful daemon calls', as
   )
 })
 
-
-
-
-
 test('TaudClient session maintenance response shapes match shared protocol fixtures', async () => {
   await withControlServer(
     (request) => {
@@ -403,5 +399,3 @@ test('TaudClient session maintenance response shapes match shared protocol fixtu
     },
   )
 })
-
-

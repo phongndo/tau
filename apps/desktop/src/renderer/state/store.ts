@@ -143,7 +143,9 @@ function createTerminalTab(order: number): { tab: Tab; pane: Pane } {
   }
 }
 
-function ensureDefaultShell(state: Pick<TauState, 'tabs' | 'panes' | 'activeTabId' | 'activePaneId'>) {
+function ensureDefaultShell(
+  state: Pick<TauState, 'tabs' | 'panes' | 'activeTabId' | 'activePaneId'>,
+) {
   if (state.tabs.length > 0) return state
   const { tab, pane } = createTerminalTab(0)
   return {
@@ -358,14 +360,20 @@ export const useTauStore = create<TauState>((set, get) => ({
   hydrateLayout(data) {
     const decoded = Schema.decodeUnknownOption(PersistedTauStateSchema)(data)
     if (decoded._tag === 'None') {
-      set({ ...ensureDefaultShell({ tabs: [], panes: [], activeTabId: null, activePaneId: null }), graphRev: 0 })
+      set({
+        ...ensureDefaultShell({ tabs: [], panes: [], activeTabId: null, activePaneId: null }),
+        graphRev: 0,
+      })
       return
     }
 
     const value = decoded.value
     // Discard pre-v2 workspace-centric layouts.
     if (typeof value.version === 'number' && value.version < PANE_LAYOUT_VERSION) {
-      set({ ...ensureDefaultShell({ tabs: [], panes: [], activeTabId: null, activePaneId: null }), graphRev: 0 })
+      set({
+        ...ensureDefaultShell({ tabs: [], panes: [], activeTabId: null, activePaneId: null }),
+        graphRev: 0,
+      })
       return
     }
 
@@ -481,7 +489,12 @@ export const useTauStore = create<TauState>((set, get) => ({
       const nextPanes = state.panes.filter((pane) => pane.tabId !== tabId && !paneIds.has(pane.id))
 
       if (nextTabs.length === 0) {
-        const shell = ensureDefaultShell({ tabs: [], panes: [], activeTabId: null, activePaneId: null })
+        const shell = ensureDefaultShell({
+          tabs: [],
+          panes: [],
+          activeTabId: null,
+          activePaneId: null,
+        })
         return { ...shell, graphRev: bumpRev(state) }
       }
 
@@ -652,7 +665,9 @@ export const useTauStore = create<TauState>((set, get) => ({
       }
 
       const removedIds = new Set(
-        getPaneIdsInLayout(tab.layout).filter((id) => !getPaneIdsInLayout(result.layout!).includes(id)),
+        getPaneIdsInLayout(tab.layout).filter(
+          (id) => !getPaneIdsInLayout(result.layout!).includes(id),
+        ),
       )
       const nextPanes = state.panes.filter((candidate) => !removedIds.has(candidate.id))
       const nextActivePaneId =

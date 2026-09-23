@@ -55,7 +55,8 @@ test('random pane-tree mutation sequences preserve mux invariants', () => {
       const state = useTauStore.getState()
       const action = Math.floor(rng() * 6)
       if (action === 0 || state.tabs.length === 0) state.newTab()
-      else if (action === 1 && state.activePaneId) state.splitActivePane(rng() < 0.5 ? 'row' : 'column')
+      else if (action === 1 && state.activePaneId)
+        state.splitActivePane(rng() < 0.5 ? 'row' : 'column')
       else if (action === 2 && state.panes.length > 1) state.closeActivePane()
       else if (action === 3 && state.tabs.length > 1 && state.activeTabId) state.closeActiveTab()
       else if (action === 4 && state.panes.length > 0) {

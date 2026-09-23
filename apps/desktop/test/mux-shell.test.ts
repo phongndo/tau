@@ -91,8 +91,13 @@ test('mux graph split percentages stay bounded', () => {
   for (const value of threeWay) {
     assert.ok(value >= 5 && value <= 95, `expected ${value} in [5, 95]`)
   }
-  assert.deepEqual(collectPaneIds({ type: 'split', direction: 'row', children: ['a', 'b'], splitPercentages: [50, 50] }), [
-    'a',
-    'b',
-  ])
+  assert.deepEqual(
+    collectPaneIds({
+      type: 'split',
+      direction: 'row',
+      children: ['a', 'b'],
+      splitPercentages: [50, 50],
+    }),
+    ['a', 'b'],
+  )
 })

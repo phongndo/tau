@@ -4,12 +4,7 @@
   "control": {
     "protocolVersion": 2,
     "daemonVersion": "1.0.0",
-    "capabilities": [
-      "sessions-v1",
-      "stream-frames-v1",
-      "persistence-v1",
-      "mux-graph-v2"
-    ],
+    "capabilities": ["sessions-v1", "stream-frames-v1", "persistence-v1", "mux-graph-v2"],
     "requestFixtures": [],
     "responseFixtures": [
       "control-attach-response.ndjson",
@@ -55,8 +50,6 @@
       "stream-resize-frame.hex",
       "stream-snapshot-frame.hex"
     ],
-    "corruptFixtures": [
-      "stream-corrupt-crc-frame.hex"
-    ]
+    "corruptFixtures": ["stream-corrupt-crc-frame.hex"]
   }
 }

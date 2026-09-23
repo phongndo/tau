@@ -42,10 +42,7 @@ import { TaudPtyBridge } from './taud-pty-bridge'
 import { TaudClient } from './taud-client'
 import type { AppCommand, PaneFocusDirection } from '@tau/shared/app-command'
 import { SettingsDataSchema, type SettingsData } from '@tau/shared/session'
-import {
-  MuxGraphSnapshotSchema,
-  type MuxGraphSnapshot,
-} from '@tau/shared/mux-graph'
+import { MuxGraphSnapshotSchema, type MuxGraphSnapshot } from '@tau/shared/mux-graph'
 import type { TaudMuxGraphState } from './taud-client'
 import {
   TaudLifecycleRecoveryInputSchema,
@@ -309,7 +306,6 @@ function createWindow(): BrowserWindowInstance {
       return
     }
 
-
     if (key === 'f' && !input.shift) {
       event.preventDefault()
       sendAppCommand({ type: 'search-terminal' })
@@ -366,7 +362,6 @@ function ensureTaudClient(): TaudClient {
   return taudClient
 }
 
-
 async function disposeSessionBackends(): Promise<void> {
   taudBridge?.dispose()
   taudBridge = null
@@ -374,10 +369,6 @@ async function disposeSessionBackends(): Promise<void> {
   taudClient = null
   await client?.dispose()
 }
-
-
-
-
 
 // ─── IPC Handlers ───
 
@@ -422,15 +413,6 @@ ipcMain.on('pty:requestSessionPort', (event, sessionId: unknown) => {
     console.warn(`[main] Failed to create terminal fast lane: ${errorMessageFromUnknown(error)}`)
   })
 })
-
-
-
-
-
-
-
-
-
 
 ipcMain.handle('mux-graph:get', async (event) => {
   if (event.sender !== mainWindow?.webContents) return null
@@ -485,19 +467,6 @@ ipcMain.handle('taud:recover', async (event, input: unknown) => {
   )(input) as TaudLifecycleRecoveryInput
   return await ensureTaudClient().applyLifecycleRecovery(action)
 })
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // ─── App Lifecycle ───
 
@@ -1071,8 +1040,6 @@ function electronSmokeReloadAttachScript(input: { sessionId: string }): string {
   `
 }
 
-
-
 function electronSmokeUiStateSetupScript(input: { cwd: string }): string {
   return `(() => {
     return window.electronAPI.getMuxGraph().then((current) => {
@@ -1107,7 +1074,6 @@ function electronSmokeUiStateSetupScript(input: { cwd: string }): string {
     })
   })()`
 }
-
 
 function electronSmokeUiStateReloadScript(input: { setupResult: unknown }): string {
   return `(() => {

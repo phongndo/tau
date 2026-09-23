@@ -36,17 +36,17 @@ xterm onData (renderer)
 
 ## Allocations / copies / hops (inventory)
 
-| Hop | Allocation / copy | Notes |
-| --- | --- | --- |
-| PTY read | kernel -> user buffer | daemon owned |
-| Event log append | file write | durable |
-| Stream encode | header + payload copy into socket buffer | binary, good |
-| Main parse | Buffer slices; string decode for text | **string copy** |
-| MessagePort | structured clone of string (or transfer if ArrayBuffer) | currently string |
-| Preload | schema validation per message | control-plane cost on data path |
-| Dual dispatch | two callback maps | **duplicate** handleSessionOutput + handlePtyData |
-| Startup buffer | string frames in array | bounded |
-| xterm write | JS string into parser | wants bytes where possible |
+| Hop              | Allocation / copy                                       | Notes                                             |
+| ---------------- | ------------------------------------------------------- | ------------------------------------------------- |
+| PTY read         | kernel -> user buffer                                   | daemon owned                                      |
+| Event log append | file write                                              | durable                                           |
+| Stream encode    | header + payload copy into socket buffer                | binary, good                                      |
+| Main parse       | Buffer slices; string decode for text                   | **string copy**                                   |
+| MessagePort      | structured clone of string (or transfer if ArrayBuffer) | currently string                                  |
+| Preload          | schema validation per message                           | control-plane cost on data path                   |
+| Dual dispatch    | two callback maps                                       | **duplicate** handleSessionOutput + handlePtyData |
+| Startup buffer   | string frames in array                                  | bounded                                           |
+| xterm write      | JS string into parser                                   | wants bytes where possible                        |
 
 ## Phase 1 cleanups applied
 

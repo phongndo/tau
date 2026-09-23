@@ -58,13 +58,13 @@ ClientRef  -> WindowRef -> Tab -> PaneTree -> PaneSurface -> SessionAttachment -
 
 ### Detach / terminate / archive / forget / clear-history
 
-| Op | Session process | Metadata | Event log |
-| --- | --- | --- | --- |
-| detach | keeps running | kept | kept |
-| terminate/kill | signaled | kept until forget | kept per policy |
-| archive | already dead | retained | retained |
-| forget | must be dead | deleted | deleted |
-| clear-history | unchanged | kept | truncated |
+| Op             | Session process | Metadata          | Event log       |
+| -------------- | --------------- | ----------------- | --------------- |
+| detach         | keeps running   | kept              | kept            |
+| terminate/kill | signaled        | kept until forget | kept per policy |
+| archive        | already dead    | retained          | retained        |
+| forget         | must be dead    | deleted           | deleted         |
+| clear-history  | unchanged       | kept              | truncated       |
 
 ### Multi-client ownership
 

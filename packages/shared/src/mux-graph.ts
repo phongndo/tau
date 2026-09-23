@@ -118,8 +118,8 @@ export function normalizeSplitPercentages(
     }
   }
 
-  const result = new Array<number>(count)
-  const locked = new Array<boolean>(count).fill(false)
+  const result = Array.from({ length: count }, () => 0)
+  const locked = Array.from({ length: count }, () => false)
 
   // Water-fill: lock undersized shares to min, then oversized to max, then assign the rest.
   for (let iteration = 0; iteration < count * 2; iteration += 1) {
@@ -197,7 +197,9 @@ export function assertSplitInvariants(
   if (children.length * SPLIT_PERCENT_MIN <= 100) {
     for (const value of splitPercentages) {
       if (!Number.isFinite(value) || value < SPLIT_PERCENT_MIN || value > SPLIT_PERCENT_MAX) {
-        throw new Error(`split percentages must be within [${SPLIT_PERCENT_MIN}, ${SPLIT_PERCENT_MAX}]`)
+        throw new Error(
+          `split percentages must be within [${SPLIT_PERCENT_MIN}, ${SPLIT_PERCENT_MAX}]`,
+        )
       }
     }
   }

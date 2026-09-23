@@ -31,7 +31,10 @@ test('terminal MessagePorts clone both input and output buffers', () => {
     taudBridge,
     /postMessage\(\{ type, seq, data: bytes\.buffer \},\s*\[bytes\.buffer\]/u,
   )
-  assert.equal(preload.match(/postMessage\(\{ type: 'input', data: bytes\.buffer \}\)/gu)?.length, 2)
+  assert.equal(
+    preload.match(/postMessage\(\{ type: 'input', data: bytes\.buffer \}\)/gu)?.length,
+    2,
+  )
   assert.doesNotMatch(
     preload,
     /postMessage\(\{ type: 'input', data: bytes\.buffer \},\s*\[bytes\.buffer\]/u,

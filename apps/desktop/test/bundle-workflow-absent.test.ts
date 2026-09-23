@@ -62,7 +62,12 @@ test('packaged renderer bundle omits workflow markers when present', async () =>
   }
   for (const file of files) {
     const source = await readFile(file, 'utf8')
-    for (const token of ['@pierre/diffs', 'WorkspaceDiffPanel', 'listPiThreads', 'getWorkspaceFileTree']) {
+    for (const token of [
+      '@pierre/diffs',
+      'WorkspaceDiffPanel',
+      'listPiThreads',
+      'getWorkspaceFileTree',
+    ]) {
       assert.equal(source.includes(token), false, `${file} still contains ${token}`)
     }
   }

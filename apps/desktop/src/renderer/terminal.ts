@@ -69,8 +69,7 @@ const THEME = {
   brightWhite: '#ffffff',
 }
 
-const terminalFontFamily =
-  '"SF Mono", Menlo, Monaco, "JetBrains Mono", monospace'
+const terminalFontFamily = '"SF Mono", Menlo, Monaco, "JetBrains Mono", monospace'
 
 const SIDEBAR_RESIZE_FIT_DELAY_MS = 80
 const PTY_RESIZE_SETTLE_DELAY_MS = 120

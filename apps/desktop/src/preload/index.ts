@@ -255,7 +255,9 @@ function pendingOutputFor(sessionId: string): PendingOutputState {
 function removeCallback<T>(callbacksBySession: Map<string, T[]>, sessionId: string, callback: T) {
   const currentCallbacks = callbacksBySession.get(sessionId)
   if (!currentCallbacks) return
-  const nextCallbacks = currentCallbacks.filter((registeredCallback) => registeredCallback !== callback)
+  const nextCallbacks = currentCallbacks.filter(
+    (registeredCallback) => registeredCallback !== callback,
+  )
   if (nextCallbacks.length === 0) {
     callbacksBySession.delete(sessionId)
     return
@@ -425,7 +427,8 @@ function handlePtyMessage(message: PtyServiceMessage) {
     case 'error':
       rejectPtyReady(message.sessionId, new Error(message.error))
       for (const callback of ptyErrorCallbacks.get(message.sessionId) ?? []) callback(message.error)
-      for (const callback of sessionErrorCallbacks.get(message.sessionId) ?? []) callback(message.error)
+      for (const callback of sessionErrorCallbacks.get(message.sessionId) ?? [])
+        callback(message.error)
       clearSessionState(message.sessionId)
       break
     case 'exit': {
@@ -439,7 +442,8 @@ function handlePtyMessage(message: PtyServiceMessage) {
         )
       }
       for (const callback of ptyExitCallbacks.get(message.sessionId) ?? []) callback(message.info)
-      for (const callback of sessionExitCallbacks.get(message.sessionId) ?? []) callback(message.info)
+      for (const callback of sessionExitCallbacks.get(message.sessionId) ?? [])
+        callback(message.info)
       clearSessionState(message.sessionId)
       break
     }
@@ -455,7 +459,8 @@ function decodePtyServiceMessage(message: unknown): PtyServiceMessage | null {
   if (typeof message.sessionId !== 'string' || message.sessionId.length === 0) return null
   switch (message.type) {
     case 'ready':
-      if (!isRecord(message.size) || !isValidTerminalSize(message.size.cols, message.size.rows)) return null
+      if (!isRecord(message.size) || !isValidTerminalSize(message.size.cols, message.size.rows))
+        return null
       break
     case 'data':
       if (typeof message.data !== 'string') return null
@@ -486,7 +491,8 @@ function assertMuxGraphSnapshot(value: unknown): MuxGraphSnapshot {
   if (!Number.isSafeInteger(value.graphRev) || !Number.isSafeInteger(value.eventSeq)) {
     throw new Error('Invalid mux graph revision')
   }
-  if (!Array.isArray(value.tabs) || !Array.isArray(value.panes)) throw new Error('Invalid mux graph arrays')
+  if (!Array.isArray(value.tabs) || !Array.isArray(value.panes))
+    throw new Error('Invalid mux graph arrays')
   return value as MuxGraphSnapshot
 }
 
@@ -556,7 +562,8 @@ ipcRenderer.on('pty:session-port', (event, sessionId: unknown) => {
   }
   port.onmessage = (messageEvent) => {
     const message = messageEvent.data as { type?: unknown; seq?: unknown; data?: unknown }
-    if (!message || typeof message.seq !== 'number' || !(message.data instanceof ArrayBuffer)) return
+    if (!message || typeof message.seq !== 'number' || !(message.data instanceof ArrayBuffer))
+      return
     const frame = {
       sessionId,
       seq: message.seq,
@@ -779,7 +786,10 @@ const electronAPI = {
 
   killSession(sessionId: string): Promise<void> {
     if (typeof sessionId === 'string' && sessionId.length > 0) {
-      rejectAndClearSessionState(sessionId, new Error(`Session ${sessionId} was killed before ready`))
+      rejectAndClearSessionState(
+        sessionId,
+        new Error(`Session ${sessionId} was killed before ready`),
+      )
       queuePtyMessage({ type: 'kill', sessionId })
       closeSessionPort(sessionId)
     }
