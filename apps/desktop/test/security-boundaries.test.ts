@@ -25,14 +25,15 @@ test('preload API exposes no raw filesystem process socket or IPC primitives', (
   assert.doesNotMatch(preload, /exposeInMainWorld\([^,]+,\s*ipcRenderer/u)
 })
 
-test('terminal MessagePorts transfer renderer input and clone main-process output', () => {
+test('terminal MessagePorts clone both input and output buffers', () => {
   assert.match(taudBridge, /postMessage\(\{ type, seq, data: bytes\.buffer \}\)/u)
   assert.doesNotMatch(
     taudBridge,
     /postMessage\(\{ type, seq, data: bytes\.buffer \},\s*\[bytes\.buffer\]/u,
   )
-  assert.equal(
-    preload.match(/postMessage\(\{ type: 'input', data: buffer \},\s*\[buffer\]\)/gu)?.length,
-    2,
+  assert.equal(preload.match(/postMessage\(\{ type: 'input', data: bytes\.buffer \}\)/gu)?.length, 2)
+  assert.doesNotMatch(
+    preload,
+    /postMessage\(\{ type: 'input', data: bytes\.buffer \},\s*\[bytes\.buffer\]/u,
   )
 })

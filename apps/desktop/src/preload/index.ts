@@ -757,9 +757,9 @@ const electronAPI = {
       encoding === 'binary'
         ? Uint8Array.from(data, (character) => character.charCodeAt(0) & 0xff)
         : new TextEncoder().encode(data)
-    // Create an exact-sized ArrayBuffer before transferring ownership to the main process.
-    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-    port.postMessage({ type: 'input', data: buffer }, [buffer])
+    // Electron's MessagePortMain receives a null message when this nested buffer is
+    // transferred. Let postMessage clone the fresh bytes' backing buffer instead.
+    port.postMessage({ type: 'input', data: bytes.buffer })
   },
 
   acknowledgeSessionOutput(sessionId: string, seq: number): void {
@@ -855,8 +855,7 @@ const electronAPI = {
     const port = sessionPorts.get(sessionId)
     if (!port) return
     const bytes = new TextEncoder().encode(data)
-    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-    port.postMessage({ type: 'input', data: buffer }, [buffer])
+    port.postMessage({ type: 'input', data: bytes.buffer })
   },
 
   resizePty(sessionId: string, cols: number, rows: number): void {
