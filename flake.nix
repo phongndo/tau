@@ -42,6 +42,9 @@
         ]);
         linuxElectronLibraryPath = pkgs.lib.makeLibraryPath linuxElectronRuntimeLibs;
         linuxElectronMesa = pkgs.lib.optionalString pkgs.stdenv.isLinux "${pkgs.mesa}";
+        # nixpkgs' pnpm_11 defaults to Node 24.15 on Darwin, which emits
+        # spurious unmanaged-FD warnings during worker-thread file I/O.
+        pnpm = pkgs.pnpm_11.override { nodejs = pkgs.nodejs_22; };
       in
       {
         # ── Dev shell (nix develop) ──
@@ -51,7 +54,7 @@
           # Build-time dependencies
           nativeBuildInputs = (with pkgs; [
             nodejs_22 # LTS (matches CI)
-            pnpm_11 # Package manager
+            pnpm # Package manager
             zig_0_15 # taud daemon + Ghostty/Zig tooling
             zls_0_15 # Zig language server matching Zig 0.15.x
             nixpkgs-fmt # nix fmt / CI format check
@@ -119,6 +122,27 @@
             echo ""
           '';
         };
+
+        # pnpm must use the same Node as the shell. Its nixpkgs default can
+        # embed a different Node in the executable's shebang.
+        checks.pnpm-runtime = pkgs.runCommand "tau-pnpm-runtime" { } ''
+          node=$(head -n 1 ${pnpm}/bin/pnpm)
+          ${pnpm}/bin/pnpm --version >/dev/null
+          "''${node#\#!}" -e '
+            const { Worker } = require("node:worker_threads");
+            const worker = new Worker(`
+              const fs = require("node:fs");
+              for (let i = 0; i < 80; i++) fs.closeSync(fs.openSync("/dev/null", "r"));
+            `, { eval: true });
+            worker.on("error", error => { console.error(error); process.exitCode = 1; });
+          ' 2> warnings
+          if grep -q 'File descriptor .*unmanaged mode' warnings; then
+            head -n 4 warnings >&2
+            exit 1
+          fi
+          test "$node" = '#!${pkgs.nodejs_22}/bin/node'
+          touch $out
+        '';
 
         # ── Formatter (nix fmt) ──
         formatter = pkgs.nixpkgs-fmt;
