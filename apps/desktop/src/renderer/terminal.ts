@@ -676,7 +676,8 @@ export async function createTerminal(
   fitTerminalToContainer(container, term)
 
   function writePtyFrame(frame: OutputFrame) {
-    outputWriter.write(frame.data, frame.seq)
+    // contextBridge gives this renderer private bytes; hand ownership to the writer.
+    outputWriter.writeOwned(frame.data, frame.seq)
   }
 
   function bufferStartupFrame(frame: OutputFrame) {
@@ -699,12 +700,13 @@ export async function createTerminal(
       window.electronAPI.requestSessionResync(sessionId, skipThroughSeq)
       return
     }
-    const frames = bufferedStartupOutput.filter(
-      (frame) => frame.seq <= 0 || frame.seq > skipThroughSeq,
-    )
+    for (const frame of bufferedStartupOutput) {
+      if (frame.seq <= 0 || frame.seq > skipThroughSeq) {
+        outputWriter.writeOwned(frame.data, frame.seq)
+      }
+    }
     bufferedStartupOutput.length = 0
     bufferedStartupBytes = 0
-    for (const frame of frames) outputWriter.write(frame.data, frame.seq)
     await outputWriter.drain()
   }
 

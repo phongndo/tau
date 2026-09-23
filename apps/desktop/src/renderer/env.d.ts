@@ -68,7 +68,7 @@ export interface ElectronAPI {
   sendPtyInput(sessionId: string, data: string): void
   resizePty(sessionId: string, cols: number, rows: number): void
   killPty(sessionId: string): void
-  /** @deprecated Prefer onSessionOutput. Kept for benchmarks. */
+  /** @deprecated Text compatibility; replays unconsumed startup bytes, not binary-stream history. Prefer onSessionOutput. */
   onPtyData(sessionId: string, callback: (data: string) => void): () => void
   onPtyError(sessionId: string, callback: (error: string) => void): () => void
   onPtyExit(

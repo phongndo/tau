@@ -175,8 +175,6 @@ export class TaudPtyBridge {
   private readonly sessionChannels = new Map<string, SessionChannel>()
   private readonly supersededAttachStreams = new WeakSet<TaudSessionStream>()
   private readonly sessionAttachGenerations = new Map<string, number>()
-  private readonly openingSessionGenerations = new Map<string, number>()
-  private readonly detachedBeforeReadySessionGenerations = new Map<string, number>()
   private readonly cleanupTimer: ReturnType<typeof setInterval>
   private messagesPostedTotal = 0
   private dataMessagesPostedTotal = 0
@@ -222,15 +220,23 @@ export class TaudPtyBridge {
 
   connectPort(port: MessagePortMain): void {
     this.detachAllStreams()
-    this.port?.close()
+    const previous = this.port
     this.port = port
+    previous?.close()
     port.on('message', (messageEvent) => {
+      if (this.port !== port) return
       const message = decodeClientMessage(messageEvent.data)
       if (!message) return
       void this.handleClientMessage(message).catch((error) => {
         const sessionId = 'sessionId' in message ? message.sessionId : null
-        if (sessionId) this.postError(sessionId, normalizeError(error).message)
+        if (sessionId && this.port === port)
+          this.postError(sessionId, normalizeError(error).message)
       })
+    })
+    port.on('close', () => {
+      if (this.port !== port) return
+      this.port = null
+      this.detachAllStreams()
     })
     port.start()
   }
@@ -239,8 +245,6 @@ export class TaudPtyBridge {
     clearInterval(this.cleanupTimer)
     this.detachAllStreams()
     this.sessions.clear()
-    for (const channel of this.sessionChannels.values()) channel.port.close()
-    this.sessionChannels.clear()
     this.port?.close()
     this.port = null
     if (this.ownsClient) void this.client.dispose()
@@ -251,6 +255,7 @@ export class TaudPtyBridge {
       port.close()
       return
     }
+    if (this.sessionChannels.has(sessionId)) this.closeSessionStream(sessionId)
     this.sessionChannels.get(sessionId)?.port.close()
     const channel: SessionChannel = {
       port,
@@ -265,6 +270,7 @@ export class TaudPtyBridge {
     }
     this.sessionChannels.set(sessionId, channel)
     port.on('message', (event) => {
+      if (this.sessionChannels.get(sessionId) !== channel) return
       const data = event.data
       if (data instanceof ArrayBuffer) {
         if (data.byteLength > 0)
@@ -303,7 +309,9 @@ export class TaudPtyBridge {
       }
     })
     port.on('close', () => {
-      if (this.sessionChannels.get(sessionId) === channel) this.sessionChannels.delete(sessionId)
+      if (this.sessionChannels.get(sessionId) !== channel) return
+      this.sessionChannels.delete(sessionId)
+      this.closeSessionStream(sessionId)
     })
     port.start()
   }
@@ -411,10 +419,16 @@ export class TaudPtyBridge {
       argv?: readonly string[]
     },
   ): Promise<void> {
+    const channel = this.sessionChannels.get(sessionId)
+    const controlPort = this.port
+    // A queued request can outlive its renderer. Never open a stream for a revoked owner.
+    if (!channel || !controlPort) return
     const attachGeneration = (this.sessionAttachGenerations.get(sessionId) ?? 0) + 1
     this.sessionAttachGenerations.set(sessionId, attachGeneration)
-    this.openingSessionGenerations.set(sessionId, attachGeneration)
-    let readyPosted = false
+    const isCurrentAttach = () =>
+      this.port === controlPort &&
+      this.sessionChannels.get(sessionId) === channel &&
+      this.sessionAttachGenerations.get(sessionId) === attachGeneration
     try {
       const sessionOptions = { argv: options.argv }
 
@@ -436,7 +450,7 @@ export class TaudPtyBridge {
       let attachMode: AttachSessionMode = 'live'
       if (options.forceCreate) {
         await this.createShellSession(sessionId, terminalId, cols, rows, cwd, sessionOptions)
-        this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
+        if (!isCurrentAttach()) return
         attachMode = 'fresh'
         ;({ response: attachResponse, stream } = await this.client.attachSession({
           sessionId,
@@ -445,11 +459,6 @@ export class TaudPtyBridge {
           rows,
           cwd,
         }))
-        if (this.wasDetachedBeforeReady(sessionId, attachGeneration)) {
-          stream.close()
-          await this.client.detachSession(sessionId).catch(() => {})
-          this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
-        }
       } else {
         try {
           ;({ response: attachResponse, stream } = await this.client.attachSession({
@@ -459,15 +468,11 @@ export class TaudPtyBridge {
             rows,
             cwd,
           }))
-          if (this.wasDetachedBeforeReady(sessionId, attachGeneration)) {
-            stream.close()
-            await this.client.detachSession(sessionId).catch(() => {})
-            this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
-          }
         } catch (error) {
+          if (!isCurrentAttach()) return
           if (!isNotFoundError(error)) throw error
           await this.createShellSession(sessionId, terminalId, cols, rows, cwd, sessionOptions)
-          this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
+          if (!isCurrentAttach()) return
           attachMode = 'fresh'
           ;({ response: attachResponse, stream } = await this.client.attachSession({
             sessionId,
@@ -476,12 +481,11 @@ export class TaudPtyBridge {
             rows,
             cwd,
           }))
-          if (this.wasDetachedBeforeReady(sessionId, attachGeneration)) {
-            stream.close()
-            await this.client.detachSession(sessionId).catch(() => {})
-            this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
-          }
         }
+      }
+      if (!isCurrentAttach()) {
+        stream.close()
+        return
       }
       if (attachMode === 'live') attachMode = responseAttachMode(attachResponse)
 
@@ -503,24 +507,21 @@ export class TaudPtyBridge {
         // A remount/new renderer can supersede an in-flight attach for the same session. In that
         // case the old stream closes because Tau intentionally replaced it; don't report that stale
         // close to the renderer or it can clear the ready state for the newer attach.
-        if (this.supersededAttachStreams.has(stream)) return
+        if (!isCurrentAttach() || this.supersededAttachStreams.has(stream)) return
         this.closeSessionStream(sessionId)
         throw error
       }
-      this.throwIfDetachedBeforeReady(sessionId, attachGeneration)
+      if (!isCurrentAttach()) {
+        stream.close()
+        return
+      }
       const size = responseSize(attachResponse, { cols, rows })
       this.postReady(sessionId, size, responseSeq(attachResponse), session)
-      readyPosted = true
-    } finally {
-      if (this.openingSessionGenerations.get(sessionId) === attachGeneration) {
-        this.openingSessionGenerations.delete(sessionId)
-      }
-      if (
-        !readyPosted &&
-        this.detachedBeforeReadySessionGenerations.get(sessionId) === attachGeneration
-      ) {
-        this.detachedBeforeReadySessionGenerations.delete(sessionId)
-      }
+    } catch (error) {
+      // Port replacement/closure cancels that renderer's request. Late failures must not clear
+      // the replacement renderer's ready state; unexpected errors for the current owner propagate.
+      if (!isCurrentAttach()) return
+      throw error
     }
   }
 
@@ -547,7 +548,12 @@ export class TaudPtyBridge {
 
   private wireStream(sessionId: string, session: BridgeSession, stream: TaudSessionStream): void {
     stream.on('frame', (frame) => {
-      if (frame.sessionId !== sessionId) return
+      if (
+        frame.sessionId !== sessionId ||
+        this.sessions.get(sessionId) !== session ||
+        session.stream !== stream
+      )
+        return
 
       switch (frame.kind) {
         case TaudStreamFrameKind.Output: {
@@ -585,6 +591,7 @@ export class TaudPtyBridge {
     })
 
     stream.once('error', (error) => {
+      if (this.sessions.get(sessionId) !== session || session.stream !== stream) return
       this.postError(sessionId, normalizeError(error).message)
       this.closeSessionStream(sessionId)
     })
@@ -608,12 +615,6 @@ export class TaudPtyBridge {
   }
 
   private async detachSession(sessionId: string): Promise<void> {
-    const openingGeneration = this.openingSessionGenerations.get(sessionId)
-    if (openingGeneration !== undefined) {
-      this.detachedBeforeReadySessionGenerations.set(sessionId, openingGeneration)
-    } else {
-      this.detachedBeforeReadySessionGenerations.delete(sessionId)
-    }
     this.closeSessionStream(sessionId)
     this.sessionChannels.get(sessionId)?.port.close()
     this.sessionChannels.delete(sessionId)
@@ -621,6 +622,8 @@ export class TaudPtyBridge {
   }
 
   private detachAllStreams(): void {
+    for (const channel of this.sessionChannels.values()) channel.port.close()
+    this.sessionChannels.clear()
     for (const [sessionId, session] of this.sessions) {
       session.stream?.close()
       session.stream = null
@@ -630,23 +633,11 @@ export class TaudPtyBridge {
 
   private async killSession(sessionId: string): Promise<void> {
     this.sessionAttachGenerations.delete(sessionId)
-    this.openingSessionGenerations.delete(sessionId)
-    this.detachedBeforeReadySessionGenerations.delete(sessionId)
     this.closeSessionStream(sessionId)
     this.sessions.delete(sessionId)
     this.sessionChannels.get(sessionId)?.port.close()
     this.sessionChannels.delete(sessionId)
     await this.client.killSession(sessionId).catch(() => {})
-  }
-
-  private wasDetachedBeforeReady(sessionId: string, attachGeneration: number): boolean {
-    return this.detachedBeforeReadySessionGenerations.get(sessionId) === attachGeneration
-  }
-
-  private throwIfDetachedBeforeReady(sessionId: string, attachGeneration: number): void {
-    if (!this.wasDetachedBeforeReady(sessionId, attachGeneration)) return
-    this.detachedBeforeReadySessionGenerations.delete(sessionId)
-    throw new Error(`Session ${sessionId} detached before ready`)
   }
 
   private closeSessionStream(sessionId: string): void {

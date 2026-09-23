@@ -29,7 +29,10 @@ const OUTPUT_WRITE_QUEUE_DROP_NOTICE =
   '\r\n\x1b[33m[Tau dropped terminal output because the renderer write queue exceeded 4 MiB]\x1b[0m\r\n'
 
 export type SequencedTerminalWriter = {
+  /** Snapshot borrowed bytes; the caller may reuse them after this returns. */
   write(data: Uint8Array, seq: number): void
+  /** Hand off private bytes. The caller must not read or mutate them after this returns. */
+  writeOwned(data: Uint8Array, seq: number): void
   /** Advance the applied cursor after a resync snapshot replaces dropped output. */
   markApplied(seq: number): void
   flush(): void
@@ -53,7 +56,8 @@ export function createSequencedTerminalWriter(
 ): SequencedTerminalWriter {
   type Entry = { data: Uint8Array; seq: number }
   const maxQueuedBytes = options.maxQueuedBytes ?? OUTPUT_WRITE_QUEUE_MAX_CHARS
-  let queue: Entry[] = []
+  const queue: Array<Entry | undefined> = []
+  let head = 0
   let queuedBytes = 0
   let writing = false
   let disposed = false
@@ -71,92 +75,133 @@ export function createSequencedTerminalWriter(
   let droppedWriteQueueChunksTotal = 0
   let resyncCount = 0
 
+  let inFlightSeq = 0
+  let inFlightBytes = 0
+  let writeStartedAt = 0
   const now = () => (typeof performance === 'undefined' ? Date.now() : performance.now())
   const resolveDrains = () => {
-    if (writing || queue.length > 0) return
+    if (writing || head < queue.length || drainWaiters.length === 0) return
     const waiters = drainWaiters
     drainWaiters = []
     for (const resolve of waiters) resolve()
   }
   const schedule = () => {
-    if (disposed || writing || scheduled !== null) return
+    if (disposed || writing || scheduled !== null || head === queue.length) return
     scheduled = setTimeout(process, 0)
+  }
+  // Reused for every write; don't retain the completed frame's byte buffer in a closure.
+  const onWriteComplete = () => {
+    if (disposed) return
+    const duration = now() - writeStartedAt
+    writing = false
+    writeCount += 1
+    totalWrittenChars += inFlightBytes
+    lastWriteChars = inFlightBytes
+    lastWriteDurationMs = duration
+    maxWriteDurationMs = Math.max(maxWriteDurationMs, duration)
+    lastAppliedSeq = Math.max(lastAppliedSeq, inFlightSeq)
+    options.onApplied(lastAppliedSeq)
+    schedule()
+    resolveDrains()
   }
   const process = () => {
     if (scheduled !== null) clearTimeout(scheduled)
     scheduled = null
     if (disposed || writing) return
-    const entry = queue.shift()
-    if (!entry) {
+    const first = queue[head]
+    if (!first) {
       resolveDrains()
       return
     }
-    queuedBytes -= entry.data.byteLength
+    // Coalesce only already-queued complete frames. No additional batching delay; a lone frame
+    // takes the no-copy path. Large individual frames remain intact. Yield between batches.
+    let end = head + 1
+    let bytes = first.data.byteLength
+    while (end < queue.length && end - head < 128) {
+      const next = queue[end]!
+      if (bytes + next.data.byteLength > 64 * 1024) break
+      bytes += next.data.byteLength
+      end++
+    }
+    const data = end === head + 1 ? first.data : new Uint8Array(bytes)
+    let offset = 0
+    inFlightSeq = first.seq
+    for (let index = head; index < end; index++) {
+      const entry = queue[index]!
+      if (end !== head + 1) data.set(entry.data, offset)
+      offset += entry.data.byteLength
+      inFlightSeq = Math.max(inFlightSeq, entry.seq)
+      queue[index] = undefined // Release consumed buffers immediately, not at the next compaction.
+    }
+    head = end
+    if (head === queue.length) {
+      queue.length = 0
+      head = 0
+    } else if (head >= 1024 && head >= queue.length / 2) {
+      queue.copyWithin(0, head)
+      queue.length -= head
+      head = 0
+    }
+    queuedBytes -= bytes
     writing = true
-    const started = now()
-    term.write(entry.data, () => {
-      const duration = now() - started
-      writing = false
-      writeCount += 1
-      totalWrittenChars += entry.data.byteLength
-      lastWriteChars = entry.data.byteLength
-      lastWriteDurationMs = duration
-      maxWriteDurationMs = Math.max(maxWriteDurationMs, duration)
-      lastAppliedSeq = Math.max(lastAppliedSeq, entry.seq)
+    inFlightBytes = bytes
+    writeStartedAt = now()
+    term.write(data, onWriteComplete)
+  }
+  const enqueue = (data: Uint8Array, seq: number, owned: boolean) => {
+    if (disposed || data.byteLength === 0) return
+    if (seq <= lastAppliedSeq) {
+      // A duplicate still needs an acknowledgement to release main's backlog entry.
       options.onApplied(lastAppliedSeq)
-      schedule()
-      resolveDrains()
-    })
+      return
+    }
+    // Check bounds before copying a rejected frame.
+    if (queuedBytes + data.byteLength > maxQueuedBytes) {
+      droppedWriteQueueChunksTotal += queue.length - head + 1
+      droppedWriteQueueCharsTotal += queuedBytes + data.byteLength
+      queue.length = 0
+      head = 0
+      queuedBytes = 0
+      resyncCount += 1
+      options.onResync(lastAppliedSeq)
+      return
+    }
+    // Even an owned small view must not pin a large pooled backing buffer.
+    const bytes =
+      owned && data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+        ? data
+        : Uint8Array.from(data)
+    queue.push({ data: bytes, seq })
+    queuedBytes += bytes.byteLength
+    maxWriteQueueChars = Math.max(maxWriteQueueChars, queuedBytes)
+    maxWriteQueueChunks = Math.max(maxWriteQueueChunks, queue.length - head)
+    schedule()
   }
 
   return {
-    write(data, seq) {
-      if (disposed || data.byteLength === 0) return
-      if (seq <= lastAppliedSeq) {
-        // Re-acknowledge duplicate frames. Main may have posted this frame just after processing the
-        // previous ack; silently discarding it would leave that MessagePort backlog entry stuck.
-        options.onApplied(lastAppliedSeq)
-        return
-      }
-      const owned = Uint8Array.from(data)
-      if (queuedBytes + owned.byteLength > maxQueuedBytes) {
-        droppedWriteQueueChunksTotal += queue.length
-        droppedWriteQueueCharsTotal += queuedBytes
-        queue = []
-        queuedBytes = 0
-        resyncCount += 1
-        options.onResync(lastAppliedSeq)
-        return
-      }
-      queue.push({ data: owned, seq })
-      queuedBytes += owned.byteLength
-      maxWriteQueueChars = Math.max(maxWriteQueueChars, queuedBytes)
-      maxWriteQueueChunks = Math.max(maxWriteQueueChunks, queue.length)
-      schedule()
-    },
+    write: (data, seq) => enqueue(data, seq, false),
+    writeOwned: (data, seq) => enqueue(data, seq, true),
     markApplied(seq) {
       if (disposed || seq <= 0) return
       lastAppliedSeq = Math.max(lastAppliedSeq, seq)
-      if (queue.length === 0) {
-        resolveDrains()
-        return
-      }
-      const retained: Entry[] = []
+      let retained = 0
       let retainedBytes = 0
-      for (const entry of queue) {
+      for (let index = head; index < queue.length; index++) {
+        const entry = queue[index]!
         if (entry.seq > lastAppliedSeq) {
-          retained.push(entry)
+          queue[retained++] = entry
           retainedBytes += entry.data.byteLength
         }
       }
-      queue = retained
+      queue.length = retained
+      head = 0
       queuedBytes = retainedBytes
       resolveDrains()
     },
     flush: process,
     drain() {
       process()
-      if (!writing && queue.length === 0) return Promise.resolve()
+      if (!writing && head === queue.length) return Promise.resolve()
       return new Promise((resolve) => drainWaiters.push(resolve))
     },
     diagnostics() {
@@ -164,7 +209,7 @@ export function createSequencedTerminalWriter(
         queuedChars: 0,
         queuedChunks: 0,
         writeQueueChars: queuedBytes,
-        writeQueueChunks: queue.length,
+        writeQueueChunks: queue.length - head,
         writing,
         drainWaiters: drainWaiters.length,
         writeCount,
@@ -183,7 +228,8 @@ export function createSequencedTerminalWriter(
       disposed = true
       if (scheduled !== null) clearTimeout(scheduled)
       scheduled = null
-      queue = []
+      queue.length = 0
+      head = 0
       queuedBytes = 0
       writing = false
       resolveDrains()

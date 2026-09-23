@@ -736,7 +736,7 @@ while time.time() < deadline:
           })
           offData = api.onSessionOutput(sessionId, (frame) => {
             if (firstOutputMs === null) firstOutputMs = performance.now() - scriptStartedAt
-            const observed = observeSmokeOutput(outputTail, decoder.decode(frame.data, { stream: true }), ${JSON.stringify(input.token)})
+            const observed = observeSmokeOutput(outputTail, decoder.decode(frame.data, { stream: true }), ${JSON.stringify(input.token)}, inputEchoNeedle)
             outputTail = observed.tail
             receivedBytes += frame.data.byteLength
             api.acknowledgeSessionOutput(sessionId, frame.seq)
@@ -746,7 +746,7 @@ while time.time() < deadline:
               inputSentAt = performance.now()
               api.writeSessionInput(sessionId, inputEchoToken + '\\n')
             }
-            if (inputProbeEnabled && inputSent && inputEchoMs === null && outputTail.includes(inputEchoNeedle)) {
+            if (inputProbeEnabled && inputSent && inputEchoMs === null && observed.sawEcho) {
               inputEchoMs = performance.now() - inputSentAt
             }
             if (
@@ -1043,38 +1043,23 @@ function electronSmokeReloadAttachScript(input: { sessionId: string }): string {
   `
 }
 
-function electronSmokeUiStateSetupScript(input: { cwd: string }): string {
-  return `(() => {
-    return window.electronAPI.getMuxGraph().then((current) => {
-      const graph = {
-        schemaVersion: 1,
-        graphRev: current.graphRev,
-        eventSeq: current.eventSeq,
-        tabs: [
-          {
-            id: 'smoke-tab',
-            name: 'Smoke',
-            root: 'smoke-pane',
-            activePaneId: 'smoke-pane',
-            order: 0,
-          },
-        ],
-        panes: [
-          {
-            id: 'smoke-pane',
-            terminalId: 'smoke-term',
-            tabId: 'smoke-tab',
-            type: 'terminal',
-            name: 'Smoke',
-            cwd: ${JSON.stringify(input.cwd)},
-            sessionId: 'smoke-session',
-          },
-        ],
-        activeTabId: 'smoke-tab',
-        activePaneId: 'smoke-pane',
-      }
-      return window.electronAPI.replaceMuxGraph(graph, current.graphRev).then(() => ({ ok: true }))
-    })
+function electronSmokeUiStateSetupScript(): string {
+  // Observe the UI's persisted layout instead of racing its startup writes with a second writer.
+  // The caller's timeout bounds readiness; no revision-conflict retries or error fallback.
+  return `(async () => {
+    const api = window.electronAPI
+    let graph = await api.getMuxGraph()
+    while (graph.tabs.length === 0 || graph.panes.length === 0) {
+      const next = await api.waitMuxGraph(graph.eventSeq)
+      if (!next) throw new Error('Smoke UI graph subscription ended before layout was ready')
+      graph = next
+    }
+    return {
+      tabIds: graph.tabs.map((tab) => tab.id).sort(),
+      paneIds: graph.panes.map((pane) => pane.id).sort(),
+      activeTabId: graph.activeTabId,
+      activePaneId: graph.activePaneId,
+    }
   })()`
 }
 
@@ -1088,18 +1073,6 @@ function electronSmokeUiStateReloadScript(input: { setupResult: unknown }): stri
       const layout = await api.getMuxGraph()
       const settings = await api.readSettings()
       const readMs = performance.now() - readStartedAt
-      const stable = (value) => {
-        if (Array.isArray(value)) return value.map(stable)
-        if (value && typeof value === 'object') {
-          return Object.fromEntries(
-            Object.entries(value)
-              .sort(([left], [right]) => left.localeCompare(right))
-              .map(([key, item]) => [key, stable(item)]),
-          )
-        }
-        return value
-      }
-      const stableJson = (value) => JSON.stringify(stable(value))
       if (!layout || layout.schemaVersion !== 1) {
         throw new Error('Smoke mux graph missing or unsupported: ' + JSON.stringify(layout))
       }
@@ -1109,8 +1082,12 @@ function electronSmokeUiStateReloadScript(input: { setupResult: unknown }): stri
       if (!Array.isArray(layout.panes) || layout.panes.length === 0) {
         throw new Error('Smoke UI panes missing after reload')
       }
-      if (stableJson(settings?.persistence) !== stableJson(expected?.settings?.persistence) && expected?.settings) {
-        // settings may be defaults; only hard-fail when setup provided persistence
+      if (
+        JSON.stringify(layout.tabs.map((tab) => tab.id).sort()) !== JSON.stringify(expected.tabIds) ||
+        JSON.stringify(layout.panes.map((pane) => pane.id).sort()) !== JSON.stringify(expected.paneIds) ||
+        layout.activeTabId !== expected.activeTabId || layout.activePaneId !== expected.activePaneId
+      ) {
+        throw new Error('Smoke persisted layout changed across reload: ' + JSON.stringify({ expected, layout }))
       }
       return {
         readMs,
@@ -1424,10 +1401,7 @@ async function runElectronSmoke(): Promise<void> {
   let reloadUiStateResult: unknown = null
   if (ELECTRON_SMOKE_RELOAD) {
     reloadUiStateSetupResult = await withTimeout(
-      window.webContents.executeJavaScript(
-        electronSmokeUiStateSetupScript({ cwd: process.cwd() }),
-        true,
-      ),
+      window.webContents.executeJavaScript(electronSmokeUiStateSetupScript(), true),
       ELECTRON_SMOKE_TIMEOUT_MS,
       'Electron smoke UI-state setup',
     )

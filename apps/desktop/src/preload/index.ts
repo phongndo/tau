@@ -40,11 +40,6 @@ type PtyErrorCallback = (error: string) => void
 type PtyExitCallback = (info: PtyExitInfo) => void
 type AppCommandCallback = (command: AppCommand) => void
 
-type PendingDataState = {
-  chunks: string[]
-  bufferedChars: number
-}
-
 type PendingOutputState = {
   frames: OutputFrame[]
   bufferedBytes: number
@@ -79,7 +74,6 @@ type ReadyState = {
 
 const INITIAL_SIZE_TIMEOUT_MS = 5000
 const PTY_PORT_REQUEST_TIMEOUT_MS = 5000
-const MAX_PENDING_DATA_CHARS = 1024 * 1024
 const MAX_PENDING_OUTPUT_BYTES = 1024 * 1024
 
 type PtyPortRequest = {
@@ -94,15 +88,14 @@ let ptyPortRequest: PtyPortRequest | null = null
 let rendererReadySignaled = false
 let rendererShown = false
 let pendingClientMessages: PtyClientMessage[] = []
-let pendingDataDroppedChunksTotal = 0
-let pendingDataDroppedCharsTotal = 0
-let pendingDataTruncatedCharsTotal = 0
 let pendingOutputDroppedFramesTotal = 0
 let pendingOutputDroppedCharsTotal = 0
 let pendingOutputTruncatedCharsTotal = 0
 const rendererShownWaiters: Array<() => void> = []
 const readyStates = new Map<string, ReadyState>()
-const pendingData = new Map<string, PendingDataState>()
+// Text compatibility is opt-in. Production frames stay bytes, including before subscription.
+const ptyDataDecoders = new Map<string, TextDecoder>()
+const inputEncoder = new TextEncoder()
 const pendingSessionOutput = new Map<string, PendingOutputState>()
 const sessionPorts = new Map<string, MessagePort>()
 const sessionPortRequests = new Map<string, SessionPortRequest>()
@@ -236,14 +229,6 @@ function callbacksFor<T>(callbacksBySession: Map<string, T[]>, sessionId: string
   return nextCallbacks
 }
 
-function pendingDataFor(sessionId: string): PendingDataState {
-  const existingState = pendingData.get(sessionId)
-  if (existingState) return existingState
-  const state: PendingDataState = { chunks: [], bufferedChars: 0 }
-  pendingData.set(sessionId, state)
-  return state
-}
-
 function pendingOutputFor(sessionId: string): PendingOutputState {
   const existingState = pendingSessionOutput.get(sessionId)
   if (existingState) return existingState
@@ -269,7 +254,7 @@ function clearSessionState(sessionId: string) {
   const state = readyStates.get(sessionId)
   if (state) clearReadyTimeout(state)
   readyStates.delete(sessionId)
-  pendingData.delete(sessionId)
+  ptyDataDecoders.delete(sessionId)
   pendingSessionOutput.delete(sessionId)
   pendingSnapshots.delete(sessionId)
   ptyDataCallbacks.delete(sessionId)
@@ -291,17 +276,16 @@ function rejectAndClearSessionState(sessionId: string, error: Error) {
 }
 
 function getTerminalPreloadDiagnostics(): TerminalPreloadDiagnostics {
-  let pendingDataChars = 0
-  for (const pending of pendingData.values()) pendingDataChars += pending.bufferedChars
   let pendingOutputChars = 0
   for (const pending of pendingSessionOutput.values()) pendingOutputChars += pending.bufferedBytes
   return {
     pendingClientMessages: pendingClientMessages.length,
-    pendingDataSessions: pendingData.size,
-    pendingDataChars,
-    pendingDataDroppedChunksTotal,
-    pendingDataDroppedCharsTotal,
-    pendingDataTruncatedCharsTotal,
+    // Retain the diagnostic fields for existing clients; there is no separate text backlog.
+    pendingDataSessions: 0,
+    pendingDataChars: 0,
+    pendingDataDroppedChunksTotal: 0,
+    pendingDataDroppedCharsTotal: 0,
+    pendingDataTruncatedCharsTotal: 0,
     pendingOutputSessions: pendingSessionOutput.size,
     pendingOutputChars,
     pendingOutputDroppedFramesTotal,
@@ -312,49 +296,18 @@ function getTerminalPreloadDiagnostics(): TerminalPreloadDiagnostics {
   }
 }
 
-function flushPendingData(sessionId: string) {
-  const pending = pendingData.get(sessionId)
-  const callbacks = ptyDataCallbacks.get(sessionId)
-  if (!pending || pending.chunks.length === 0 || !callbacks || callbacks.length === 0) return
-  const data = pending.chunks.length === 1 ? pending.chunks[0] : pending.chunks.join('')
-  pending.chunks = []
-  pending.bufferedChars = 0
-  for (const callback of callbacks) callback(data)
-}
-
 function flushPendingSessionOutput(sessionId: string) {
   const pending = pendingSessionOutput.get(sessionId)
-  const callbacks = sessionOutputCallbacks.get(sessionId)
-  if (!pending || pending.frames.length === 0 || !callbacks || callbacks.length === 0) return
-  const frames = pending.frames
-  pending.frames = []
-  pending.bufferedBytes = 0
-  for (const frame of frames) {
-    for (const callback of callbacks) callback(frame)
-  }
-}
-
-function handlePtyData(sessionId: string, data: string) {
-  const callbacks = ptyDataCallbacks.get(sessionId)
-  if (!callbacks || callbacks.length === 0) {
-    // Phase 1.7: only buffer for benchmark/compat onPtyData subscribers.
-    const pending = pendingDataFor(sessionId)
-    pending.chunks.push(data)
-    pending.bufferedChars += data.length
-    while (pending.bufferedChars > MAX_PENDING_DATA_CHARS && pending.chunks.length > 1) {
-      const droppedChars = pending.chunks.shift()?.length ?? 0
-      pending.bufferedChars -= droppedChars
-      pendingDataDroppedChunksTotal += 1
-      pendingDataDroppedCharsTotal += droppedChars
-    }
-    return
-  }
-  for (const callback of callbacks) callback(data)
+  if (!pending) return
+  pendingSessionOutput.delete(sessionId)
+  for (const frame of pending.frames) handleSessionOutput(frame)
 }
 
 function handleSessionOutput(frame: OutputFrame) {
   const callbacks = sessionOutputCallbacks.get(frame.sessionId)
-  if (!callbacks || callbacks.length === 0) {
+  const textCallbacks = ptyDataCallbacks.get(frame.sessionId)
+  const decoder = ptyDataDecoders.get(frame.sessionId)
+  if (!callbacks?.length && !textCallbacks?.length) {
     const pending = pendingOutputFor(frame.sessionId)
     if (pending.bufferedBytes + frame.data.byteLength > MAX_PENDING_OUTPUT_BYTES) {
       pendingOutputDroppedFramesTotal += pending.frames.length + 1
@@ -368,7 +321,15 @@ function handleSessionOutput(frame: OutputFrame) {
     pending.bufferedBytes += frame.data.byteLength
     return
   }
-  for (const callback of callbacks) callback(frame)
+  if (callbacks) {
+    for (const callback of callbacks) callback(frame)
+  }
+  if (textCallbacks?.length) {
+    const data = decoder!.decode(frame.data, { stream: true })
+    if (data.length > 0) {
+      for (const callback of textCallbacks) callback(data)
+    }
+  }
 }
 
 function handleSessionSnapshot(frame: CurrentScreenSnapshotFrame) {
@@ -397,15 +358,12 @@ function handlePtyMessage(message: PtyServiceMessage) {
       break
     case 'data': {
       // Compatibility-only path; production output uses a per-session binary MessagePort.
-      const bytes = new TextEncoder().encode(message.data)
+      const bytes = inputEncoder.encode(message.data)
       handleSessionOutput({
         sessionId: message.sessionId,
         seq: message.seq ?? 0,
         data: bytes,
       })
-      if ((ptyDataCallbacks.get(message.sessionId)?.length ?? 0) > 0) {
-        handlePtyData(message.sessionId, message.data)
-      }
       break
     }
     case 'resize':
@@ -571,10 +529,6 @@ ipcRenderer.on('pty:session-port', (event, sessionId: unknown) => {
     }
     if (message.type === 'output') {
       handleSessionOutput(frame)
-      // Compatibility path: keep onPtyData fed after the fast-lane migration (reload smoke / benches).
-      if (frame.data.byteLength > 0) {
-        handlePtyData(sessionId, new TextDecoder().decode(frame.data))
-      }
     } else if (message.type === 'snapshot') {
       handleSessionSnapshot({ ...frame, live: true })
     }
@@ -763,7 +717,7 @@ const electronAPI = {
     const bytes =
       encoding === 'binary'
         ? Uint8Array.from(data, (character) => character.charCodeAt(0) & 0xff)
-        : new TextEncoder().encode(data)
+        : inputEncoder.encode(data)
     // Electron's MessagePortMain receives a null message when this nested buffer is
     // transferred. Let postMessage clone the fresh bytes' backing buffer instead.
     port.postMessage({ type: 'input', data: bytes.buffer })
@@ -864,7 +818,7 @@ const electronAPI = {
     if (typeof data !== 'string' || data.length === 0) return
     const port = sessionPorts.get(sessionId)
     if (!port) return
-    const bytes = new TextEncoder().encode(data)
+    const bytes = inputEncoder.encode(data)
     port.postMessage({ type: 'input', data: bytes.buffer })
   },
 
@@ -882,9 +836,14 @@ const electronAPI = {
 
   onPtyData(sessionId: string, callback: (data: string) => void): () => void {
     const callbacks = callbacksFor(ptyDataCallbacks, sessionId)
+    if (callbacks.length === 0) ptyDataDecoders.set(sessionId, new TextDecoder())
     callbacks.push(callback)
-    flushPendingData(sessionId)
-    return () => removeCallback(ptyDataCallbacks, sessionId, callback)
+    // Replay only unconsumed startup bytes, not a duplicate history of an active binary stream.
+    flushPendingSessionOutput(sessionId)
+    return () => {
+      removeCallback(ptyDataCallbacks, sessionId, callback)
+      if (!ptyDataCallbacks.has(sessionId)) ptyDataDecoders.delete(sessionId)
+    }
   },
 
   onPtyError(sessionId: string, callback: (error: string) => void): () => void {
