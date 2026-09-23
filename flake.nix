@@ -54,7 +54,9 @@
           # Build-time dependencies
           nativeBuildInputs = (with pkgs; [
             nodejs_22 # LTS (matches CI)
+            nixd # Nix language server
             pnpm # Package manager
+            typescript-language-server # TypeScript language server
             zig_0_15 # taud daemon + Ghostty/Zig tooling
             zls_0_15 # Zig language server matching Zig 0.15.x
             nixpkgs-fmt # nix fmt / CI format check
