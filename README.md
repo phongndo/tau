@@ -15,19 +15,25 @@ Tau has three co-equal goals: extreme terminal performance, the smallest practic
 ## Quick start
 
 ```bash
-nix develop          # Node 22, pnpm 10, Zig 0.15.x, ZLS, nixpkgs-fmt
-pnpm install
-pnpm dev             # build taud, then start Electron with HMR
+nix develop          # Pinned Bun, Node compatibility tools, Zig 0.15.x, ZLS, nixpkgs-fmt
+bun install --frozen-lockfile
+bun run dev             # build taud, then start Electron with HMR
 ```
 
 Other common commands:
 
 ```bash
-pnpm build           # production desktop build, including taud
-pnpm start           # run the built Electron app
-pnpm check           # lint, format checks, TypeScript, persistence tests, Zig tests
-pnpm zig:check       # Zig lint + format check + tests
+bun run build        # production desktop build, including taud
+bun run start        # run the built Electron app
+bun run check        # lint, format checks, TypeScript, persistence/tooling tests, Zig tests
+bun run zig:check    # Zig lint + format check + tests
 ```
+
+Bun's version is pinned in root `package.json`; Nix and CI use that version. Bun manages
+workspaces, runs TypeScript and tests, and hosts the Vite tooling. Electron still runs
+the desktop app, and Zig still builds/runs `taud`. Use `bun run build`, not `bun build`
+(the latter is Bun's own bundler). See [tooling benchmarks](docs/tooling-benchmarks.md)
+for migration scope, measured before/after results, and reproduction.
 
 ## Layout
 
@@ -48,13 +54,14 @@ tau/
 Benchmarks live under `apps/desktop/bench` and are exposed through root scripts where useful:
 
 ```bash
-pnpm bench                 # parser comparison benchmark
-pnpm bench:latency         # taud input latency
-pnpm bench:renderer        # xterm.js DOM vs WebGL renderer
-pnpm bench:cross           # cross-terminal comparison
-pnpm bench:startup         # startup timing
-pnpm bench:all             # desktop benchmark bundle
-pnpm --filter @tau/desktop bench:taud  # taud vs node-pty comparison
+bun run bench                 # parser comparison benchmark
+bun run bench:latency         # taud input latency
+bun run bench:renderer        # xterm.js DOM vs WebGL renderer
+bun run bench:cross           # cross-terminal comparison
+bun run bench:startup         # startup timing
+bun run bench:all             # desktop benchmark bundle
+bun run --filter @tau/desktop bench:taud  # taud vs node-pty comparison
+bun run bench:tooling --manager bun --output out/bench/tooling-bun.json
 ```
 
 See [`apps/desktop/bench/TAUD-BENCHMARK-RESULTS.md`](apps/desktop/bench/TAUD-BENCHMARK-RESULTS.md) for methodology and captured results.

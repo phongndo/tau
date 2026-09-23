@@ -12,8 +12,8 @@ Install [Nix](https://nixos.org/download) — if using the standard installer, e
 git clone https://github.com/phongndo/tau.git
 cd tau
 nix develop          # Enter the reproducible dev shell
-pnpm install
-pnpm dev             # Start terminal with HMR
+bun install --frozen-lockfile
+bun run dev             # Start terminal with HMR
 ```
 
 ## Development Workflow
@@ -23,9 +23,9 @@ pnpm dev             # Start terminal with HMR
 3. **Make your changes**
 4. **Run checks:**
    ```bash
-   pnpm check      # TypeScript + Zig lint/format/type/test checks
-   pnpm build      # Production build, including taud
-   pnpm bench      # Verify no performance regressions
+   bun run check  # TypeScript + Zig lint/format/type/test checks
+   bun run build  # Production build, including taud
+   bun run bench  # Verify no performance regressions
    ```
 5. **Commit** using [Conventional Commits](https://www.conventionalcommits.org/):
    ```
@@ -64,9 +64,9 @@ See [docs](docs/README.md) for architecture notes and plans.
 ## Code Style
 
 - **TypeScript**: `oxlint` for linting and `oxfmt` for formatting.
-- **Zig**: `zig fmt`, `zig ast-check`, and `zig build test` are wired through `pnpm zig:*` scripts.
-- **Nix**: `nix fmt` formats `flake.nix`; the dev shell provides `zig`, `zls`, `node`, and `pnpm`.
-- Run `pnpm fmt` to auto-format TypeScript and Zig. Run `pnpm zig:lsp` inside `nix develop` to verify the Zig language server is available.
+- **Zig**: `zig fmt`, `zig ast-check`, and `zig build test` are wired through `bun run zig:*` scripts.
+- **Nix**: `nix fmt` formats `flake.nix`; the dev shell provides `zig`, `zls`, `node` (compatibility), and the Bun version pinned in `package.json`.
+- Run `bun run fmt` to auto-format TypeScript and Zig. Run `bun run zig:lsp` inside `nix develop` to verify the Zig language server is available.
 - **Commit messages**: [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## Zig Daemon Memory Safety
@@ -74,19 +74,19 @@ See [docs](docs/README.md) for architecture notes and plans.
 Fast local checks:
 
 ```bash
-pnpm zig:fmt:check
-pnpm zig:test
-pnpm zig:check
-pnpm --filter @tau/daemon check
+bun run zig:fmt:check
+bun run zig:test
+bun run zig:check
+bun run --filter @tau/daemon check
 ```
 
 Leak smoke check:
 
 ```bash
-pnpm zig:leak-check
+bun run zig:leak-check
 ```
 
-`pnpm zig:leak-check` runs `taud --check` with `TAUD_DEBUG_ALLOC=1` and a temporary `HOME`, so it does not mutate your real `~/.tau`. `TAUD_DEBUG_ALLOC=1` keeps production behavior unchanged except that `main.zig` uses Zig's `std.heap.DebugAllocator`; if the debug allocator reports a leak, `taud` exits nonzero.
+`bun run zig:leak-check` runs `taud --check` with `TAUD_DEBUG_ALLOC=1` and a temporary `HOME`, so it does not mutate your real `~/.tau`. `TAUD_DEBUG_ALLOC=1` keeps production behavior unchanged except that `main.zig` uses Zig's `std.heap.DebugAllocator`; if the debug allocator reports a leak, `taud` exits nonzero.
 
 When adding Zig code:
 

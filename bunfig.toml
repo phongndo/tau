@@ -1,0 +1,7 @@
+[install]
+# Preserve the existing hoisted workspace layout, including Electron's runtime resolution.
+linker = "hoisted"
+
+[run]
+# Portable inline environment assignments and script chaining, including on Windows.
+shell = "bun"

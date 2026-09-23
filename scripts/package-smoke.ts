@@ -1,5 +1,5 @@
-#!/usr/bin/env tsx
-import { accessSync, constants, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
+#!/usr/bin/env bun
+import { accessSync, constants, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -68,7 +68,6 @@ function assertPackageLayout(): void {
   assertFile(resolve(outRoot, 'preload/index.cjs'), 'preload bundle')
   assertFile(resolve(outRoot, 'renderer/index.html'), 'renderer entrypoint')
   assertExecutable(taudPath, 'taud binary')
-
 }
 
 function runTaudCheck(): void {

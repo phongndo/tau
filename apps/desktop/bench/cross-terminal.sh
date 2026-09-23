@@ -304,7 +304,7 @@ main() {
 
   echo ""
   echo -e "${BOLD}Results saved to:${NC} $RESULTS_FILE"
-  echo -e "${BOLD}Parser-only benchmark:${NC} pnpm bench"
+  echo -e "${BOLD}Parser-only benchmark:${NC} bun run bench"
   echo ""
   echo -e "${YELLOW}Note: 'parser' entries measure VT parse time only (no rendering).${NC}"
   echo -e "${YELLOW}Full-terminal entries include rendering + IPC + compositing overhead.${NC}"

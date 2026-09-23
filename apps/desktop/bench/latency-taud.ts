@@ -175,7 +175,7 @@ async function startManagedTaud(): Promise<ManagedTaud | null> {
   if (!MANAGED_TAUD) return null
 
   const binaryPath = findTaudBinary()
-  if (!binaryPath) throw new Error('taud binary not found; run pnpm --filter @tau/desktop build')
+  if (!binaryPath) throw new Error('taud binary not found; run bun run build')
 
   const home = mkdtempSync(resolve(tmpdir(), 'tau-latency-bench-'))
   socketPath = resolveTauStoragePaths(home).socket

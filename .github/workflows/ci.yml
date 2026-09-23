@@ -25,34 +25,31 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: package.json
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: '22' }
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: ${{ env.ZIG_VERSION }}
-      - name: Get pnpm store directory
-        id: pnpm-cache
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-      - name: Cache pnpm store
+      - name: Cache Bun packages
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
-          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-      - run: pnpm install --frozen-lockfile
+            ${{ runner.os }}-${{ runner.arch }}-bun-
+      - run: bun install --frozen-lockfile
       - run: |
           set -euo pipefail
           IFS=$'\n\t'
-          pnpm zig:check
+          bun run zig:check
           export TAUD_CI_HOME="$(mktemp -d)"
           trap 'rm -rf "$TAUD_CI_HOME"' EXIT
-          HOME="$TAUD_CI_HOME" pnpm --filter @tau/daemon check
-          pnpm zig:leak-check
-  # ── Combined quality gate: frontend (pnpm) + zig daemon ──
+          HOME="$TAUD_CI_HOME" bun run --filter @tau/daemon check
+          bun run zig:leak-check
+  # ── Combined quality gate: frontend (Bun) + Zig daemon ──
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -62,35 +59,32 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: package.json
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: '22' }
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: ${{ env.ZIG_VERSION }}
-      - name: Get pnpm store directory
-        id: pnpm-cache
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-      - name: Cache pnpm store
+      - name: Cache Bun packages
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
-          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-      - run: pnpm install --frozen-lockfile
+            ${{ runner.os }}-${{ runner.arch }}-bun-
+      - run: bun install --frozen-lockfile
       - name: Lint (TypeScript + Zig)
-        run: pnpm lint
+        run: bun run lint
       - name: Format check (TypeScript + Zig)
-        run: pnpm fmt:check
+        run: bun run fmt:check
       - name: TypeScript type check
-        run: pnpm tsc
+        run: bun run tsc
       - name: Zig unit tests
-        run: pnpm zig:test
-      - name: Persistence tests
-        run: pnpm test:persistence
+        run: bun run zig:test
+      - name: Persistence and tooling tests
+        run: bun run test
 
   # ── Build matrix across platforms ──
   build:
@@ -116,29 +110,30 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: package.json
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: '22' }
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: ${{ env.ZIG_VERSION }}
-      - name: Get pnpm store directory
-        id: pnpm-cache
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-      - name: Cache pnpm store
+      - name: Cache Bun packages
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
-          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-      - run: pnpm install --frozen-lockfile
+            ${{ runner.os }}-${{ runner.arch }}-bun-
+      - run: bun install --frozen-lockfile
       - name: Build
-        run: pnpm build
+        run: bun run build
         env:
           TAUD_SKIP_NATIVE: ${{ matrix.skip_native }}
+      - name: Bun-compiled Electron benchmark smoke
+        if: runner.os == 'macOS'
+        timeout-minutes: 2
+        run: bun run --filter @tau/desktop bench:addons
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: matrix.artifact != 'tau-dist-windows'
         with:

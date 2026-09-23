@@ -65,7 +65,7 @@ test(
   async (context) => {
     const binaryPath = findTaudBinary()
     if (!binaryPath) {
-      context.skip('taud binary not found; run pnpm --filter @tau/desktop build first')
+      context.skip('taud binary not found; run bun run build first')
       return
     }
 
@@ -145,7 +145,7 @@ test(
   async (context) => {
     const binaryPath = findTaudBinary()
     if (!binaryPath) {
-      context.skip('taud binary not found; run pnpm --filter @tau/desktop build first')
+      context.skip('taud binary not found; run bun run build first')
       return
     }
 
@@ -215,7 +215,7 @@ test(
   async (context) => {
     const binaryPath = findTaudBinary()
     if (!binaryPath) {
-      context.skip('taud binary not found; run pnpm --filter @tau/desktop build first')
+      context.skip('taud binary not found; run bun run build first')
       return
     }
 

@@ -82,7 +82,7 @@ an initial Zig daemon skeleton/tooling setup while the larger `taud` runtime wor
   `taud` owns sessions outside the renderer and new renderer ports reconnect through the daemon bridge.
 - **Electron install repair**: `scripts/electron-install.ts` repairs incomplete Electron binary
   installs before `dev` / `start`.
-- **Initial Zig daemon skeleton**: `apps/daemon` now exists as a pnpm workspace package with
+- **Initial Zig daemon skeleton**: `apps/daemon` now exists as a Bun workspace package with
   `build.zig`, `src/main.zig`, module boundaries for daemon/session/RPC/PTY/event-log/snapshot/DB/
   adapter/cleanup/VT work, a real POSIX PTY boundary, SQLite migration strings, and Zig unit tests
   for the scaffolded pieces. The daemon is buildable but not yet used by the Electron app.
@@ -174,8 +174,8 @@ an initial Zig daemon skeleton/tooling setup while the larger `taud` runtime wor
   writer/replay helper and `node-pty` install repair hook are gone; event logs are daemon-owned
   diagnostics only and are not a desktop fallback backend.
 - **Zig tooling and CI support**: Nix now provides Zig 0.15.x, matching ZLS, and `nixpkgs-fmt`; root
-  pnpm `zig:*` scripts wrap build/test/lint/format/LSP checks; CI installs Zig 0.15.2, pins macOS jobs
-  to macOS 15 for that toolchain, runs `pnpm check`, verifies the Nix dev-shell/ZLS path, and builds
+  Bun `zig:*` scripts wrap build/test/lint/format/LSP checks; CI installs Zig 0.15.2, pins macOS jobs
+  to macOS 15 for that toolchain, runs `bun run check`, verifies the Nix dev-shell/ZLS path, and builds
   `taud` before desktop production builds.
 - **Daemon-side persistence privacy controls**: desktop settings now sync `persistence.enabled` and
   `persistInput` into `taud`. Disabling persistence keeps live PTY/process continuity in memory but
@@ -679,7 +679,8 @@ pub const Adapter = struct {
 ```
 
 Adapter scripts live at `~/.tau/adapters/<provider>.ts`. Taud communicates with them via
-stdin/stdout NDJSON through `tsx` by default, or through `TAUD_ADAPTER_RUNNER` when overridden.
+stdin/stdout NDJSON. Adapter execution is a historical design here; provider adapters were
+removed from core during the mux pivot. Current repository TypeScript tooling uses Bun.
 
 Example adapter interface:
 
@@ -786,8 +787,8 @@ pub fn build(b: *std.Build) void {
 {
   "scripts": {
     "build:taud": "cd ../taud && zig build",
-    "dev": "pnpm build:taud && electron-vite dev",
-    "build": "pnpm build:taud && electron-vite build"
+    "dev": "bun run build:taud && bun run --bun electron-vite dev",
+    "build": "bun run build:taud && bun run --bun electron-vite build"
   }
 }
 ```
@@ -995,7 +996,7 @@ Configurable maintenance runs in taud:
 nix develop
 zig version  # 0.15.x
 zls --version
-pnpm zig:check
+bun run zig:check
 ```
 
 ---
@@ -1006,7 +1007,7 @@ pnpm zig:check
 | ------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------- |
 | **A**  | **Done**                        | Electron-side bootstrap slice: `pane-layouts.json`, `settings.json`, localStorage migration, stable pane/session IDs, PTY event-log prototype, Electron install repair                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Done      |
 | **B**  | **Done**                        | Harden current event-log implementation with tests, corruption handling, retention controls, explicit session IPC wrappers, first-paint/render stability fixes, and current-file-store clear-history controls. Cold scrollback replay/archive restore has since been removed from the app path.                                                                                                                                                                                                                                                                                                                          | Done      |
-| **0**  | Done                            | Set up `apps/daemon` Zig project with `build.zig`, pnpm workspace scripts, Nix/ZLS/CI tooling, and module skeletons. Tooling is pinned to Zig 0.15.x, `build.zig.zon` now depends on Ghostty, and the daemon uses the Zig-native upstream `ghostty-vt` module.                                                                                                                                                                                                                                                                                                                                                           | Done      |
+| **0**  | Done                            | Set up `apps/daemon` Zig project with `build.zig`, Bun workspace scripts, Nix/ZLS/CI tooling, and module skeletons. Tooling is pinned to Zig 0.15.x, `build.zig.zon` now depends on Ghostty, and the daemon uses the Zig-native upstream `ghostty-vt` module.                                                                                                                                                                                                                                                                                                                                                            | Done      |
 | **1**  | **Done**                        | Write core daemon: Unix socket server, JSON control RPC, binary stream, session manager. The socket server, JSON control RPC, in-memory session registry, binary stream frame codec, socket-level attach loop, live PTY streaming, daemon-owned PTY reader threads, and bounded live pending-output buffers are implemented. Electron can now use it through the transitional bridge.                                                                                                                                                                                                                                    | Done      |
 | **2**  | Done for POSIX prototype        | Write PTY driver. `pty.zig` now uses `forkpty`/`execvp`, resize, input writes, output reads, termination, and exit polling.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Done      |
 | **3**  | Done for Zig-native VT boundary | `vt.zig` now isolates the VT backend, session objects own upstream Zig-native libghostty-vt state, daemon output/resize paths feed that state, smoke tests cover the wrapper/current-screen boundary, and native snapshots are supported. The fallback and C ABI backends have been retired.                                                                                                                                                                                                                                                                                                                             | Done      |

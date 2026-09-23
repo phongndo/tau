@@ -1,0 +1,110 @@
+{
+  "capturedAt": "2026-09-23T08:01:49.524Z",
+  "revision": "5a7b1b01205c0607a023d5543699b60f8b4888ad",
+  "dirty": true,
+  "manager": "pnpm",
+  "managerVersion": "11.5.1",
+  "nodeVersion": "v22.22.3",
+  "harnessRuntime": "v22.22.3",
+  "bunVersion": null,
+  "zigVersion": "0.15.2",
+  "host": {
+    "platform": "darwin",
+    "release": "25.6.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max",
+    "cpus": 16
+  },
+  "runs": 5,
+  "warmups": 1,
+  "notes": [
+    "Wall-clock process time; sequential commands; successful exits required.",
+    "Install measurements use isolated manifest copies and private warmed caches; lifecycle scripts disabled; no cold-network claims.",
+    "Other commands run in the supplied working tree with installed dependencies and warm compiler caches.",
+    "build includes the native Zig daemon; no TAUD_SKIP_NATIVE override is applied by this harness.",
+    "Test measurements use the explicit persistence suite, not automatic test discovery."
+  ],
+  "skipNative": false,
+  "packageManager": "pnpm@11.5.1",
+  "measurements": [
+    {
+      "name": "install-clean-warm-cache",
+      "command": [
+        "pnpm",
+        "install",
+        "--frozen-lockfile",
+        "--ignore-scripts",
+        "--store-dir",
+        "/tmp/nix-shell.NKBaZ1/nix-shell.PIzxHY/tau-tooling-bench-NuvJoE/cache"
+      ],
+      "samplesMs": [
+        1075.52275, 1154.6991669999998, 1075.1972910000004, 1111.0235840000005, 1138.7440829999996
+      ],
+      "medianMs": 1111.0235840000005,
+      "minMs": 1075.1972910000004,
+      "maxMs": 1154.6991669999998
+    },
+    {
+      "name": "install-noop",
+      "command": [
+        "pnpm",
+        "install",
+        "--frozen-lockfile",
+        "--ignore-scripts",
+        "--store-dir",
+        "/tmp/nix-shell.NKBaZ1/nix-shell.PIzxHY/tau-tooling-bench-NuvJoE/cache"
+      ],
+      "samplesMs": [
+        439.0202079999999, 437.77308300000004, 477.2925000000014, 471.413958000001,
+        432.0018340000006
+      ],
+      "medianMs": 439.0202079999999,
+      "minMs": 432.0018340000006,
+      "maxMs": 477.2925000000014
+    },
+    {
+      "name": "test:persistence",
+      "command": ["pnpm", "run", "test:persistence"],
+      "samplesMs": [
+        988.4455000000016, 1011.6065420000014, 983.8337500000016, 1004.3417499999996,
+        991.9416249999995
+      ],
+      "medianMs": 991.9416249999995,
+      "minMs": 983.8337500000016,
+      "maxMs": 1011.6065420000014
+    },
+    {
+      "name": "tsc",
+      "command": ["pnpm", "run", "tsc"],
+      "samplesMs": [
+        2872.4367500000008, 2944.034040999999, 2923.245833000001, 2950.9815000000017,
+        2948.0313339999993
+      ],
+      "medianMs": 2944.034040999999,
+      "minMs": 2872.4367500000008,
+      "maxMs": 2950.9815000000017
+    },
+    {
+      "name": "build",
+      "command": ["pnpm", "run", "build"],
+      "samplesMs": [
+        17133.433458000007, 17219.52020900001, 18120.08945900001, 17436.87279200001,
+        17666.442582999996
+      ],
+      "medianMs": 17436.87279200001,
+      "minMs": 17133.433458000007,
+      "maxMs": 18120.08945900001
+    },
+    {
+      "name": "report:artifacts",
+      "command": ["pnpm", "run", "report:artifacts"],
+      "samplesMs": [
+        568.4242080000113, 580.4520000000193, 567.1446249999863, 580.4001249999856,
+        732.9127919999883
+      ],
+      "medianMs": 580.4001249999856,
+      "minMs": 567.1446249999863,
+      "maxMs": 732.9127919999883
+    }
+  ]
+}

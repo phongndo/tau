@@ -2,7 +2,7 @@
  * Tau - direct taud terminal churn/RSS soak benchmark.
  *
  * CI mode intentionally runs a short smoke. Manual long runs can scale this up:
- *   TAU_SOAK_ITERATIONS=720 TAU_SOAK_BYTES=1048576 pnpm --filter @tau/desktop bench:soak
+ *   TAU_SOAK_ITERATIONS=720 TAU_SOAK_BYTES=1048576 bun run --filter @tau/desktop bench:soak
  */
 
 import { execFile } from 'node:child_process'
@@ -181,7 +181,7 @@ async function closeSocket(socket: net.Socket): Promise<void> {
 
 async function startManagedTaud(): Promise<ManagedTaud> {
   const binaryPath = findTaudBinary()
-  if (!binaryPath) throw new Error('taud binary not found; run pnpm --filter @tau/desktop build')
+  if (!binaryPath) throw new Error('taud binary not found; run bun run build')
 
   const home = mkdtempSync(resolve(tmpdir(), 'tau-soak-bench-'))
   socketPath = resolveTauStoragePaths(home).socket

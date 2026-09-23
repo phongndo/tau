@@ -34,7 +34,7 @@ echo ""
 echo -e "${BOLD}─── How to Compare Manually ───${NC}"
 echo ""
 echo -e "  ${CYAN}Tau (production):${NC}"
-echo "    pnpm build && pnpm start"
+echo "    bun run build && bun run start"
 echo "    → Window hidden until terminal ready → appears with live shell"
 echo ""
 echo -e "  ${CYAN}VS Code integrated terminal:${NC}"
@@ -90,7 +90,7 @@ START=$(python3 -c 'import time; print(int(time.time() * 1000))')
 
 # Launch and wait for it to initialize, then quit
 timeout 15 bash -c "
-  npx electron . &
+  bun x --no-install --bun electron . &
   PID=\$!
   # Wait for the electron process to be fully running
   sleep 1.5

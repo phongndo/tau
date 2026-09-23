@@ -9,7 +9,7 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["node"]
+    "types": ["node", "bun"]
   },
   "include": [
     "apps/daemon/adapters/**/*.ts",

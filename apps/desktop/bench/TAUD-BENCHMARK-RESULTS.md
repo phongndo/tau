@@ -135,16 +135,16 @@ _(Neither is actually slower — both reported gaps were measurement artifacts f
 
 ```bash
 # Build taud
-pnpm build:taud
+bun run build:taud
 
 # Run benchmark suite
 bash apps/desktop/bench/taud-vs-node-pty.sh
 
 # Run latency benchmark (requires taud running)
-npx tsx apps/desktop/bench/latency-taud.ts
+bun apps/desktop/bench/latency-taud.ts
 
 # Run WASM parser comparison
-npx tsx apps/desktop/bench/benchmark.ts
+bun apps/desktop/bench/benchmark.ts
 
 # View results
 cat apps/desktop/bench/taud-bench-results.txt

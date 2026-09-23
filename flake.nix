@@ -42,9 +42,22 @@
         ]);
         linuxElectronLibraryPath = pkgs.lib.makeLibraryPath linuxElectronRuntimeLibs;
         linuxElectronMesa = pkgs.lib.optionalString pkgs.stdenv.isLinux "${pkgs.mesa}";
-        # nixpkgs' pnpm_11 defaults to Node 24.15 on Darwin, which emits
-        # spurious unmanaged-FD warnings during worker-thread file I/O.
-        pnpm = pkgs.pnpm_11.override { nodejs = pkgs.nodejs_22; };
+        # Keep package.json, CI and the dev shell on the same Bun release without
+        # updating unrelated nixpkgs packages. Update these hashes when bumping Bun.
+        bunVersion = pkgs.lib.removePrefix "bun@" (builtins.fromJSON (builtins.readFile ./package.json)).packageManager;
+        bunTargets = {
+          aarch64-darwin = { target = "darwin-aarch64"; hash = "sha256-kJh6OhbX21VtiGrD1VHnttPt8KHPQ6yu1iLoZ2vh0S8="; };
+          x86_64-darwin = { target = "darwin-x64-baseline"; hash = "sha256-utW71s8U0JgNEV9ZVMn/kE32GdXplNLaH/zNPzFjALA="; };
+          aarch64-linux = { target = "linux-aarch64"; hash = "sha256-VDKLvC2cjgyfiSxUTWbFeoO4QTnjSQnl7oF1jxrI/ac="; };
+          x86_64-linux = { target = "linux-x64"; hash = "sha256-NjaPrvdSeHXV/6UuU81IAhdB8qg+tiCKjdZAaNQiqRM="; };
+        };
+        bun = pkgs.bun.overrideAttrs (_: {
+          version = bunVersion;
+          src = pkgs.fetchurl {
+            url = "https://github.com/oven-sh/bun/releases/download/bun-v${bunVersion}/bun-${bunTargets.${system}.target}.zip";
+            inherit (bunTargets.${system}) hash;
+          };
+        });
       in
       {
         # ── Dev shell (nix develop) ──
@@ -53,9 +66,9 @@
 
           # Build-time dependencies
           nativeBuildInputs = (with pkgs; [
-            nodejs_22 # LTS (matches CI)
+            nodejs_22 # Compatibility for third-party Node shebangs, not Tau's script runtime
             nixd # Nix language server
-            pnpm # Package manager
+            bun # Package manager, TypeScript runtime, test runner and benchmark bundler
             typescript-language-server # TypeScript language server
             zig_0_15 # taud daemon + Ghostty/Zig tooling
             zls_0_15 # Zig language server matching Zig 0.15.x
@@ -114,35 +127,21 @@
 
             echo "🖥  Tau Terminal dev shell"
             echo "   node:  $(node --version)"
-            echo "   pnpm:  $(pnpm --version)"
+            echo "   bun:   $(bun --version)"
             echo "   zig:   $(zig version)"
             echo "   zls:   $(zls --version)"
             echo ""
-            echo "   pnpm install && pnpm dev"
-            echo "   pnpm check        # TS + Zig lint/format/type/test checks"
-            echo "   pnpm zig:lsp      # verify Zig language server availability"
+            echo "   bun install && bun run dev"
+            echo "   bun run check        # TS + Zig lint/format/type/test checks"
+            echo "   bun run zig:lsp      # verify Zig language server availability"
             echo ""
           '';
         };
 
-        # pnpm must use the same Node as the shell. Its nixpkgs default can
-        # embed a different Node in the executable's shebang.
-        checks.pnpm-runtime = pkgs.runCommand "tau-pnpm-runtime" { } ''
-          node=$(head -n 1 ${pnpm}/bin/pnpm)
-          ${pnpm}/bin/pnpm --version >/dev/null
-          "''${node#\#!}" -e '
-            const { Worker } = require("node:worker_threads");
-            const worker = new Worker(`
-              const fs = require("node:fs");
-              for (let i = 0; i < 80; i++) fs.closeSync(fs.openSync("/dev/null", "r"));
-            `, { eval: true });
-            worker.on("error", error => { console.error(error); process.exitCode = 1; });
-          ' 2> warnings
-          if grep -q 'File descriptor .*unmanaged mode' warnings; then
-            head -n 4 warnings >&2
-            exit 1
-          fi
-          test "$node" = '#!${pkgs.nodejs_22}/bin/node'
+        checks.bun-runtime = pkgs.runCommand "tau-bun-runtime" { } ''
+          export HOME="$TMPDIR"
+          test "$(${bun}/bin/bun --version)" = '${bunVersion}'
+          ${bun}/bin/bun -e 'const version: string = Bun.version; if (version !== "${bunVersion}") process.exit(1)'
           touch $out
         '';
 

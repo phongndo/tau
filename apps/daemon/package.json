@@ -5,18 +5,18 @@
   "description": "Tau persistence daemon",
   "type": "module",
   "scripts": {
-    "build": "TAUD_OPTIMIZE=ReleaseFast node --experimental-strip-types ../../scripts/taud.ts build",
-    "build:debug": "TAUD_OPTIMIZE=Debug node --experimental-strip-types ../../scripts/taud.ts build",
-    "build:fast": "TAUD_OPTIMIZE=ReleaseFast node --experimental-strip-types ../../scripts/taud.ts build",
-    "build:small": "TAUD_OPTIMIZE=ReleaseSmall node --experimental-strip-types ../../scripts/taud.ts build",
-    "check": "node --experimental-strip-types ../../scripts/taud.ts check",
-    "fmt": "node --experimental-strip-types ../../scripts/zig-tools.ts fmt apps/daemon",
-    "fmt:check": "node --experimental-strip-types ../../scripts/zig-tools.ts fmt:check apps/daemon",
+    "build": "TAUD_OPTIMIZE=ReleaseFast bun ../../scripts/taud.ts build",
+    "build:debug": "TAUD_OPTIMIZE=Debug bun ../../scripts/taud.ts build",
+    "build:fast": "TAUD_OPTIMIZE=ReleaseFast bun ../../scripts/taud.ts build",
+    "build:small": "TAUD_OPTIMIZE=ReleaseSmall bun ../../scripts/taud.ts build",
+    "check": "bun ../../scripts/taud.ts check",
+    "fmt": "bun ../../scripts/zig-tools.ts fmt apps/daemon",
+    "fmt:check": "bun ../../scripts/zig-tools.ts fmt:check apps/daemon",
     "hardened:compile": "zig build test:compile -Dfuzz=true",
     "hardened:fmt": "zig build test:fmt",
-    "leak-check": "node --experimental-strip-types ../../scripts/taud.ts leak-check",
-    "lint": "node --experimental-strip-types ../../scripts/zig-tools.ts lint apps/daemon",
+    "leak-check": "bun ../../scripts/taud.ts leak-check",
+    "lint": "bun ../../scripts/zig-tools.ts lint apps/daemon",
     "lsp": "zls --version",
-    "test": "node --experimental-strip-types ../../scripts/taud.ts test"
+    "test": "bun ../../scripts/taud.ts test"
   }
 }

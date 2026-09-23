@@ -36,4 +36,4 @@ Measuring VT parser + cell grid update time.
 ╚══════════════════════════════════════════════╝
 
 Historical baseline captured before the xterm.js WebGL migration.
-Run `pnpm bench:renderer` for the current DOM-vs-WebGL renderer benchmark.
+Run `bun run bench:renderer` for the current DOM-vs-WebGL renderer benchmark.

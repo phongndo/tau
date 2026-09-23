@@ -492,7 +492,7 @@ cross_reference() {
   echo -e "  Running existing bench/benchmark.ts (WASM parser vs xterm.js)..."
   echo ""
   cd "$PROJECT_ROOT"
-  npx tsx bench/benchmark.ts 2>/dev/null || echo -e "  ${YELLOW}(parser benchmark skipped)${NC}"
+  bun bench/benchmark.ts 2>/dev/null || echo -e "  ${YELLOW}(parser benchmark skipped)${NC}"
   echo ""
 
   # Also run latency benchmark comparison

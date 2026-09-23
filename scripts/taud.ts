@@ -1,4 +1,4 @@
-#!/usr/bin/env tsx
+#!/usr/bin/env bun
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -437,7 +437,9 @@ function buildDirect(): string {
   if (optimizeMode !== 'Debug' && process.platform === 'darwin') {
     const symbolsDir = resolve(daemonRoot, 'zig-out/symbols')
     mkdirSync(symbolsDir, { recursive: true })
-    runForStatus('dsymutil', [binPath, '-o', resolve(symbolsDir, `${exeName}.dSYM`)], { cwd: daemonRoot })
+    runForStatus('dsymutil', [binPath, '-o', resolve(symbolsDir, `${exeName}.dSYM`)], {
+      cwd: daemonRoot,
+    })
     runForStatus('strip', ['-x', binPath], { cwd: daemonRoot })
   }
   return binPath

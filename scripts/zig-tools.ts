@@ -1,4 +1,4 @@
-#!/usr/bin/env tsx
+#!/usr/bin/env bun
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,7 +17,7 @@ const ignoredDirectories = new Set([
 ])
 
 function usage(): void {
-  console.error(`Usage: tsx scripts/zig-tools.ts <fmt|fmt:check|lint> [paths...]`)
+  console.error(`Usage: bun scripts/zig-tools.ts <fmt|fmt:check|lint> [paths...]`)
 }
 
 function collectZigFiles(root: string): string[] {

@@ -1,0 +1,110 @@
+{
+  "capturedAt": "2026-09-23T08:23:36.092Z",
+  "revision": "5a7b1b01205c0607a023d5543699b60f8b4888ad",
+  "dirty": true,
+  "manager": "bun",
+  "managerVersion": "1.4.2",
+  "nodeVersion": "v22.22.3",
+  "harnessRuntime": "v22.22.3",
+  "bunVersion": "1.4.2",
+  "zigVersion": "0.15.2",
+  "host": {
+    "platform": "darwin",
+    "release": "25.6.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max",
+    "cpus": 16
+  },
+  "runs": 5,
+  "warmups": 1,
+  "notes": [
+    "Wall-clock process time; sequential commands; successful exits required.",
+    "Install measurements use isolated manifest copies and private warmed caches; lifecycle scripts disabled; no cold-network claims.",
+    "Other commands run in the supplied working tree with installed dependencies and warm compiler caches.",
+    "build includes the native Zig daemon; no TAUD_SKIP_NATIVE override is applied by this harness.",
+    "Test measurements use the explicit persistence suite, not automatic test discovery."
+  ],
+  "skipNative": false,
+  "packageManager": "bun@1.4.2",
+  "measurements": [
+    {
+      "name": "install-clean-warm-cache",
+      "command": [
+        "bun",
+        "install",
+        "--frozen-lockfile",
+        "--ignore-scripts",
+        "--cache-dir",
+        "/tmp/nix-shell.NKBaZ1/nix-shell.JKCD09/tau-tooling-bench-wPAvyh/cache"
+      ],
+      "samplesMs": [
+        98.62179100000003, 98.06408300000021, 101.44420899999977, 95.76962500000036,
+        110.46079199999986
+      ],
+      "medianMs": 98.62179100000003,
+      "minMs": 95.76962500000036,
+      "maxMs": 110.46079199999986
+    },
+    {
+      "name": "install-noop",
+      "command": [
+        "bun",
+        "install",
+        "--frozen-lockfile",
+        "--ignore-scripts",
+        "--cache-dir",
+        "/tmp/nix-shell.NKBaZ1/nix-shell.JKCD09/tau-tooling-bench-wPAvyh/cache"
+      ],
+      "samplesMs": [
+        22.76733400000012, 12.900916999999936, 12.563666000000012, 13.034208000000035,
+        12.275416999999834
+      ],
+      "medianMs": 12.900916999999936,
+      "minMs": 12.275416999999834,
+      "maxMs": 22.76733400000012
+    },
+    {
+      "name": "test:persistence",
+      "command": ["bun", "run", "test:persistence"],
+      "samplesMs": [
+        309.7014170000002, 302.3519159999996, 303.61783300000025, 307.3875420000004,
+        309.26758299999983
+      ],
+      "medianMs": 307.3875420000004,
+      "minMs": 302.3519159999996,
+      "maxMs": 309.7014170000002
+    },
+    {
+      "name": "tsc",
+      "command": ["bun", "run", "tsc"],
+      "samplesMs": [
+        1545.2695409999997, 1552.6369159999995, 1555.9278329999997, 1558.6043329999993,
+        1573.1056250000001
+      ],
+      "medianMs": 1555.9278329999997,
+      "minMs": 1545.2695409999997,
+      "maxMs": 1573.1056250000001
+    },
+    {
+      "name": "build",
+      "command": ["bun", "run", "build"],
+      "samplesMs": [
+        15710.238125, 15857.168208000003, 17318.160875, 16270.961834000002, 15902.011916999996
+      ],
+      "medianMs": 15902.011916999996,
+      "minMs": 15710.238125,
+      "maxMs": 17318.160875
+    },
+    {
+      "name": "report:artifacts",
+      "command": ["bun", "run", "report:artifacts"],
+      "samplesMs": [
+        12.352624999999534, 11.678916999997455, 11.344624999997905, 11.64824999999837,
+        11.761874999996508
+      ],
+      "medianMs": 11.678916999997455,
+      "minMs": 11.344624999997905,
+      "maxMs": 12.352624999999534
+    }
+  ]
+}

@@ -1,5 +1,4 @@
-#!/usr/bin/env tsx
-import { createHash } from 'node:crypto'
+#!/usr/bin/env bun
 import { existsSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
@@ -23,7 +22,12 @@ function categorize(path: string): string {
   if (path.includes('font') || path.endsWith('.ttf') || path.endsWith('.otf')) return 'fonts'
   if (path.includes('extension')) return 'extensions'
   if (path.endsWith('.node')) return 'native-modules'
-  if (path.endsWith('.js') || path.endsWith('.css') || path.endsWith('.html') || path.endsWith('.mjs'))
+  if (
+    path.endsWith('.js') ||
+    path.endsWith('.css') ||
+    path.endsWith('.html') ||
+    path.endsWith('.mjs')
+  )
     return 'tau-js-css'
   return 'other'
 }
@@ -36,7 +40,11 @@ const roots = [
 const entries: Array<Entry & { category: string }> = []
 for (const root of roots) {
   for (const entry of walk(root)) {
-    entries.push({ ...entry, path: join(relative(process.cwd(), root), entry.path), category: categorize(entry.path) })
+    entries.push({
+      ...entry,
+      path: join(relative(process.cwd(), root), entry.path),
+      category: categorize(entry.path),
+    })
   }
 }
 
@@ -57,4 +65,10 @@ const outDir = join(process.cwd(), 'out/ci')
 mkdirSync(outDir, { recursive: true })
 const outPath = join(outDir, 'artifact-inventory.json')
 writeFileSync(outPath, JSON.stringify(report, null, 2))
-console.log(JSON.stringify({ outPath, totalsByCategoryBytes: byCategory, totalBytes: report.totalBytes }, null, 2))
+console.log(
+  JSON.stringify(
+    { outPath, totalsByCategoryBytes: byCategory, totalBytes: report.totalBytes },
+    null,
+    2,
+  ),
+)

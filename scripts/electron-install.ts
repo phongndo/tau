@@ -1,4 +1,4 @@
-#!/usr/bin/env tsx
+#!/usr/bin/env bun
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
@@ -31,14 +31,7 @@ const requiredRuntimePath =
 const versionPath = join(distPath, 'version')
 const pathTxtPath = join(electronDir, 'path.txt')
 
-const keepAlive = setInterval(() => {}, 60_000)
-
-void main()
-  .catch((error) => {
-    console.error(error)
-    process.exitCode = 1
-  })
-  .finally(() => clearInterval(keepAlive))
+await main()
 
 async function main(): Promise<void> {
   if (await isElectronUsable()) {
@@ -73,7 +66,8 @@ async function installElectron(): Promise<void> {
     return
   }
 
-  const { downloadArtifact } = require('@electron/get')
+  // Resolve Electron's own downloader rather than relying on package-manager hoisting.
+  const { downloadArtifact } = createRequire(electronPackageJsonPath)('@electron/get')
 
   const zipPath = await downloadArtifact({
     version: electronPackage.version,
@@ -168,7 +162,7 @@ async function removePath(path: string): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     console.warn(
-      `[electron-install] Node rm failed for ${path} on host ${hostPlatform} while installing for ${platform}; falling back to shell removal: ${message}`,
+      `[electron-install] rm failed for ${path} on host ${hostPlatform} while installing for ${platform}; falling back to shell removal: ${message}`,
     )
     // Electron's macOS .app bundle can occasionally leave nested framework resources behind
     // during recursive removal in fresh worktrees. Fall back to the platform shell remover so
