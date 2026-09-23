@@ -29,7 +29,7 @@ Bun's types were added; tsx and now-unused optional/transitive tooling were remo
 The explicit hoisted linker in `bunfig.toml` preserves the former hoisted workspace layout.
 Only esbuild's dependency lifecycle script is trusted. The root Bun `postinstall`
 owns Electron installation/repair, including NixOS ELF patching; Electron's upstream
-install hook is not also run. See [`scripts/README.md`](../scripts/README.md).
+install hook is not also run. See [`scripts/electron-install.ts`](../scripts/electron-install.ts) for the implementation.
 
 Use `bun run build` and `bun run test` for the repository workflows. `bun build` invokes
 Bun's bundler directly; bare `bun test` discovers additional integration tests rather

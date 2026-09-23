@@ -1,24 +1,7 @@
-## Summary
+## What changed and why?
 
-<!-- What does this PR do? A few sentences is enough. -->
+<!-- Link the issue or explain the user-visible effect. -->
 
-## Motivation
+## Verification
 
-<!-- Why is this change needed? Link to an issue if applicable. -->
-
-Closes #
-
-## Changes
-
-<!-- List the key changes made. -->
-
--
-
-## Checklist
-
-- [ ] `bun run tsc` passes (type check)
-- [ ] `bun run lint` passes
-- [ ] `bun run zig:check` passes when Zig code changes
-- [ ] `bun run build` passes
-- [ ] `bun run bench` runs without regressions
-- [ ] Manual test: launch with `bun run dev`, verify terminal works
+<!-- List the checks actually run and any relevant gaps. For transport or performance changes, include the applicable smoke/benchmark result and environment. -->

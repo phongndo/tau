@@ -1,12 +1,16 @@
-# Docs
+# Tau documentation
 
-Architecture notes, implementation plans, and performance methodology for Tau.
+Start with the [project overview](../README.md) for setup and scope, or [contributing](../CONTRIBUTING.md) for development checks. These notes describe implemented behavior; schemas and scripts remain the source of truth for exact fields and commands.
 
-- [`../rework.md`](../rework.md) — terminal-multiplexer pivot and migration plan.
-- [`extension-system.md`](extension-system.md) — proposed extension runtime, contribution points, settings host, composition, and trust model.
-- [`plans/installer-channels.md`](plans/installer-channels.md) — installer and release-channel planning.
-- [`benchmarks/dependency-upgrade-2026-09-23.md`](benchmarks/dependency-upgrade-2026-09-23.md) — dependency compatibility decisions and measured before/after performance.
-- [`benchmarks/output-allocation-2026-09-23.md`](benchmarks/output-allocation-2026-09-23.md) — terminal allocation accounting, xterm writer comparison, and reload/input validation.
-- [`terminal-byte-path.md`](terminal-byte-path.md) — current output/input flow, buffer ownership, batching, and reload teardown.
+- [Architecture](architecture.md) — daemon/desktop ownership, mux state, and security boundary. Read when changing persistence, graph mutations, or IPC.
+- [Terminal byte path](terminal-byte-path.md) — output/input transport, buffer ownership, and reload recovery. Read when changing terminal I/O or output allocations.
 
-The Electron desktop app currently lives in `apps/desktop`.
+## Measured evidence
+
+These are dated results, not current performance promises:
+
+- [Bun tooling migration](tooling-benchmarks.md) — macOS development workflow comparison and raw samples.
+- [Dependency upgrade](benchmarks/dependency-upgrade-2026-09-23.md) — compatibility decisions and bounded before/after observations.
+- [Output allocations](benchmarks/output-allocation-2026-09-23.md) — allocation counts, real-xterm workload, and packaged smoke results.
+
+The executable benchmark definitions and thresholds are in [package.json](../package.json) and [apps/desktop/package.json](../apps/desktop/package.json). Check the code and rerun a relevant benchmark before relying on an older result.

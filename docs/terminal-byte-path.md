@@ -57,4 +57,4 @@ For performance work distinguish:
 - Decoder/buffer construction counts and retained queue bytes: deterministic allocation probes.
 - Writer + xterm throughput: isolate the writer with the same Electron/xterm versions and byte workload, and check final screen content.
 - Packaged input/output smoke: checks transport and counters, not full terminal presentation throughput.
-- Frame presentation, idle CPU and RSS: use a real display/GPU and the [performance SLO](performance-slos.md) methodology. Xvfb does not establish hardware rendering performance.
+- Frame presentation, idle CPU and RSS: use a real display/GPU; Xvfb does not establish hardware rendering performance. The benchmark commands and enforced smoke thresholds live in the root and desktop `package.json` files.
