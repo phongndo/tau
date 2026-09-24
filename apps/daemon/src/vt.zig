@@ -66,10 +66,7 @@ fn vtLifecycleForAllocationFailure(allocator: std.mem.Allocator) !void {
 
     try terminal.write("hello\r\n\x1b[2;3HVT");
     try terminal.resize(allocator, 14, 5);
-    const text = terminal.plainTextAlloc(allocator) catch |err| switch (err) {
-        error.WriteFailed => return error.OutOfMemory,
-        else => return err,
-    };
+    const text = try terminal.plainTextAlloc(allocator);
     defer allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "hello") != null);
 }

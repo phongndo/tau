@@ -23,6 +23,8 @@
     "start": "bun run --filter @tau/desktop start",
     "smoke:package": "bun run --filter @tau/desktop smoke:package",
     "build:taud": "bun run --filter @tau/daemon build",
+    "build:vt-web": "bun scripts/build-ghostty-vt-wasm.ts",
+    "build:vt-native": "bun scripts/build-ghostty-vt-native.ts",
     "test:taud": "bun run --filter @tau/daemon test",
     "zig:build": "bun run --filter @tau/daemon build",
     "zig:test": "bun run --filter @tau/daemon test",

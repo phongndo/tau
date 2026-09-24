@@ -1,20 +1,4 @@
-import {
-  ClipboardAddon,
-  type ClipboardSelectionType,
-  type IClipboardProvider,
-} from '@xterm/addon-clipboard'
-import { FitAddon } from '@xterm/addon-fit'
-import { ImageAddon } from '@xterm/addon-image'
-import {
-  SearchAddon,
-  type ISearchOptions,
-  type ISearchResultChangeEvent,
-} from '@xterm/addon-search'
-import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
-import { Unicode11Addon } from '@xterm/addon-unicode11'
-import { WebLinksAddon } from '@xterm/addon-web-links'
-import { WebglAddon } from '@xterm/addon-webgl'
-import { Terminal, type IDisposable } from '@xterm/xterm'
+import { TauTerminal as Terminal } from './tau-terminal'
 import {
   decodeCurrentScreenSnapshot,
   decodeFallbackCurrentScreenSnapshotPayload,
@@ -43,33 +27,6 @@ type CreateTerminalOptions = {
   readonly onArchived?: () => void
   readonly onAttach?: (result: AttachSessionResult) => void
 }
-
-const THEME = {
-  background: '#151515',
-  foreground: '#d4d4d4',
-  cursor: '#d4d4d4',
-  cursorAccent: '#151515',
-  selectionBackground: '#264f78',
-  selectionForeground: '#ffffff',
-  black: '#000000',
-  red: '#cd3131',
-  green: '#0dbc79',
-  yellow: '#e5e510',
-  blue: '#2472c8',
-  magenta: '#bc3fbc',
-  cyan: '#11a8cd',
-  white: '#e5e5e5',
-  brightBlack: '#666666',
-  brightRed: '#f14c4c',
-  brightGreen: '#23d18b',
-  brightYellow: '#f5f543',
-  brightBlue: '#3b8eea',
-  brightMagenta: '#d670d6',
-  brightCyan: '#29b8db',
-  brightWhite: '#ffffff',
-}
-
-const terminalFontFamily = '"SF Mono", Menlo, Monaco, "JetBrains Mono", monospace'
 
 const SIDEBAR_RESIZE_FIT_DELAY_MS = 80
 const PTY_RESIZE_SETTLE_DELAY_MS = 120
@@ -100,9 +57,6 @@ type TerminalRuntime = {
   onAttach?: (result: AttachSessionResult) => void
 }
 
-const terminalFitAddons = new WeakMap<Terminal, FitAddon>()
-const terminalSearchAddons = new WeakMap<Terminal, SearchAddon>()
-const terminalWebglAddons = new WeakMap<Terminal, WebglAddon>()
 const terminalRuntimes = new Map<string, TerminalRuntime>()
 const terminalRuntimeByTerminal = new WeakMap<Terminal, TerminalRuntime>()
 const HIDDEN_TERMINAL_RUNTIME_LIMIT = 4
@@ -186,13 +140,10 @@ function getContainerContentSize(container: HTMLElement): { width: number; heigh
 }
 
 function fitTerminalToContainer(container: HTMLElement, term: Terminal): boolean {
-  const fitAddon = terminalFitAddons.get(term)
-  if (!fitAddon) return false
-
   const { width, height } = getContainerContentSize(container)
   if (width <= 0 || height <= 0) return false
 
-  const dimensions = fitAddon.proposeDimensions()
+  const dimensions = term.proposeDimensions()
   if (!dimensions) return false
 
   const cols = Math.max(MIN_TERMINAL_COLS, dimensions.cols)
@@ -412,117 +363,28 @@ export function disposeTerminalRuntime(sessionId: string): void {
   runtime.term.dispose()
 }
 
-function installWebglRenderer(term: Terminal): void {
-  const webglAddon = new WebglAddon()
-  const contextLoss = webglAddon.onContextLoss(() => {
-    console.warn(
-      '[terminal] WebGL renderer context lost; falling back to xterm.js default renderer',
-    )
-    contextLoss.dispose()
-    terminalWebglAddons.delete(term)
-    webglAddon.dispose()
-    forceTerminalRender(term)
-  })
-
-  try {
-    term.loadAddon(webglAddon)
-    terminalWebglAddons.set(term, webglAddon)
-  } catch (error) {
-    contextLoss.dispose()
-    webglAddon.dispose()
-    console.warn('[terminal] WebGL renderer unavailable; using xterm.js default renderer:', error)
-  }
-}
-
-class TauClipboardProvider implements IClipboardProvider {
-  readText(selection: ClipboardSelectionType): string {
-    if (selection !== 'c') return ''
-    return ''
-  }
-
-  async writeText(selection: ClipboardSelectionType, text: string): Promise<void> {
-    if (selection !== 'c') return
-    await window.electronAPI.writeClipboardText(text)
-  }
-}
-
-function installTerminalAddons(term: Terminal): void {
-  term.loadAddon(new Unicode11Addon())
-  term.unicode.activeVersion = '11'
-  term.loadAddon(new UnicodeGraphemesAddon())
-
-  const searchAddon = new SearchAddon({ highlightLimit: 1000 })
-  term.loadAddon(searchAddon)
-  terminalSearchAddons.set(term, searchAddon)
-
-  term.loadAddon(
-    new WebLinksAddon((event, uri) => {
-      event.preventDefault()
-      void window.electronAPI.openExternalUrl(uri).catch((error) => {
-        console.warn('[terminal] failed to open external link:', error)
-      })
-    }),
-  )
-  term.loadAddon(new ImageAddon())
-  term.loadAddon(new ClipboardAddon(undefined, new TauClipboardProvider()))
-}
-
-const searchDecorationOptions: NonNullable<ISearchOptions['decorations']> = {
-  matchBackground: '#4b3f2f',
-  matchBorder: '#e6b99d',
-  matchOverviewRuler: '#e6b99d',
-  activeMatchBackground: '#6b4a35',
-  activeMatchBorder: '#ffae9f',
-  activeMatchColorOverviewRuler: '#ffae9f',
-}
-
 export function searchTerminalBuffer(
   term: Terminal,
   query: string,
   direction: 'next' | 'previous' = 'next',
   incremental = false,
 ): boolean {
-  const searchAddon = terminalSearchAddons.get(term)
-  if (!searchAddon) return false
-
-  if (query.length === 0) {
-    searchAddon.clearDecorations()
-    term.clearSelection()
-    return false
-  }
-
-  const options: ISearchOptions = {
-    incremental,
-    decorations: searchDecorationOptions,
-  }
-  return direction === 'previous'
-    ? searchAddon.findPrevious(query, options)
-    : searchAddon.findNext(query, options)
+  return term.search(query, direction, incremental)
 }
 
 export function clearTerminalSearch(term: Terminal): void {
-  const searchAddon = terminalSearchAddons.get(term)
-  searchAddon?.clearDecorations()
-  term.clearSelection()
+  term.clearSearch()
 }
 
 export function onTerminalSearchResults(
   term: Terminal,
-  callback: (event: ISearchResultChangeEvent) => void,
-): IDisposable | null {
-  return terminalSearchAddons.get(term)?.onDidChangeResults(callback) ?? null
+  callback: (event: { resultIndex: number; resultCount: number }) => void,
+): { dispose(): void } {
+  return term.onSearchResults(callback)
 }
 
 export function setTerminalCursorVisible(term: Terminal, visible: boolean) {
-  term.options = {
-    cursorInactiveStyle: visible ? 'outline' : 'none',
-    theme: {
-      ...THEME,
-      cursor: visible ? THEME.cursor : THEME.background,
-      cursorAccent: visible ? THEME.cursorAccent : THEME.background,
-    },
-  }
-  forceTerminalRender(term)
+  term.setCursorVisible(visible)
 }
 
 export async function createTerminal(
@@ -562,35 +424,10 @@ export async function createTerminal(
     await fontsReady.finally(finishFonts)
     updateStatus(`Terminal fonts ready in ${(performance.now() - t0).toFixed(0)}ms`)
 
-    // Step 2: Create the xterm.js terminal and its fit addon.
+    // Step 2: Instantiate Tau's direct Ghostty VT core and its canvas surface.
     updateStatus('Creating terminal...')
 
-    term = new Terminal({
-      cols: 80,
-      rows: 24,
-      fontSize: 14,
-      fontFamily: terminalFontFamily,
-      theme: THEME,
-      cursorBlink: false,
-      cursorStyle: 'block',
-      cursorInactiveStyle: 'none',
-      scrollback: 10000,
-      allowTransparency: false,
-      convertEol: false,
-      customGlyphs: true,
-      macOptionIsMeta: true,
-      macOptionClickForcesSelection: true,
-      minimumContrastRatio: 1,
-      rescaleOverlappingGlyphs: false,
-      screenReaderMode: false,
-      smoothScrollDuration: 0,
-      allowProposedApi: true,
-      logLevel: 'warn',
-    })
-    const fitAddon = new FitAddon()
-    term.loadAddon(fitAddon)
-    terminalFitAddons.set(term, fitAddon)
-    installTerminalAddons(term)
+    term = await Terminal.create()
 
     // Step 3: Clear container and open terminal
     updateStatus('Opening terminal...')
@@ -602,14 +439,14 @@ export async function createTerminal(
 
     container.classList.add('terminal-surface-restoring')
     const wrapper = createTerminalWrapper()
+    wrapper.dataset.sessionId = sessionId
     container.replaceChildren(wrapper)
-    const finishOpen = startRendererSpan('terminal:xterm-open')
+    const finishOpen = startRendererSpan('terminal:ghostty-open')
     try {
       term.open(wrapper)
     } finally {
       finishOpen()
     }
-    installWebglRenderer(term)
     const runtime: TerminalRuntime = {
       sessionId,
       term,
@@ -650,13 +487,23 @@ export async function createTerminal(
   // Step 4: Wire IPC
   updateStatus('Wiring IPC...')
 
+  let terminalReset: Promise<void> = Promise.resolve()
   const outputWriter = createSequencedTerminalWriter(openedTerm, {
     onApplied: (seq) => {
-      markRendererEvent('terminal:xterm-write-complete')
+      markRendererEvent('terminal:ghostty-parse-complete')
       window.requestAnimationFrame(() => markRendererEvent('terminal:render-complete'))
       window.electronAPI.acknowledgeSessionOutput(sessionId, seq)
     },
     onResync: (seq) => window.electronAPI.requestSessionResync(sessionId, seq),
+    onWriteError: (error, seq) => {
+      console.error('[terminal] Ghostty VT write failed; rebuilding from daemon snapshot:', error)
+      terminalReset = openedTerm.resetCore()
+      void terminalReset
+        .then(() => window.electronAPI.requestSessionResync(sessionId, seq))
+        .catch((recoveryError) =>
+          console.error('[terminal] Ghostty VT recovery failed:', recoveryError),
+        )
+    },
   })
   terminalDiagnosticsRegistry().set(sessionId, () => outputWriter.diagnostics())
   const titleSubscription = openedTerm.onTitleChange((title) => runtime.onTitle?.(title))
@@ -727,6 +574,13 @@ export async function createTerminal(
   let resyncSnapshotFailures = 0
   async function applyLiveResyncSnapshot(frame: CurrentScreenSnapshotFrame): Promise<void> {
     if (archived || activeRuntime.disposed) return
+    try {
+      await terminalReset
+    } catch {
+      // Never acknowledge a snapshot rendered into a terminal that cannot be reset.
+      return
+    }
+    if (archived || activeRuntime.disposed) return
     if (activeRuntime.container) {
       fitTerminalToContainer(activeRuntime.container, openedTerm)
     }
@@ -746,9 +600,13 @@ export async function createTerminal(
       }
       return
     }
+    if (!outputWriter.markApplied(appliedSeq)) {
+      suppressOutputThroughSeq = previousSuppress
+      window.electronAPI.requestSessionResync(sessionId, previousSuppress)
+      return
+    }
     resyncSnapshotFailures = 0
     suppressOutputThroughSeq = Math.max(previousSuppress, appliedSeq)
-    outputWriter.markApplied(appliedSeq)
     window.electronAPI.acknowledgeSessionOutput(sessionId, appliedSeq)
     forceTerminalRender(openedTerm)
   }
@@ -780,7 +638,7 @@ export async function createTerminal(
     if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols <= 0 || rows <= 0) return
     // The visible terminal size is owned by the pane/container. Daemon resize frames are useful
     // for session history and other subscribers, but applying historical Pi resize frames directly
-    // here fights xterm's fit addon during chat/sidebar resizing and leaves stale canvas rows.
+    // here fights the pane's measured viewport during chat/sidebar resizing and leaves stale canvas rows.
     scheduleSessionFit()
   })
 
@@ -972,9 +830,6 @@ export async function createTerminal(
     if (runtime.stopResizeObserver !== stopResizeObserver) stopResizeObserver?.()
     stopResizeObserver = null
     runtime.stopResizeObserver = null
-    terminalFitAddons.delete(term)
-    terminalSearchAddons.delete(term)
-    terminalWebglAddons.delete(term)
     runtime.container?.classList.remove('terminal-surface-restoring')
     runtime.container = null
     if (terminalRuntimes.get(sessionId) === runtime) terminalRuntimes.delete(sessionId)

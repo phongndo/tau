@@ -17,3 +17,11 @@ apps/desktop/.bench-cache/
 
 apps/desktop/bench/data/
 apps/daemon/zig-pkg/
+apps/daemon/.ghostty-vt/
+apps/daemon/.ghostty-vt-*/
+
+# Built directly from the pinned Ghostty source by `bun run build:vt-web`.
+apps/desktop/public/ghostty-vt.wasm
+apps/desktop/public/ghostty-vt.wasm.tmp
+apps/desktop/public/ghostty-vt-LICENSE.txt
+apps/desktop/public/ghostty-vt.revision

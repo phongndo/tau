@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import type { SpawnSyncOptions, SpawnSyncReturns } from 'node:child_process'
+import { GHOSTTY_REVISION } from './ghostty-source'
 
 type RunOptions = {
   cwd?: string
@@ -15,16 +16,6 @@ type RunOptions = {
 type ZonDependency = {
   url: string
   hash: string
-}
-
-type NativePaths = {
-  ghosttyPath: string
-  uucodePath: string
-  tablesPath: string
-  propsPath: string
-  symbolsPath: string
-  ghosttyBuildOptionsPath: string
-  ghosttyTerminalOptionsPath: string
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -73,17 +64,6 @@ function exitFromRunResult(result: SpawnSyncReturns<Buffer>): void {
   if (result.status !== 0) process.exit(result.status ?? 1)
 }
 
-function capture(command: string, args: readonly string[], options: RunOptions = {}): Buffer {
-  const result = spawnSync(command, args, {
-    cwd: options.cwd ?? daemonRoot,
-    stdio: ['ignore', 'pipe', 'inherit'],
-    env: options.env ?? process.env,
-  })
-  if (result.error) fail(result.error.message)
-  if (result.status !== 0) process.exit(result.status ?? 1)
-  return result.stdout
-}
-
 function output(command: string, args: readonly string[], cwd = daemonRoot): string {
   const result = spawnSync(command, args, {
     cwd,
@@ -101,6 +81,24 @@ function assertZigVersion(): string {
     fail(`taud requires Zig 0.15.2; found ${version}. Run inside nix develop`)
   }
   return version
+}
+
+function ensureGhosttyNative(): string {
+  const artifactDir = resolve(daemonRoot, '.ghostty-vt')
+  const archive = resolve(artifactDir, 'libghostty-vt.a')
+  const revisionFile = resolve(artifactDir, 'revision')
+  if (
+    !existsSync(archive) ||
+    !existsSync(resolve(artifactDir, 'include/ghostty/vt.h')) ||
+    !existsSync(revisionFile) ||
+    readFileSync(revisionFile, 'utf8').trim() !== GHOSTTY_REVISION
+  ) {
+    run('nix', ['shell', 'nixpkgs#zig_0_16', '-c', 'bun', 'scripts/build-ghostty-vt-native.ts'], {
+      cwd: repoRoot,
+    })
+  }
+  if (!existsSync(archive)) fail('Ghostty native archive is missing after build')
+  return archive
 }
 
 function zonDependency(zonPath: string, name: string): ZonDependency {
@@ -153,211 +151,9 @@ function darwinBuildOptionsPath(): string {
   return path
 }
 
-function ghosttyBuildOptionsPath(dir: string): string {
-  const path = resolve(dir, 'ghostty-build-options.zig')
-  writeFileIfChanged(path, 'pub const simd = false;\n')
-  return path
-}
-
-function ghosttyTerminalOptionsPath(dir: string): string {
-  const path = resolve(dir, 'ghostty-terminal-options.zig')
-  writeFileIfChanged(
-    path,
-    `pub const Artifact = enum { ghostty, lib };
-pub const artifact: Artifact = .lib;
-pub const c_abi = false;
-pub const oniguruma = false;
-pub const simd = false;
-pub const slow_runtime_safety = true;
-pub const kitty_graphics = false;
-pub const tmux_control_mode = false;
-`,
-  )
-  return path
-}
-
 function targetArgs(): string[] {
   if (process.platform !== 'darwin') return []
   return ['-target', darwinTarget()]
-}
-
-function uucodeBuildTablesArgs({
-  ghosttyPath,
-  outputPath,
-}: {
-  ghosttyPath: string
-  outputPath: string
-}): string[] {
-  return [
-    'run',
-    ...targetArgs(),
-    '-lc',
-    '--dep',
-    'config.zig',
-    '--dep',
-    'types.zig',
-    '--dep',
-    'build_config',
-    '-Mroot=src/build/tables.zig',
-    '--dep',
-    'types.zig',
-    '-Mconfig.zig=src/config.zig',
-    '--dep',
-    'config.zig',
-    '-Mtypes.zig=src/types.zig',
-    '--dep',
-    'types.x.zig',
-    '--dep',
-    'types.zig',
-    '--dep',
-    'config.zig',
-    '-Mconfig.x.zig=src/x/config.x.zig',
-    '--dep',
-    'config.x.zig',
-    '-Mtypes.x.zig=src/x/types.x.zig',
-    '--dep',
-    'config.zig',
-    '--dep',
-    'config.x.zig',
-    '--dep',
-    'types.zig',
-    '--dep',
-    'types.x.zig',
-    `-Mbuild_config=${resolve(ghosttyPath, 'src/build/uucode_config.zig')}`,
-    '--',
-    outputPath,
-  ]
-}
-
-function uucodeModuleArgs({ uucodePath, ghosttyPath, tablesPath }: NativePaths): string[] {
-  const ghosttyUucodeConfig = resolve(ghosttyPath, 'src/build/uucode_config.zig')
-  return [
-    '--dep',
-    'types.zig',
-    '--dep',
-    'config.zig',
-    '--dep',
-    'types.x.zig',
-    '--dep',
-    'tables',
-    '--dep',
-    'get.zig',
-    `-Muucode=${resolve(uucodePath, 'src/root.zig')}`,
-    '--dep',
-    'types.zig',
-    `-Mconfig.zig=${resolve(uucodePath, 'src/config.zig')}`,
-    '--dep',
-    'config.zig',
-    '--dep',
-    'get.zig',
-    `-Mtypes.zig=${resolve(uucodePath, 'src/types.zig')}`,
-    '--dep',
-    'types.x.zig',
-    '--dep',
-    'types.zig',
-    '--dep',
-    'config.zig',
-    `-Mconfig.x.zig=${resolve(uucodePath, 'src/x/config.x.zig')}`,
-    '--dep',
-    'config.x.zig',
-    `-Mtypes.x.zig=${resolve(uucodePath, 'src/x/types.x.zig')}`,
-    '--dep',
-    'types.zig',
-    '--dep',
-    'types.x.zig',
-    '--dep',
-    'config.zig',
-    '--dep',
-    'build_config',
-    `-Mtables=${tablesPath}`,
-    '--dep',
-    'types.zig',
-    '--dep',
-    'tables',
-    `-Mget.zig=${resolve(uucodePath, 'src/get.zig')}`,
-    '--dep',
-    'config.zig',
-    '--dep',
-    'config.x.zig',
-    '--dep',
-    'types.zig',
-    '--dep',
-    'types.x.zig',
-    `-Mbuild_config=${ghosttyUucodeConfig}`,
-  ]
-}
-
-function ghosttyUnicodeGeneratorArgs(kind: 'props' | 'symbols', native: NativePaths): string[] {
-  return [
-    'run',
-    ...targetArgs(),
-    '-lc',
-    '--dep',
-    'uucode',
-    `-Mroot=src/unicode/${kind}_uucode.zig`,
-    ...uucodeModuleArgs(native),
-  ]
-}
-
-function ensureGhosttyNativeDirect(): NativePaths {
-  const ghosttyDep = zonDependency(resolve(daemonRoot, 'build.zig.zon'), 'ghostty')
-  const ghosttyPath = ensurePackage(ghosttyDep)
-  const uucodeDep = zonDependency(resolve(ghosttyPath, 'build.zig.zon'), 'uucode')
-  const uucodePath = ensurePackage(uucodeDep)
-
-  const generatedDir = resolve(daemonRoot, '.zig-cache', `ghostty-vt-${ghosttyDep.hash}`)
-  mkdirSync(generatedDir, { recursive: true })
-
-  const native = {
-    ghosttyPath,
-    uucodePath,
-    tablesPath: resolve(generatedDir, 'uucode-tables.zig'),
-    propsPath: resolve(generatedDir, 'props.zig'),
-    symbolsPath: resolve(generatedDir, 'symbols.zig'),
-    ghosttyBuildOptionsPath: ghosttyBuildOptionsPath(generatedDir),
-    ghosttyTerminalOptionsPath: ghosttyTerminalOptionsPath(generatedDir),
-  }
-
-  if (!existsSync(native.tablesPath)) {
-    run('zig', uucodeBuildTablesArgs({ ghosttyPath, outputPath: native.tablesPath }), {
-      cwd: uucodePath,
-    })
-  }
-  if (!existsSync(native.propsPath)) {
-    writeFileSync(
-      native.propsPath,
-      capture('zig', ghosttyUnicodeGeneratorArgs('props', native), { cwd: ghosttyPath }),
-    )
-  }
-  if (!existsSync(native.symbolsPath)) {
-    writeFileSync(
-      native.symbolsPath,
-      capture('zig', ghosttyUnicodeGeneratorArgs('symbols', native), { cwd: ghosttyPath }),
-    )
-  }
-
-  return native
-}
-
-function ghosttyModuleArgs(native: NativePaths): string[] {
-  return [
-    '--dep',
-    'uucode',
-    '--dep',
-    'unicode_tables',
-    '--dep',
-    'symbols_tables',
-    '--dep',
-    'terminal_options',
-    '--dep',
-    'build_options=ghostty_build_options',
-    `-Mghostty-vt=${resolve(native.ghosttyPath, 'src/lib_vt.zig')}`,
-    ...uucodeModuleArgs(native),
-    `-Municode_tables=${native.propsPath}`,
-    `-Msymbols_tables=${native.symbolsPath}`,
-    `-Mterminal_options=${native.ghosttyTerminalOptionsPath}`,
-    `-Mghostty_build_options=${native.ghosttyBuildOptionsPath}`,
-  ]
 }
 
 function directCompileArgs({
@@ -372,7 +168,7 @@ function directCompileArgs({
   const sqliteAmalgamation = zonDependency(resolve(zigSqlitePath, 'build.zig.zon'), 'sqlite')
   const sqliteAmalgamationPath = ensurePackage(sqliteAmalgamation)
   const buildOptionsPath = darwinBuildOptionsPath()
-  const ghosttyNative = ensureGhosttyNativeDirect()
+  const ghosttyArchive = ensureGhosttyNative()
 
   const args = [
     root === 'main' ? 'build-exe' : 'test',
@@ -397,20 +193,10 @@ function directCompileArgs({
       'sqlite',
       '--dep',
       'build_options=taud_build_options',
-      '--dep',
-      'ghostty-vt',
       '-Mtaud=src/root.zig',
     )
   } else {
-    args.push(
-      '--dep',
-      'sqlite',
-      '--dep',
-      'build_options=taud_build_options',
-      '--dep',
-      'ghostty-vt',
-      '-Mroot=src/root.zig',
-    )
+    args.push('--dep', 'sqlite', '--dep', 'build_options=taud_build_options', '-Mroot=src/root.zig')
   }
 
   args.push(
@@ -420,7 +206,9 @@ function directCompileArgs({
     sqliteAmalgamationPath,
     `-Msqlite=${resolve(zigSqlitePath, 'sqlite.zig')}`,
     `-Mtaud_build_options=${buildOptionsPath}`,
-    ...ghosttyModuleArgs(ghosttyNative),
+    '-I',
+    resolve(daemonRoot, '.ghostty-vt/include'),
+    ghosttyArchive,
     '-lc',
   )
   if (process.platform === 'linux') args.push('-lutil')
@@ -512,6 +300,8 @@ if (process.platform === 'win32') {
       fail(`Unknown taud zig command: ${command}`)
   }
 }
+
+ensureGhosttyNative()
 
 if (process.platform !== 'darwin' || process.env.TAUD_USE_ZIG_BUILD === '1') {
   switch (command) {

@@ -32,17 +32,6 @@ pub fn build(b: *std.Build) void {
     });
     const sqlite_module = zig_sqlite.module("sqlite");
 
-    const ghostty = b.dependency("ghostty", .{
-        .target = target,
-        .optimize = optimize,
-
-        // Keep the daemon build self-contained and avoid linking Ghostty's
-        // vendored SIMD C++ objects into taud. This still uses the upstream
-        // libghostty-vt parser/state machine; only the SIMD fast paths are off.
-        .simd = false,
-    });
-    const ghostty_vt_module = ghostty.module("ghostty-vt");
-
     const mod = b.addModule("taud", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -54,7 +43,8 @@ pub fn build(b: *std.Build) void {
     });
     mod.addOptions("build_options", options);
     mod.addImport("sqlite", sqlite_module);
-    mod.addImport("ghostty-vt", ghostty_vt_module);
+    mod.addIncludePath(b.path(".ghostty-vt/include"));
+    mod.addObjectFile(b.path(".ghostty-vt/libghostty-vt.a"));
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -67,6 +57,8 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "taud", .module = mod }},
     });
     exe_mod.addOptions("build_options", options);
+    exe_mod.addIncludePath(b.path(".ghostty-vt/include"));
+    exe_mod.addObjectFile(b.path(".ghostty-vt/libghostty-vt.a"));
     if (target.result.os.tag == .linux) exe_mod.linkSystemLibrary("util", .{});
 
     const exe = b.addExecutable(.{

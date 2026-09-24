@@ -65,15 +65,15 @@ if (process.platform === 'linux') app.commandLine.appendSwitch('password-store',
 
 // GPU: enable hardware rasterization for terminal renderer layers.
 // Without this, Chromium may fall back to software rasterization
-// which is slower for WebGL canvas composition and fallback rendering.
+// which is slower for the Ghostty canvas surface.
 app.commandLine.appendSwitch('enable-gpu-rasterization')
 app.commandLine.appendSwitch('enable-zero-copy')
 app.commandLine.appendSwitch('enable-native-gpu-memory-buffers')
 
-// Leave Chromium's software rasterizer fallback available so WebGL can recover
-// on machines without a working hardware context.
+// Leave Chromium's software rasterizer fallback available on machines
+// without a working hardware context.
 
-// Keep the accelerated 2D canvas path available for xterm.js fallback rendering.
+// Keep the accelerated 2D canvas path available for Tau's terminal surface.
 app.commandLine.appendSwitch('enable-accelerated-2d-canvas')
 
 // Disable unused Chromium features to reduce memory footprint
@@ -219,7 +219,7 @@ function createWindow(): BrowserWindowInstance {
       enableWebSQL: false,
       spellcheck: false,
 
-      // xterm.js WebGL renderer needs Chromium's GPU path.
+      // Use a visible Chromium renderer for the terminal canvas.
       offscreen: false,
 
       // Disable unnecessary renderer features
@@ -1396,6 +1396,78 @@ async function runElectronSmoke(): Promise<void> {
   })
   const beforeMetrics = await waitForElectronSmokeBaseline(window, () => smokeSettled)
   const result = await smokePromise
+  if (process.env.TAU_ELECTRON_SMOKE_SURFACE === '1') {
+    await withTimeout(
+      window.webContents.executeJavaScript(
+        `new Promise((resolve, reject) => {
+          const deadline = performance.now() + 10000;
+          const inspect = () => {
+            const error = document.querySelector('.terminal-error');
+            if (error) return reject(new Error(error.textContent || 'Terminal surface failed'));
+            const canvas = document.querySelector('.tau-native-terminal-canvas');
+            const input = document.querySelector('.tau-native-terminal-input');
+            if (canvas && input && canvas.width > 0 && canvas.height > 0 &&
+                performance.getEntriesByName('tau:terminal:ready').length > 0) {
+              const sessionId = canvas.closest('[data-session-id]')?.dataset.sessionId;
+              if (!sessionId) return reject(new Error('Tau canvas is not bound to a session'));
+              const before = canvas.toDataURL();
+              input.focus();
+              input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'a', code: 'KeyA' }));
+              const verify = () => {
+                if (canvas.toDataURL() !== before) {
+                  const readable = document.querySelector('.tau-native-terminal-screen-reader');
+                  if (!readable?.textContent?.trim()) return reject(new Error('Tau screen-reader viewport is empty'));
+                  return resolve({ width: canvas.width, height: canvas.height, sessionId });
+                }
+                if (performance.now() >= deadline) return reject(new Error('Tau canvas did not paint keyboard echo'));
+                setTimeout(verify, 30);
+              };
+              setTimeout(verify, 30);
+              return;
+            }
+            if (performance.now() >= deadline) return reject(new Error('Tau canvas did not mount'));
+            setTimeout(inspect, 20);
+          };
+          inspect();
+        })`,
+        true,
+      ),
+      ELECTRON_SMOKE_TIMEOUT_MS,
+      'Electron Ghostty canvas surface',
+    )
+  }
+  if (process.env.TAU_ELECTRON_SMOKE_IMAGE === '1') {
+    const red = Buffer.alloc(8 * 8 * 4)
+    for (let pixel = 0; pixel < red.length; pixel += 4) {
+      red[pixel] = 255
+      red[pixel + 3] = 255
+    }
+    const command =
+      String.raw`printf '\033_Ga=T,f=32,s=8,v=8,i=733;${red.toString('base64')}\033\\'` + '\n'
+    await withTimeout(
+      window.webContents.executeJavaScript(
+        `new Promise((resolve, reject) => {
+          const canvas = document.querySelector('.tau-native-terminal-canvas');
+          if (!canvas) return reject(new Error('Tau canvas not mounted for image smoke'));
+          const context = canvas.getContext('2d', { alpha: false });
+          const deadline = performance.now() + 10000;
+          window.electronAPI.writeSessionInput(${JSON.stringify(result.sessionId)}, ${JSON.stringify(command)});
+          const inspect = () => {
+            const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+            for (let i = 0; i < pixels.length; i += 4) {
+              if (pixels[i] === 255 && pixels[i + 1] === 0 && pixels[i + 2] === 0) return resolve(true);
+            }
+            if (performance.now() >= deadline) return reject(new Error('Ghostty inline Kitty image did not paint red pixels'));
+            setTimeout(inspect, 100);
+          };
+          inspect();
+        })`,
+        true,
+      ),
+      ELECTRON_SMOKE_TIMEOUT_MS,
+      'Electron Ghostty inline image',
+    )
+  }
   let reloadSessionResults = [result]
   let reloadUiStateSetupResult: unknown = null
   let reloadUiStateResult: unknown = null

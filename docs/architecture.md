@@ -10,7 +10,7 @@ Tau's desktop is a client of the Zig `taud` daemon. The daemon owns PTYs, sessio
 | Graph validation, revisions, persistence   | [`apps/daemon/src/mux_graph.zig`](../apps/daemon/src/mux_graph.zig) and [`daemon/control.zig`](../apps/daemon/src/daemon/control.zig) |
 | PTY lifecycle, streams and resource limits | [`apps/daemon/src/`](../apps/daemon/src/) (`session.zig`, `rpc.zig`, `limits.zig`, `daemon/`)                                         |
 | Daemon connection and renderer IPC         | [`apps/desktop/src/main/`](../apps/desktop/src/main/) (`taud-client.ts`, `taud-pty-bridge.ts`, `index.ts`)                            |
-| Renderer layout and terminal presentation  | [`apps/desktop/src/renderer/`](../apps/desktop/src/renderer/) (`state/store.ts`, `terminal.ts`, `terminal-output-writer.ts`)          |
+| Renderer layout and terminal presentation  | [`apps/desktop/src/renderer/`](../apps/desktop/src/renderer/) (`state/store.ts`, `terminal.ts`, `tau-terminal.ts`, `ghostty-vt.ts`)   |
 
 The renderer keeps an interactive projection of tabs and panes. Graph replacement goes through Electron main to `taud`; mutations carry an expected revision to reject stale writes. The daemon validates snapshots, increments `graphRev` and `eventSeq`, and persists a checksummed graph with a previous checkpoint for recovery. Pane identity and session identity are separate: closing or replacing a view does not by itself mean killing its PTY. Read [terminal byte path](terminal-byte-path.md) when changing stream ownership, acknowledgements or reload behavior.
 

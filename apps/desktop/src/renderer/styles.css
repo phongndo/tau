@@ -1058,29 +1058,10 @@ body {
   outline-offset: 1px;
 }
 
-/* ── xterm.js renderer layers ── */
-.terminal-surface .xterm {
+/* ── Tau-owned Ghostty canvas surface ── */
+.terminal-surface .tau-native-terminal {
   width: 100%;
   height: 100%;
-}
-
-.terminal-surface .xterm-viewport {
-  background-color: var(--tau-terminal-background);
-}
-
-.terminal-surface .xterm-screen,
-.terminal-surface .xterm-helpers {
-  outline: none;
-}
-
-.terminal-surface .xterm-screen {
-  position: relative;
-}
-
-.terminal-surface .xterm-image-layer {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
 }
 
 .terminal-surface canvas {

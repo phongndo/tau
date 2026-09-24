@@ -263,6 +263,11 @@ pub const TerminalSession = struct {
         if (self.vt_terminal) |*terminal| try terminal.write(payload);
     }
 
+    pub fn disableVtSnapshots(self: *TerminalSession, allocator: std.mem.Allocator) void {
+        if (self.vt_terminal) |*terminal| terminal.deinit(allocator);
+        self.vt_terminal = null;
+    }
+
     pub fn resizeVt(self: *TerminalSession, allocator: std.mem.Allocator, cols: u16, rows: u16) !void {
         self.assertInvariants();
         if (cols == 0 or rows == 0) return error.InvalidSize;
@@ -638,6 +643,24 @@ test "terminal session owns VT state for output and resize" {
     try std.testing.expect(std.mem.indexOf(u8, text, "   vt") != null);
     try std.testing.expectEqual(@as(u16, 12), created.cols);
     try std.testing.expectEqual(@as(u16, 4), created.rows);
+}
+
+test "terminal session never snapshots a VT state after it is disabled" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    const created = try manager.create(.{
+        .session_id = "session-vt-failed",
+        .terminal_id = "term-vt-failed",
+        .cols = 10,
+        .rows = 3,
+        .cwd = null,
+        .argv = &.{},
+    });
+    try created.writeVt("before failure");
+    created.disableVtSnapshots(std.testing.allocator);
+    try created.writeVt("more PTY output");
+    try std.testing.expect((try created.currentScreenSnapshotAlloc(std.testing.allocator)) == null);
+    try std.testing.expect((try created.currentScreenTextAlloc(std.testing.allocator)) == null);
 }
 
 fn sessionCreateForAllocationFailure(allocator: std.mem.Allocator) !void {

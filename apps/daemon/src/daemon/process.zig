@@ -119,7 +119,10 @@ pub fn Context(comptime Daemon: type) type {
             const item = daemon.sessions.find(session_id) orelse return;
             item.assertInvariants();
             item.writeVt(payload) catch |err| {
-                std.log.warn("failed to feed VT state for {s}: {t}", .{ item.id, err });
+                // Never publish a possibly divergent screen snapshot after Ghostty reports a
+                // terminal-owned semantic failure. The event log and PTY byte stream remain live.
+                std.log.err("disabling VT snapshots for {s}: {t}", .{ item.id, err });
+                item.disableVtSnapshots(daemon.allocator);
             };
             const seq = seq: {
                 if (item.event_log_path) |path| {

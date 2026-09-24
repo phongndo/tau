@@ -34,7 +34,7 @@ export type SequencedTerminalWriter = {
   /** Hand off private bytes. The caller must not read or mutate them after this returns. */
   writeOwned(data: Uint8Array, seq: number): void
   /** Advance the applied cursor after a resync snapshot replaces dropped output. */
-  markApplied(seq: number): void
+  markApplied(seq: number): boolean
   flush(): void
   drain(): Promise<void>
   diagnostics(): TerminalOutputWriterDiagnostics
@@ -43,7 +43,7 @@ export type SequencedTerminalWriter = {
 
 /**
  * Production byte writer. Queue entries remain complete daemon frames: bytes are never sliced in
- * the middle of UTF-8 or ANSI sequences. If xterm falls behind, queued presentation frames are
+ * the middle of UTF-8 or ANSI sequences. If the VT parser falls behind, queued presentation frames are
  * replaced by a sequence-aware daemon snapshot instead of pretending dropped bytes were applied.
  */
 export function createSequencedTerminalWriter(
@@ -51,6 +51,7 @@ export function createSequencedTerminalWriter(
   options: {
     onApplied(seq: number): void
     onResync(lastAppliedSeq: number): void
+    onWriteError?(error: unknown, lastAppliedSeq: number): void
     maxQueuedBytes?: number
   },
 ): SequencedTerminalWriter {
@@ -61,6 +62,8 @@ export function createSequencedTerminalWriter(
   let queuedBytes = 0
   let writing = false
   let disposed = false
+  let waitingForSnapshot = false
+  let minimumSnapshotSeq = 0
   let scheduled: ReturnType<typeof setTimeout> | null = null
   let lastAppliedSeq = 0
   let drainWaiters: Array<() => void> = []
@@ -86,7 +89,8 @@ export function createSequencedTerminalWriter(
     for (const resolve of waiters) resolve()
   }
   const schedule = () => {
-    if (disposed || writing || scheduled !== null || head === queue.length) return
+    if (disposed || writing || waitingForSnapshot || scheduled !== null || head === queue.length)
+      return
     scheduled = setTimeout(process, 0)
   }
   // Reused for every write; don't retain the completed frame's byte buffer in a closure.
@@ -107,7 +111,7 @@ export function createSequencedTerminalWriter(
   const process = () => {
     if (scheduled !== null) clearTimeout(scheduled)
     scheduled = null
-    if (disposed || writing) return
+    if (disposed || writing || waitingForSnapshot) return
     const first = queue[head]
     if (!first) {
       resolveDrains()
@@ -146,10 +150,37 @@ export function createSequencedTerminalWriter(
     writing = true
     inFlightBytes = bytes
     writeStartedAt = now()
-    term.write(data, onWriteComplete)
+    try {
+      term.write(data, onWriteComplete)
+    } catch (error) {
+      // A rejected VT write must never be acknowledged. Drop its unparseable suffix and rebuild
+      // from a daemon snapshot after the surface has been reset.
+      writing = false
+      const lastQueuedSeq = queue.at(-1)?.seq ?? inFlightSeq
+      queue.length = 0
+      head = 0
+      queuedBytes = 0
+      waitingForSnapshot = true
+      minimumSnapshotSeq = Math.max(minimumSnapshotSeq, inFlightSeq, lastQueuedSeq)
+      if (options.onWriteError) options.onWriteError(error, lastAppliedSeq)
+      else options.onResync(lastAppliedSeq)
+      resolveDrains()
+    }
   }
   const enqueue = (data: Uint8Array, seq: number, owned: boolean) => {
     if (disposed || data.byteLength === 0) return
+    // While repairing a gap, retain later output (up to the queue bound). A snapshot can then
+    // repair only the missing prefix and replay buffered suffix frames without another resync.
+    // Never parse or acknowledge those frames before the snapshot applies.
+    if (waitingForSnapshot && queuedBytes + data.byteLength > maxQueuedBytes) {
+      droppedWriteQueueChunksTotal += queue.length - head + 1
+      droppedWriteQueueCharsTotal += queuedBytes + data.byteLength
+      queue.length = 0
+      head = 0
+      queuedBytes = 0
+      minimumSnapshotSeq = Math.max(minimumSnapshotSeq, seq)
+      return
+    }
     if (seq <= lastAppliedSeq) {
       // A duplicate still needs an acknowledgement to release main's backlog entry.
       options.onApplied(lastAppliedSeq)
@@ -162,6 +193,8 @@ export function createSequencedTerminalWriter(
       queue.length = 0
       head = 0
       queuedBytes = 0
+      waitingForSnapshot = true
+      minimumSnapshotSeq = Math.max(minimumSnapshotSeq, seq)
       resyncCount += 1
       options.onResync(lastAppliedSeq)
       return
@@ -182,7 +215,9 @@ export function createSequencedTerminalWriter(
     write: (data, seq) => enqueue(data, seq, false),
     writeOwned: (data, seq) => enqueue(data, seq, true),
     markApplied(seq) {
-      if (disposed || seq <= 0) return
+      // A concurrent older resync response cannot repair a frame dropped later. Reject it
+      // without reopening the writer or moving the contiguous acknowledgement cursor.
+      if (disposed || seq <= 0 || (waitingForSnapshot && seq < minimumSnapshotSeq)) return false
       lastAppliedSeq = Math.max(lastAppliedSeq, seq)
       let retained = 0
       let retainedBytes = 0
@@ -196,7 +231,11 @@ export function createSequencedTerminalWriter(
       queue.length = retained
       head = 0
       queuedBytes = retainedBytes
+      waitingForSnapshot = false
+      minimumSnapshotSeq = 0
+      schedule()
       resolveDrains()
+      return true
     },
     flush: process,
     drain() {
@@ -232,6 +271,7 @@ export function createSequencedTerminalWriter(
       head = 0
       queuedBytes = 0
       writing = false
+      waitingForSnapshot = false
       resolveDrains()
     },
   }

@@ -9,12 +9,12 @@ PTY master read (taud, Zig)
   -> TaudPtyBridge: exact-sized owned copy -> per-session MessagePortMain
   -> preload: binary frame dispatch (bounded startup buffer if nobody subscribes)
   -> contextBridge callback -> renderer-owned Uint8Array
-  -> sequenced writer: bounded batches of complete frames -> xterm.write(bytes)
-  -> xterm callback -> acknowledge highest applied sequence -> main releases backlog
-  -> xterm WebGL/default renderer presents the terminal
+  -> sequenced writer: bounded batches of complete frames -> Ghostty WASM VT parser
+  -> successful parse callback -> acknowledge highest applied sequence -> main releases backlog
+  -> Tau canvas renders Ghostty render-state frames on requestAnimationFrame
 ```
 
-An xterm write callback confirms parser application, **not** physical display presentation.
+The write callback confirms Ghostty parser application, **not** physical display presentation. A failed parse triggers a new WASM terminal and daemon snapshot resynchronization; the writer retains a bounded later-output suffix until a snapshot applies, dropping it only if the queue limit is exceeded. A stale snapshot cannot advance the acknowledgement cursor past missing frames. The native daemon and browser build share the revision in [`scripts/ghostty-source.ts`](../scripts/ghostty-source.ts). The WASM build applies narrow, verified browser-only patches for inline Kitty graphics (no host file access); `taud` uses the same upstream C ABI without those patches.
 
 ## Ownership and allocation rules
 
@@ -22,9 +22,9 @@ An xterm write callback confirms parser application, **not** physical display pr
 - The renderer receives private bytes through `contextBridge`. Production uses `writeOwned` to hand them to the writer; callers must not reuse/mutate handed-off bytes. `write` still snapshots borrowed input. Small views are copied even on the owned path so they cannot pin oversized backing buffers.
 - Before either a binary or text subscriber exists, preload retains one shared startup-byte queue, bounded to 1 MiB per session. Overflow clears it and requests a sequence-aware resync. Subscribing consumes and removes that queue. There is no second text-history buffer.
 - `onPtyData` is compatibility-only. A text decoder exists only while a session has text subscribers and decodes with `stream: true`. It is released on the last unsubscribe or session cleanup. Late text subscribers receive unconsumed startup bytes, not a duplicate history of output already delivered to binary subscribers. Normal binary sessions perform no compatibility text decoding.
-- The writer checks its 4 MiB queued-byte bound before allocating. Overflow discards queued presentation frames and requests a snapshot; it does not acknowledge discarded frames. One outstanding xterm write is additional to that queue budget.
+- The writer checks its 4 MiB queued-byte bound before allocating. Overflow discards queued presentation frames and requests a snapshot; it does not acknowledge discarded frames. One outstanding Ghostty write is additional to that queue budget.
 - Already-queued complete frames are coalesced into at most 64 KiB / 128-frame batches. A single larger frame stays intact. An isolated owned frame incurs no writer byte-buffer copy. Multi-frame batches allocate one aggregate buffer. This reduces buffer-object churn, write callbacks and acknowledgements; it does not make copying of batched bytes disappear.
-- Consumed queue entries are cleared immediately. The queue uses a cursor with periodic in-place compaction rather than shifting every frame. Snapshot filtering compacts in place, and disposing clears queued ownership and ignores late xterm callbacks.
+- Consumed queue entries are cleared immediately. The queue uses a cursor with periodic in-place compaction rather than shifting every frame. Snapshot filtering compacts in place, and disposing clears queued ownership and ignores late parse callbacks.
 - Acknowledgement occurs only after the whole batch is applied. The writer yields between batches using a task; it does not wait for more frames just to fill a batch. The existing snapshot recovery path and main's byte/frame backlog bounds remain in place.
 
 ## Reload and port teardown
@@ -39,7 +39,7 @@ still propagate. Reload recovery continues to use a fresh daemon snapshot, not a
 ## Input
 
 ```text
-xterm onData/onBinary (renderer)
+Tau terminal keyboard/mouse/paste encoders and Ghostty PTY-response callback (renderer)
   -> contextBridge API with primitive string + encoding
   -> preload's reusable TextEncoder (or binary-byte conversion)
   -> session MessagePort: cloned input buffer
@@ -55,6 +55,6 @@ Input bypasses the output batching queue. Keep context isolation, sandboxing, an
 For performance work distinguish:
 
 - Decoder/buffer construction counts and retained queue bytes: deterministic allocation probes.
-- Writer + xterm throughput: isolate the writer with the same Electron/xterm versions and byte workload, and check final screen content.
+- Writer + Ghostty throughput: isolate the writer with the packaged Ghostty WASM and byte workload, and check final screen content.
 - Packaged input/output smoke: checks transport and counters, not full terminal presentation throughput.
 - Frame presentation, idle CPU and RSS: use a real display/GPU; Xvfb does not establish hardware rendering performance. The benchmark commands and enforced smoke thresholds live in the root and desktop `package.json` files.

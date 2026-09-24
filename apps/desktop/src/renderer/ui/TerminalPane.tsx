@@ -1,4 +1,4 @@
-import type { Terminal } from '@xterm/xterm'
+import type { TauTerminal as Terminal } from '../tau-terminal'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import {
   clearTerminalSearch,

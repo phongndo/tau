@@ -23,6 +23,75 @@ function fixture(options: { maxQueuedBytes?: number } = {}) {
   return { writer, writes, callbacks, acks, resyncs }
 }
 
+test('a failed VT parse never acknowledges rejected bytes and requests resync', async () => {
+  const acks: number[] = []
+  const failures: Array<{ error: unknown; seq: number }> = []
+  const writer = createSequencedTerminalWriter(
+    {
+      write: () => {
+        throw new Error('Ghostty VT semantic failure')
+      },
+    },
+    {
+      onApplied: (seq) => acks.push(seq),
+      onResync: () => {
+        throw new Error('unexpected normal resync')
+      },
+      onWriteError: (error, seq) => failures.push({ error, seq }),
+    },
+  )
+  try {
+    writer.writeOwned(Uint8Array.of(0x1b), 1)
+    writer.flush()
+    await writer.drain()
+    expect(acks).toEqual([])
+    expect(failures).toHaveLength(1)
+    expect(failures[0].seq).toBe(0)
+  } finally {
+    writer.dispose()
+  }
+})
+
+test('a failed parse suspends later writes and acknowledgements until a snapshot is applied', () => {
+  let calls = 0
+  const acks: number[] = []
+  const failed: number[] = []
+  const writer = createSequencedTerminalWriter(
+    {
+      write: (_bytes, callback) => {
+        calls++
+        if (calls === 1) throw new Error('Ghostty parser failed')
+        callback?.()
+      },
+    },
+    {
+      onApplied: (seq) => acks.push(seq),
+      onResync: () => {
+        throw new Error('unexpected resync')
+      },
+      onWriteError: (_error, seq) => failed.push(seq),
+    },
+  )
+  try {
+    writer.writeOwned(Uint8Array.of(1), 1)
+    writer.flush()
+    writer.writeOwned(Uint8Array.of(2), 2)
+    writer.flush()
+    expect(calls).toBe(1)
+    expect(failed).toEqual([0])
+    expect(acks).toEqual([])
+    expect(writer.markApplied(1)).toBe(true) // snapshot covers failed frame 1
+    writer.flush() // post-failure frame 2 was buffered, not discarded
+    expect(calls).toBe(2)
+    expect(acks).toEqual([2])
+    writer.writeOwned(Uint8Array.of(3), 3)
+    writer.flush()
+    expect(acks).toEqual([2, 3])
+  } finally {
+    writer.dispose()
+  }
+})
+
 test('owned exact-sized output is written without a second byte copy', () => {
   const f = fixture()
   try {
@@ -58,7 +127,7 @@ test('borrowed output is snapshotted and owned small views cannot retain large b
   }
 })
 
-test('batches complete frames up to 64 KiB and only acknowledges on xterm completion', () => {
+test('batches complete frames up to 64 KiB and only acknowledges on parser completion', () => {
   const f = fixture()
   try {
     for (let seq = 1; seq <= 20; seq++) f.writer.writeOwned(new Uint8Array(4096).fill(seq), seq)
@@ -66,7 +135,7 @@ test('batches complete frames up to 64 KiB and only acknowledges on xterm comple
     expect(f.writes.map((data) => data.byteLength)).toEqual([65536])
     expect(f.acks).toEqual([])
     for (let seq = 1; seq <= 16; seq++) expect(f.writes[0][(seq - 1) * 4096]).toBe(seq)
-    f.writer.flush() // cannot overlap an outstanding xterm write
+    f.writer.flush() // cannot overlap an outstanding parser write
     expect(f.writes.length).toBe(1)
     f.callbacks.shift()!()
     expect(f.acks).toEqual([16])
@@ -128,6 +197,42 @@ test('overflow clears queued ownership, counts rejected bytes, and requests resy
     })
     f.callbacks.shift()!()
     expect(f.acks).toEqual([1]) // discarded frames are never acknowledged
+    f.writer.writeOwned(Uint8Array.of(4), 4)
+    f.writer.flush()
+    expect(f.writes).toHaveLength(1)
+    expect(f.resyncs).toEqual([0]) // do not flood resync requests while waiting
+    expect(f.writer.markApplied(3)).toBe(true) // frame 4 is buffered for replay
+    f.writer.flush()
+    expect(f.writes).toHaveLength(2)
+    f.callbacks.shift()!()
+    expect(f.acks).toEqual([1, 4])
+    f.writer.writeOwned(Uint8Array.of(5), 5)
+    f.writer.flush()
+    f.callbacks.shift()!()
+    expect(f.acks).toEqual([1, 4, 5])
+  } finally {
+    f.writer.dispose()
+  }
+})
+
+test('a second overflow while waiting rejects older snapshots but replays later output', () => {
+  const f = fixture({ maxQueuedBytes: 2 })
+  try {
+    f.writer.writeOwned(Uint8Array.of(1), 1)
+    f.writer.flush()
+    f.writer.writeOwned(Uint8Array.of(2, 2), 2)
+    f.writer.writeOwned(Uint8Array.of(3, 3), 3) // overflow: snapshot must cover sequence 3
+    f.writer.writeOwned(Uint8Array.of(4), 4)
+    f.writer.writeOwned(Uint8Array.of(5, 5), 5) // buffer overflows again while paused
+    f.writer.writeOwned(Uint8Array.of(6), 6)
+    f.callbacks.shift()!()
+    expect(f.writer.markApplied(4)).toBe(false)
+    expect(f.writer.markApplied(5)).toBe(true)
+    f.writer.flush()
+    expect([...f.writes[1]]).toEqual([6])
+    f.callbacks.shift()!()
+    expect(f.acks).toEqual([1, 6])
+    expect(f.resyncs).toEqual([0])
   } finally {
     f.writer.dispose()
   }
@@ -174,7 +279,7 @@ test('queue compaction preserves order and accounting across thousands of frames
   }
 })
 
-test('synchronous xterm callbacks still yield between bounded batches and resolve drain', async () => {
+test('synchronous parser callbacks still yield between bounded batches and resolve drain', async () => {
   const acks: number[] = []
   const writer = createSequencedTerminalWriter(
     { write: (_data, done) => done?.() },
@@ -203,7 +308,7 @@ test('synchronous xterm callbacks still yield between bounded batches and resolv
   }
 })
 
-test('disposing while xterm is writing releases drains and suppresses late callbacks', async () => {
+test('disposing while the parser is writing releases drains and suppresses late callbacks', async () => {
   const f = fixture()
   f.writer.writeOwned(Uint8Array.of(1), 1)
   const draining = f.writer.drain()
