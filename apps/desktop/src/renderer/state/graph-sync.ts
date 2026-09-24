@@ -125,6 +125,7 @@ export function startGraphSync(onLoaded: () => void): () => void {
       if (
         applying ||
         (state.tabs === previous.tabs &&
+          state.workspaces === previous.workspaces &&
           state.panes === previous.panes &&
           state.activeTabId === previous.activeTabId &&
           state.activePaneId === previous.activePaneId)

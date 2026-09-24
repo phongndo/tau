@@ -75,8 +75,8 @@ input:focus-visible {
   -webkit-app-region: no-drag;
 }
 .sidebar {
-  width: 196px;
-  flex: 0 0 196px;
+  width: var(--sidebar-width, 196px);
+  flex: 0 0 var(--sidebar-width, 196px);
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -89,9 +89,54 @@ input:focus-visible {
 .sidebar-header {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   flex: 0 0 38px;
   padding: 0 10px;
+}
+.sidebar-header span {
+  padding-left: 8px;
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 600;
+}
+.macos .sidebar-header span {
+  display: none;
+}
+.macos .sidebar-header {
+  justify-content: flex-end;
+}
+.sidebar-resize {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 6px;
+  min-width: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+.sidebar-resize::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 2px;
+  width: 1px;
+  background: var(--edge);
+}
+.sidebar-resize:hover::before,
+.sidebar-resize:active::before,
+.sidebar-resize:focus-visible::before {
+  background: var(--accent);
+}
+.workspace-name-input {
+  width: 100%;
+  min-width: 0;
+  flex: 1;
+  margin: 0 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
 }
 .sidebar-add,
 .topbar-icon,
@@ -209,7 +254,11 @@ input:focus-visible {
   stroke-linejoin: round;
 }
 .sidebar-hidden .sidebar,
+.sidebar-hidden .sidebar-resize,
 .settings-open .sidebar {
+  display: none;
+}
+.settings-open .sidebar-resize {
   display: none;
 }
 .workspace {
@@ -243,7 +292,7 @@ input:focus-visible {
   display: grid !important;
 }
 .topbar-tabstrip {
-  display: none;
+  display: flex;
   flex: 1;
   min-width: 0;
   gap: 2px;
@@ -301,9 +350,6 @@ input:focus-visible {
 .topbar-tab-close:hover {
   background: var(--hover);
   color: var(--text);
-}
-.sidebar-hidden .topbar-tabstrip {
-  display: flex;
 }
 .workspace-body {
   flex: 1;
@@ -374,25 +420,32 @@ input:focus-visible {
   min-height: 0;
   overflow: hidden;
 }
-.split-layout .pane-tile-active::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  box-shadow: inset 0 0 0 1px rgb(159 184 212 / 38%);
-  pointer-events: none;
-}
 .split-handle {
-  flex: 0 0 4px;
+  position: relative;
+  z-index: 1;
+  flex: 0 0 5px;
   margin: 0;
   border: 0;
-  background: var(--chrome);
+  background: transparent;
   cursor: col-resize;
+}
+.split-handle::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 2px;
+  width: 1px;
+  background: rgb(255 255 255 / 12%);
 }
 .split-column > .split-handle {
   cursor: row-resize;
 }
-.split-handle:hover {
-  background: var(--accent);
+.split-column > .split-handle::after {
+  inset: 2px 0 auto;
+  width: auto;
+  height: 1px;
+}
+.split-handle:hover::after {
+  background: rgb(159 184 212 / 50%);
 }
 .terminal-container {
   position: relative;
@@ -530,8 +583,8 @@ input:focus-visible {
 .settings-nav {
   display: flex;
   flex-direction: column;
-  width: 174px;
-  flex: 0 0 174px;
+  width: 220px;
+  flex: 0 0 220px;
   padding: 12px 9px;
   background: var(--sidebar);
   -webkit-app-region: drag;
@@ -560,7 +613,93 @@ input:focus-visible {
   text-align: left;
 }
 .settings-back {
-  margin-bottom: 22px;
+  margin-bottom: 12px;
+}
+.settings-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  margin: 0 2px 14px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 6%);
+  -webkit-app-region: no-drag;
+}
+.settings-search:focus-within {
+  box-shadow: inset 0 0 0 1px rgb(159 184 212 / 55%);
+}
+.settings-search svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  fill: none;
+  stroke: var(--subtle);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+.settings-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+}
+.settings-search input:focus-visible {
+  outline: 0;
+}
+.settings-search input::-webkit-search-cancel-button {
+  display: none;
+}
+.settings-search-hint {
+  color: var(--subtle);
+  font:
+    11px ui-monospace,
+    monospace;
+}
+.settings-search-clear {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 17px;
+}
+.settings-nav-items,
+.settings-search-results {
+  min-height: 0;
+  overflow-y: auto;
+}
+.settings-search-result {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 1px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+.settings-search-result:hover,
+.settings-search-result.current {
+  background: var(--selected);
+}
+.settings-search-result-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+.settings-search-result-section,
+.settings-search-empty {
+  color: var(--subtle);
+  font-size: 11px;
+}
+.settings-search-empty {
+  padding: 0 10px;
 }
 .settings-back:hover,
 .settings-nav-item:hover {
@@ -601,6 +740,11 @@ input:focus-visible {
   gap: 18px;
   min-height: 51px;
   padding: 8px 0;
+}
+.setting-row-highlighted {
+  border-radius: 6px;
+  background: rgb(159 184 212 / 10%);
+  box-shadow: 0 0 0 5px rgb(159 184 212 / 10%);
 }
 .setting-copy {
   min-width: 0;
@@ -747,6 +891,9 @@ input:focus-visible {
   .sidebar {
     display: none;
   }
+  .sidebar-resize {
+    display: none;
+  }
   .topbar-tabstrip {
     display: flex;
   }
@@ -761,9 +908,8 @@ input:focus-visible {
   }
   .settings-nav,
   .macos .settings-nav {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    align-items: stretch;
     width: 100%;
     flex: 0 0 auto;
     padding: 6px 12px;
@@ -771,7 +917,12 @@ input:focus-visible {
   .macos .settings-nav {
     padding-top: 44px;
   }
-  .settings-nav-item {
+  .settings-nav-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .settings-nav-items {
     display: none;
   }
   .settings-section-select {
@@ -787,6 +938,12 @@ input:focus-visible {
   .settings-back {
     width: auto;
     margin: 0;
+  }
+  .settings-search {
+    margin: 7px 0 0;
+  }
+  .settings-search-results {
+    max-height: 180px;
   }
   .settings-content {
     padding: 25px 20px 55px;

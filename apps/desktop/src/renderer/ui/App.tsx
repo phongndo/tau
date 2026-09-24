@@ -18,7 +18,7 @@ import {
 } from '../state/layout'
 import { startGraphSync } from '../state/graph-sync'
 import { useTau } from '../state/solid'
-import { useTauStore, type Pane, type Tab } from '../state/store'
+import { useTauStore, type Pane, type Tab, type Workspace } from '../state/store'
 import { TerminalPane } from './TerminalPane'
 import { SettingsPage } from './SettingsPage'
 
@@ -229,6 +229,7 @@ export function App() {
   const isMac = navigator.platform.startsWith('Mac')
   document.documentElement.dataset.platform = isMac ? 'macos' : 'other'
   const tabs = useTau((state) => state.tabs)
+  const workspaces = useTau((state) => state.workspaces)
   const panes = useTau((state) => state.panes)
   const activeTabId = useTau((state) => state.activeTabId)
   const activePaneId = useTau((state) => state.activePaneId)
@@ -237,8 +238,15 @@ export function App() {
   const activeTab = createMemo(
     () => sorted().find((tab) => tab.id === activeTabId()) ?? sorted()[0],
   )
+  const activeWorkspaceId = createMemo(() => activeTab()?.workspaceId)
+  const workspaceTabs = createMemo(() =>
+    sorted().filter((tab) => tab.workspaceId === activeWorkspaceId()),
+  )
   const [loaded, setLoaded] = createSignal(false)
   const [settingsOpen, setSettingsOpen] = createSignal(false)
+  const [settingsSearchFocus, setSettingsSearchFocus] = createSignal(0)
+  const [sidebarWidth, setSidebarWidth] = createSignal(196)
+  const [editingWorkspace, setEditingWorkspace] = createSignal<string | null>(null)
   const [settings, setSettings] = createSignal<SettingsData>(defaultSettings)
   const [focus, setFocus] = createSignal<Record<string, number>>({})
   const [search, setSearch] = createSignal<Record<string, number>>({})
@@ -246,6 +254,48 @@ export function App() {
   const [recoverError, setRecoverError] = createSignal('')
   const [recovering, setRecovering] = createSignal(false)
   let previous = new Map<string, string>()
+
+  const saveSidebarWidth = (width: number) => {
+    try {
+      window.localStorage.setItem('sidebar-width', String(width))
+    } catch {
+      // Resizing still works when browser storage is unavailable.
+    }
+  }
+  const resizeSidebar = (event: PointerEvent) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    const start = event.clientX
+    const initial = sidebarWidth()
+    const move = (pointer: PointerEvent) => {
+      setSidebarWidth(
+        Math.round(
+          Math.max(
+            156,
+            Math.min(Math.min(360, window.innerWidth - 320), initial + pointer.clientX - start),
+          ),
+        ),
+      )
+    }
+    const end = (pointer: PointerEvent) => {
+      move(pointer)
+      saveSidebarWidth(sidebarWidth())
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', end)
+      window.removeEventListener('pointercancel', end)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', end)
+    window.addEventListener('pointercancel', end)
+  }
+  const closeWorkspace = (workspace: Workspace) => {
+    if (
+      settings().behavior?.confirmClose &&
+      !window.confirm(`Close ${workspace.name}? Sessions stay available for recovery.`)
+    )
+      return
+    useTauStore.getState().closeWorkspace(workspace.id)
+  }
 
   const applySettings = (data: SettingsData) => {
     setSettings(data)
@@ -322,6 +372,10 @@ export function App() {
         break
       }
       case 'search-terminal': {
+        if (settingsOpen()) {
+          setSettingsSearchFocus((value) => value + 1)
+          break
+        }
         if (state.activePaneId)
           setSearch((value) => ({
             ...value,
@@ -335,6 +389,13 @@ export function App() {
     }
   }
   onMount(() => {
+    try {
+      const savedWidth = Number(window.localStorage.getItem('sidebar-width'))
+      if (Number.isFinite(savedWidth) && savedWidth >= 156 && savedWidth <= 360)
+        setSidebarWidth(savedWidth)
+    } catch {
+      // A blocked storage backend must not prevent terminal startup.
+    }
     markRendererEvent('ui:app-mounted')
     const stopGraph = startGraphSync(() => setLoaded(true))
     const stopCommands = window.electronAPI.onAppCommand(runCommand)
@@ -408,38 +469,80 @@ export function App() {
       }}
     >
       <Show when={loaded()}>
-        <aside class="sidebar drag-region" aria-label="Tabs">
+        <aside
+          class="sidebar drag-region"
+          aria-label="Workspaces"
+          style={{ '--sidebar-width': `${sidebarWidth()}px` }}
+        >
           <div class="sidebar-header">
+            <span>Workspaces</span>
             <button
               type="button"
               class="sidebar-add no-drag"
-              aria-label="New tab"
-              title="New tab"
-              onClick={() => useTauStore.getState().newTab()}
+              aria-label="New workspace"
+              title="New workspace"
+              onClick={() => useTauStore.getState().newWorkspace()}
             >
               +
             </button>
           </div>
-          <nav class="sidebar-tabs" aria-label="Terminal tabs">
-            <For each={sorted()}>
-              {(tab) => (
-                <div class="sidebar-tab" classList={{ selected: tab.id === activeTabId() }}>
-                  <button
-                    type="button"
-                    class="sidebar-tab-select"
-                    aria-current={tab.id === activeTabId() ? 'page' : undefined}
-                    onClick={() => {
-                      setSettingsOpen(false)
-                      useTauStore.getState().selectTab(tab.id)
-                    }}
+          <nav class="sidebar-tabs" aria-label="Workspaces">
+            <For each={workspaces()}>
+              {(workspace) => (
+                <div
+                  class="sidebar-tab"
+                  classList={{ selected: workspace.id === activeWorkspaceId() }}
+                >
+                  <Show
+                    when={editingWorkspace() === workspace.id}
+                    fallback={
+                      <button
+                        type="button"
+                        class="sidebar-tab-select"
+                        aria-current={workspace.id === activeWorkspaceId() ? 'page' : undefined}
+                        title={`${workspace.name} · Double-click to rename`}
+                        onClick={() => {
+                          setSettingsOpen(false)
+                          useTauStore.getState().selectWorkspace(workspace.id)
+                        }}
+                        onDblClick={() => setEditingWorkspace(workspace.id)}
+                      >
+                        <span class="truncate">{workspace.name}</span>
+                      </button>
+                    }
                   >
-                    <span class="truncate">{tabTitle(tab)}</span>
-                  </button>
+                    <input
+                      class="workspace-name-input no-drag"
+                      aria-label="Workspace name"
+                      value={workspace.name}
+                      ref={(element) =>
+                        queueMicrotask(() => {
+                          element.focus()
+                          element.select()
+                        })
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          useTauStore
+                            .getState()
+                            .renameWorkspace(workspace.id, event.currentTarget.value)
+                          setEditingWorkspace(null)
+                        } else if (event.key === 'Escape') setEditingWorkspace(null)
+                      }}
+                      onBlur={(event) => {
+                        if (editingWorkspace() !== workspace.id) return
+                        useTauStore
+                          .getState()
+                          .renameWorkspace(workspace.id, event.currentTarget.value)
+                        setEditingWorkspace(null)
+                      }}
+                    />
+                  </Show>
                   <button
                     type="button"
                     class="sidebar-tab-close"
-                    aria-label={`Close ${tab.name}`}
-                    onClick={() => closeTab(tab.id)}
+                    aria-label={`Close ${workspace.name}`}
+                    onClick={() => closeWorkspace(workspace)}
                   >
                     ×
                   </button>
@@ -461,6 +564,22 @@ export function App() {
             </button>
           </div>
         </aside>
+        <button
+          type="button"
+          class="sidebar-resize no-drag"
+          aria-label={`Resize sidebar, ${sidebarWidth()} pixels`}
+          title="Drag to resize sidebar"
+          onPointerDown={resizeSidebar}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+            event.preventDefault()
+            const step = event.shiftKey ? 20 : 10
+            const delta = event.key === 'ArrowLeft' ? -step : step
+            const width = Math.max(156, Math.min(360, sidebarWidth() + delta))
+            setSidebarWidth(width)
+            saveSidebarWidth(width)
+          }}
+        />
         <section class="workspace">
           <header class="topbar drag-region">
             <button
@@ -484,7 +603,7 @@ export function App() {
               </svg>
             </button>
             <nav class="topbar-tabstrip no-drag" aria-label="Terminal tabs">
-              <For each={sorted()}>
+              <For each={workspaceTabs()}>
                 {(tab) => (
                   <div class="topbar-tab" classList={{ selected: tab.id === activeTabId() }}>
                     <button
@@ -579,6 +698,7 @@ export function App() {
           <Show when={settingsOpen()}>
             <SettingsPage
               settings={settings()}
+              searchFocusToken={settingsSearchFocus()}
               onChange={saveSettings}
               onBack={() => setSettingsOpen(false)}
               diagnostics={diagnostics()}

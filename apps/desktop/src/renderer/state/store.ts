@@ -21,6 +21,7 @@ import {
 
 export interface TauState {
   tabs: Tab[]
+  workspaces: Workspace[]
   activeTabId: string | null
   panes: Pane[]
   activePaneId: string | null
@@ -31,6 +32,10 @@ export interface TauState {
   applyMuxGraph(snapshot: MuxGraphSnapshot): void
   markMuxGraphRevision(graphRev: number, eventSeq: number): void
   newTab(): void
+  newWorkspace(): void
+  selectWorkspace(workspaceId: string): void
+  renameWorkspace(workspaceId: string, name: string): void
+  closeWorkspace(workspaceId: string): void
   closeTab(tabId: string): void
   closeActiveTab(): void
   selectTab(tabId: string): void
@@ -49,11 +54,63 @@ export interface TauState {
 
 export interface Tab {
   id: string
+  workspaceId: string
   name: string
   layout: MosaicLayoutNode
   lastActivePaneId?: string
   order: number
   extensions?: unknown
+}
+
+export interface Workspace {
+  id: string
+  name: string
+  activeTabId?: string
+}
+
+const DEFAULT_WORKSPACE_ID = 'default'
+
+function extensionRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function workspacesFromGraph(extensions: unknown, tabs: Tab[]): Workspace[] {
+  const raw = extensionRecord(extensions).tauWorkspaces
+  const saved = Array.isArray(raw)
+    ? raw.filter(
+        (item): item is Workspace =>
+          item &&
+          typeof item === 'object' &&
+          typeof item.id === 'string' &&
+          typeof item.name === 'string',
+      )
+    : []
+  const ids = new Set(tabs.map((tab) => tab.workspaceId))
+  const workspaces: Workspace[] = []
+  for (const workspace of saved) {
+    if (!ids.has(workspace.id) || workspaces.some((item) => item.id === workspace.id)) continue
+    const activeTab = tabs.find(
+      (tab) => tab.id === workspace.activeTabId && tab.workspaceId === workspace.id,
+    )
+    workspaces.push({
+      id: workspace.id,
+      name: workspace.name.trim() || 'Workspace',
+      activeTabId: activeTab?.id,
+    })
+  }
+  for (const id of ids) {
+    if (!workspaces.some((workspace) => workspace.id === id))
+      workspaces.push({ id, name: id === DEFAULT_WORKSPACE_ID ? 'Workspace 1' : 'Workspace' })
+  }
+  return workspaces
+}
+
+function rememberWorkspaceTab(workspaces: Workspace[], tab: Tab): Workspace[] {
+  return workspaces.map((workspace) =>
+    workspace.id === tab.workspaceId ? { ...workspace, activeTabId: tab.id } : workspace,
+  )
 }
 
 export type { MosaicLayoutNode } from './layout'
@@ -128,12 +185,16 @@ function createTerminalPane(tabId: string, name = 'Terminal'): Pane {
   }
 }
 
-function createTerminalTab(order: number): { tab: Tab; pane: Pane } {
+function createTerminalTab(
+  order: number,
+  workspaceId = DEFAULT_WORKSPACE_ID,
+): { tab: Tab; pane: Pane } {
   const tabId = createId('tab')
   const pane = createTerminalPane(tabId)
   return {
     tab: {
       id: tabId,
+      workspaceId,
       name: order === 0 ? 'Shell' : `Shell ${order + 1}`,
       layout: pane.id,
       lastActivePaneId: pane.id,
@@ -353,6 +414,13 @@ const initialShell = ensureDefaultShell({
 
 export const useTauStore = createStore<TauState>((set, get) => ({
   ...initialShell,
+  workspaces: [
+    {
+      id: DEFAULT_WORKSPACE_ID,
+      name: 'Workspace 1',
+      activeTabId: initialShell.activeTabId ?? undefined,
+    },
+  ],
   graphRev: 0,
   eventSeq: 0,
   graphExtensions: undefined,
@@ -362,7 +430,9 @@ export const useTauStore = createStore<TauState>((set, get) => ({
     if (decoded._tag === 'None') {
       set({
         ...ensureDefaultShell({ tabs: [], panes: [], activeTabId: null, activePaneId: null }),
+        workspaces: [{ id: DEFAULT_WORKSPACE_ID, name: 'Workspace 1' }],
         graphRev: 0,
+        graphExtensions: undefined,
       })
       return
     }
@@ -372,7 +442,9 @@ export const useTauStore = createStore<TauState>((set, get) => ({
     if (typeof value.version === 'number' && value.version < PANE_LAYOUT_VERSION) {
       set({
         ...ensureDefaultShell({ tabs: [], panes: [], activeTabId: null, activePaneId: null }),
+        workspaces: [{ id: DEFAULT_WORKSPACE_ID, name: 'Workspace 1' }],
         graphRev: 0,
+        graphExtensions: undefined,
       })
       return
     }
@@ -394,6 +466,7 @@ export const useTauStore = createStore<TauState>((set, get) => ({
     const tabs: Tab[] = (value.tabs ?? [])
       .map((tab, index) => ({
         id: tab.id,
+        workspaceId: DEFAULT_WORKSPACE_ID,
         name: tab.name,
         layout: tab.layout as MosaicLayoutNode,
         lastActivePaneId: tab.lastActivePaneId,
@@ -420,10 +493,12 @@ export const useTauStore = createStore<TauState>((set, get) => ({
 
     set({
       ...shell,
+      workspaces: [{ id: DEFAULT_WORKSPACE_ID, name: 'Workspace 1', activeTabId: activeTab?.id }],
       activeTabId: activeTab?.id ?? null,
       activePaneId,
       graphRev: value.graphRev ?? 0,
       eventSeq: 0,
+      graphExtensions: undefined,
     })
   },
 
@@ -442,6 +517,10 @@ export const useTauStore = createStore<TauState>((set, get) => ({
     const tabs: Tab[] = snapshot.tabs
       .map((tab) => ({
         id: tab.id,
+        workspaceId:
+          typeof extensionRecord(tab.extensions).tauWorkspaceId === 'string'
+            ? (extensionRecord(tab.extensions).tauWorkspaceId as string)
+            : DEFAULT_WORKSPACE_ID,
         name: tab.name,
         order: tab.order,
         layout: tab.root as MosaicLayoutNode,
@@ -455,8 +534,11 @@ export const useTauStore = createStore<TauState>((set, get) => ({
       activeTabId: snapshot.activeTabId,
       activePaneId: snapshot.activePaneId,
     })
+    const selected = shell.tabs.find((tab) => tab.id === shell.activeTabId)
+    const workspaces = workspacesFromGraph(snapshot.extensions, shell.tabs)
     set({
       ...shell,
+      workspaces: selected ? rememberWorkspaceTab(workspaces, selected) : workspaces,
       graphRev: snapshot.graphRev,
       eventSeq: snapshot.eventSeq,
       graphExtensions: snapshot.extensions,
@@ -469,12 +551,86 @@ export const useTauStore = createStore<TauState>((set, get) => ({
 
   newTab() {
     set((state) => {
-      const { tab, pane } = createTerminalTab(state.tabs.length)
+      const activeWorkspaceId =
+        state.tabs.find((tab) => tab.id === state.activeTabId)?.workspaceId ??
+        state.workspaces[0]?.id ??
+        DEFAULT_WORKSPACE_ID
+      const orderInWorkspace = state.tabs.filter(
+        (item) => item.workspaceId === activeWorkspaceId,
+      ).length
+      const { tab, pane } = createTerminalTab(orderInWorkspace, activeWorkspaceId)
+      tab.order = state.tabs.length
       return {
+        tabs: [...state.tabs, tab],
+        workspaces: rememberWorkspaceTab(state.workspaces, tab),
+        panes: [...state.panes, pane],
+        activeTabId: tab.id,
+        activePaneId: pane.id,
+        graphRev: bumpRev(state),
+      }
+    })
+  },
+
+  newWorkspace() {
+    set((state) => {
+      const id = createId('workspace')
+      const { tab, pane } = createTerminalTab(state.tabs.length, id)
+      tab.name = 'Shell'
+      const name = `Workspace ${state.workspaces.length + 1}`
+      return {
+        workspaces: [...state.workspaces, { id, name, activeTabId: tab.id }],
         tabs: [...state.tabs, tab],
         panes: [...state.panes, pane],
         activeTabId: tab.id,
         activePaneId: pane.id,
+        graphRev: bumpRev(state),
+      }
+    })
+  },
+
+  selectWorkspace(workspaceId) {
+    const state = get()
+    const workspace = state.workspaces.find((item) => item.id === workspaceId)
+    if (!workspace) return
+    const tab =
+      state.tabs.find(
+        (item) => item.id === workspace.activeTabId && item.workspaceId === workspaceId,
+      ) ?? state.tabs.find((item) => item.workspaceId === workspaceId)
+    if (tab) state.selectTab(tab.id)
+  },
+
+  renameWorkspace(workspaceId, name) {
+    const normalized = name.trim().slice(0, 80)
+    if (!normalized) return
+    set((state) => ({
+      workspaces: state.workspaces.map((item) =>
+        item.id === workspaceId ? { ...item, name: normalized } : item,
+      ),
+      graphRev: bumpRev(state),
+    }))
+  },
+
+  closeWorkspace(workspaceId) {
+    set((state) => {
+      const closing = state.tabs.filter((tab) => tab.workspaceId === workspaceId)
+      if (closing.length === 0) return state
+      const closedIds = new Set(closing.map((tab) => tab.id))
+      let tabs = reorderTabs(state.tabs.filter((tab) => !closedIds.has(tab.id)))
+      let panes = state.panes.filter((pane) => !closedIds.has(pane.tabId))
+      let workspaces = state.workspaces.filter((item) => item.id !== workspaceId)
+      if (tabs.length === 0) {
+        const shell = createTerminalTab(0)
+        tabs = [shell.tab]
+        panes = [shell.pane]
+        workspaces = [{ id: DEFAULT_WORKSPACE_ID, name: 'Workspace 1', activeTabId: shell.tab.id }]
+      }
+      const next = tabs.find((tab) => tab.id === state.activeTabId) ?? tabs[0]!
+      return {
+        tabs,
+        panes,
+        workspaces,
+        activeTabId: next.id,
+        activePaneId: next.id === state.activeTabId ? state.activePaneId : getPreferredPaneId(next),
         graphRev: bumpRev(state),
       }
     })
@@ -495,19 +651,49 @@ export const useTauStore = createStore<TauState>((set, get) => ({
           activeTabId: null,
           activePaneId: null,
         })
-        return { ...shell, graphRev: bumpRev(state) }
+        return {
+          ...shell,
+          workspaces: [
+            {
+              id: DEFAULT_WORKSPACE_ID,
+              name: 'Workspace 1',
+              activeTabId: shell.activeTabId ?? undefined,
+            },
+          ],
+          graphRev: bumpRev(state),
+        }
       }
 
       const closingActive = state.activeTabId === tabId
+      const remainingInWorkspace = nextTabs.filter(
+        (candidate) => candidate.workspaceId === tab.workspaceId,
+      )
       const nextActiveTab = closingActive
-        ? (nextTabs[Math.max(0, tab.order - 1)] ?? nextTabs[0]!)
+        ? (remainingInWorkspace.filter((candidate) => candidate.order < tab.order).at(-1) ??
+          remainingInWorkspace[0] ??
+          nextTabs[0]!)
         : (nextTabs.find((candidate) => candidate.id === state.activeTabId) ?? nextTabs[0]!)
 
       return {
         tabs: nextTabs,
         panes: nextPanes,
+        workspaces: state.workspaces
+          .filter((workspace) =>
+            nextTabs.some((candidate) => candidate.workspaceId === workspace.id),
+          )
+          .map((workspace) =>
+            workspace.activeTabId === tabId
+              ? {
+                  ...workspace,
+                  activeTabId:
+                    nextActiveTab.workspaceId === workspace.id
+                      ? nextActiveTab.id
+                      : nextTabs.find((candidate) => candidate.workspaceId === workspace.id)?.id,
+                }
+              : workspace,
+          ),
         activeTabId: nextActiveTab.id,
-        activePaneId: getPreferredPaneId(nextActiveTab),
+        activePaneId: closingActive ? getPreferredPaneId(nextActiveTab) : state.activePaneId,
         graphRev: bumpRev(state),
       }
     })
@@ -525,13 +711,18 @@ export const useTauStore = createStore<TauState>((set, get) => ({
       return {
         activeTabId: tabId,
         activePaneId: getPreferredPaneId(tab),
+        workspaces: rememberWorkspaceTab(state.workspaces, tab),
         graphRev: bumpRev(state),
       }
     })
   },
 
   selectTabByIndex(index) {
-    const tabs = [...get().tabs].sort((a, b) => a.order - b.order)
+    const state = get()
+    const workspaceId = state.tabs.find((tab) => tab.id === state.activeTabId)?.workspaceId
+    const tabs = [...state.tabs]
+      .filter((tab) => tab.workspaceId === workspaceId)
+      .sort((a, b) => a.order - b.order)
     const tab = tabs[index]
     if (tab) get().selectTab(tab.id)
   },
@@ -543,6 +734,7 @@ export const useTauStore = createStore<TauState>((set, get) => ({
       const from = tabs.findIndex((tab) => tab.id === tabId)
       const to = tabs.findIndex((tab) => tab.id === targetTabId)
       if (from < 0 || to < 0) return state
+      if (tabs[from]!.workspaceId !== tabs[to]!.workspaceId) return state
       const [moved] = tabs.splice(from, 1)
       if (!moved) return state
       const insertAt = placement === 'before' ? (from < to ? to - 1 : to) : from < to ? to : to + 1
@@ -582,6 +774,10 @@ export const useTauStore = createStore<TauState>((set, get) => ({
         activeTabId: pane.tabId,
         activePaneId: paneId,
         tabs: rememberTabPane(state.tabs, pane.tabId, paneId),
+        workspaces: rememberWorkspaceTab(
+          state.workspaces,
+          state.tabs.find((tab) => tab.id === pane.tabId)!,
+        ),
         graphRev: bumpRev(state),
       }
     })
@@ -710,7 +906,7 @@ export function selectMuxGraphSnapshot(state: TauState): MuxGraphSnapshot {
       order: tab.order,
       root: tab.layout,
       activePaneId: tab.lastActivePaneId,
-      extensions: tab.extensions,
+      extensions: { ...extensionRecord(tab.extensions), tauWorkspaceId: tab.workspaceId },
     })),
     panes: state.panes.map((pane) => ({
       id: pane.id,
@@ -725,7 +921,7 @@ export function selectMuxGraphSnapshot(state: TauState): MuxGraphSnapshot {
     })),
     activeTabId: state.activeTabId,
     activePaneId: state.activePaneId,
-    extensions: state.graphExtensions,
+    extensions: { ...extensionRecord(state.graphExtensions), tauWorkspaces: state.workspaces },
   }
 }
 

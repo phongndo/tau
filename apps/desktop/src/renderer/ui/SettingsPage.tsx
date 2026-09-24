@@ -1,20 +1,19 @@
-import { createSignal, For, onCleanup, Show } from 'solid-js'
+/* oxlint-disable jsx-a11y/prefer-tag-over-role -- Search results are interactive ARIA options, not native select options. */
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { defaultSettings, shortcuts } from '@tau/shared/preferences'
 import type { SettingsData } from '@tau/shared/session'
 import type {
   TaudLifecycleDiagnostics,
   TaudLifecycleRecoveryAction,
 } from '@tau/shared/taud-protocol'
-
-type Section = 'Appearance' | 'Terminal' | 'Multiplexer' | 'Keyboard' | 'Sessions' | 'Daemon'
-const sections: Section[] = [
-  'Appearance',
-  'Terminal',
-  'Multiplexer',
-  'Keyboard',
-  'Sessions',
-  'Daemon',
-]
+import {
+  searchSettings,
+  settingItems,
+  settingsSections,
+  type SettingItem,
+  type SettingsSearchResult,
+  type SettingsSection,
+} from './settings-search'
 
 export function SettingsPage(props: {
   settings: SettingsData
@@ -24,10 +23,82 @@ export function SettingsPage(props: {
   recovering: boolean
   recoverError: string
   onRecover(action: TaudLifecycleRecoveryAction): Promise<void>
+  searchFocusToken: number
 }) {
-  const [section, setSection] = createSignal<Section>('Appearance')
+  const [section, setSection] = createSignal<SettingsSection>('Appearance')
   const [error, setError] = createSignal('')
   const [capturing, setCapturing] = createSignal<string | null>(null)
+  const [query, setQuery] = createSignal('')
+  const [activeResult, setActiveResult] = createSignal(0)
+  const [highlighted, setHighlighted] = createSignal<string | null>(null)
+  const results = createMemo(() => searchSettings(query(), props.settings.keybindings))
+  const searching = () => query().trim().length > 0
+  let searchInput: HTMLInputElement | undefined
+  let highlightTimer: ReturnType<typeof setTimeout> | undefined
+  const clearSearch = () => {
+    setQuery('')
+    setActiveResult(0)
+  }
+  const openResult = (result: SettingsSearchResult) => {
+    clearSearch()
+    setSection(result.section)
+    if (!result.targetId) return
+    requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(
+        `[data-setting-id="${CSS.escape(result.targetId!)}"]`,
+      )
+      if (!row) return
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      const control = row.querySelector<HTMLElement>('input, select, button')
+      ;(control ?? row).focus({ preventScroll: true })
+      setHighlighted(result.targetId!)
+      if (highlightTimer) clearTimeout(highlightTimer)
+      highlightTimer = setTimeout(() => setHighlighted(null), 1800)
+    })
+  }
+  const searchKeyDown = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      if (searching()) clearSearch()
+      else searchInput?.blur()
+      return
+    }
+    if (results().length === 0) return
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      setActiveResult(
+        (index) =>
+          (index + (event.key === 'ArrowDown' ? 1 : -1) + results().length) % results().length,
+      )
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      const result = results()[activeResult()]
+      if (result) openResult(result)
+    }
+  }
+  createEffect(() => {
+    if (props.searchFocusToken > 0) searchInput?.focus()
+  })
+  onMount(() => {
+    const focusOnSlash = (event: KeyboardEvent) => {
+      if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey || capturing()) return
+      const target = event.target
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      )
+        return
+      event.preventDefault()
+      searchInput?.focus()
+    }
+    window.addEventListener('keydown', focusOnSlash)
+    onCleanup(() => window.removeEventListener('keydown', focusOnSlash))
+  })
+  onCleanup(() => {
+    if (highlightTimer) clearTimeout(highlightTimer)
+  })
   const capture = (id: string | null) => {
     setCapturing(id)
     window.electronAPI.captureShortcut(id !== null)
@@ -84,12 +155,17 @@ export function SettingsPage(props: {
     if (!/^(?:[A-Z0-9]|Tab|Enter|Escape|,|Arrow(?:Up|Down|Left|Right))$/u.test(key)) return
     setBinding(id, [...modifiers, key].join('+'))
   }
-  const Row = (row: { title: string; description?: string; children: any }) => (
-    <div class="setting-row">
+  const Row = (row: { item: SettingItem; description?: string; children: any }) => (
+    <div
+      class="setting-row"
+      classList={{ 'setting-row-highlighted': highlighted() === row.item.id }}
+      data-setting-id={row.item.id}
+      tabIndex={-1}
+    >
       <div class="setting-copy">
-        <strong>{row.title}</strong>
-        <Show when={row.description}>
-          <p>{row.description}</p>
+        <strong>{row.item.title}</strong>
+        <Show when={row.description ?? row.item.description}>
+          <p>{row.description ?? row.item.description}</p>
         </Show>
       </div>
       <div class="setting-control">{row.children}</div>
@@ -99,36 +175,127 @@ export function SettingsPage(props: {
   return (
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="Settings navigation">
-        <button class="settings-back" type="button" onClick={props.onBack}>
-          ← <span>Terminal</span>
-        </button>
-        <For each={sections}>
-          {(item) => (
+        <div class="settings-nav-top">
+          <button class="settings-back" type="button" onClick={props.onBack}>
+            ← <span>Terminal</span>
+          </button>
+          <select
+            class="settings-section-select"
+            aria-label="Settings section"
+            value={section()}
+            onChange={(event) => {
+              capture(null)
+              clearSearch()
+              setSection(event.currentTarget.value as SettingsSection)
+            }}
+          >
+            <For each={settingsSections}>{(item) => <option value={item}>{item}</option>}</For>
+          </select>
+        </div>
+        <div class="settings-search">
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <circle cx="8.5" cy="8.5" r="5.5" />
+            <path d="m13 13 4 4" />
+          </svg>
+          <input
+            ref={(element) => {
+              searchInput = element
+            }}
+            type="search"
+            value={query()}
+            placeholder="Search settings"
+            aria-label="Search settings"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={searching() && results().length > 0}
+            aria-controls={
+              searching() && results().length > 0 ? 'settings-search-results' : undefined
+            }
+            aria-activedescendant={
+              searching() && results()[activeResult()]
+                ? `settings-result-${results()[activeResult()]!.id}`
+                : undefined
+            }
+            onInput={(event) => {
+              setQuery(event.currentTarget.value)
+              setActiveResult(0)
+            }}
+            onKeyDown={searchKeyDown}
+          />
+          <Show
+            when={searching()}
+            fallback={
+              <kbd class="settings-search-hint" aria-hidden="true">
+                /
+              </kbd>
+            }
+          >
             <button
               type="button"
-              class="settings-nav-item"
-              classList={{ current: section() === item }}
+              class="settings-search-clear"
+              aria-label="Clear settings search"
               onClick={() => {
-                capture(null)
-                setSection(item)
+                clearSearch()
+                searchInput?.focus()
               }}
-              aria-current={section() === item ? 'page' : undefined}
             >
-              {item}
+              ×
             </button>
-          )}
-        </For>
-        <select
-          class="settings-section-select"
-          aria-label="Settings section"
-          value={section()}
-          onChange={(event) => {
-            capture(null)
-            setSection(event.currentTarget.value as Section)
-          }}
+          </Show>
+        </div>
+        <Show
+          when={searching()}
+          fallback={
+            <div class="settings-nav-items">
+              <For each={settingsSections}>
+                {(item) => (
+                  <button
+                    type="button"
+                    class="settings-nav-item"
+                    classList={{ current: section() === item }}
+                    onClick={() => {
+                      capture(null)
+                      setSection(item)
+                    }}
+                    aria-current={section() === item ? 'page' : undefined}
+                  >
+                    {item}
+                  </button>
+                )}
+              </For>
+            </div>
+          }
         >
-          <For each={sections}>{(item) => <option value={item}>{item}</option>}</For>
-        </select>
+          <Show
+            when={results().length > 0}
+            fallback={<output class="settings-search-empty">No settings found</output>}
+          >
+            <div
+              class="settings-search-results"
+              id="settings-search-results"
+              role="listbox"
+              aria-label="Settings search results"
+            >
+              <For each={results()}>
+                {(result, index) => (
+                  <button
+                    type="button"
+                    id={`settings-result-${result.id}`}
+                    class="settings-search-result"
+                    classList={{ current: activeResult() === index() }}
+                    role="option"
+                    aria-selected={activeResult() === index()}
+                    onMouseEnter={() => setActiveResult(index())}
+                    onClick={() => openResult(result)}
+                  >
+                    <span class="settings-search-result-title">{result.title}</span>
+                    <span class="settings-search-result-section">{result.section}</span>
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
+        </Show>
       </nav>
       <main class="settings-main" aria-label="Settings">
         <div class="settings-content">
@@ -140,7 +307,7 @@ export function SettingsPage(props: {
           </Show>
           <Show when={section() === 'Appearance'}>
             <section class="settings-group">
-              <Row title="Color palette">
+              <Row item={settingItems.colorPalette}>
                 <select
                   aria-label="Color palette"
                   value={appearance().theme}
@@ -152,7 +319,7 @@ export function SettingsPage(props: {
                   <option value="slate">Slate</option>
                 </select>
               </Row>
-              <Row title="Accent">
+              <Row item={settingItems.accent}>
                 <div class="swatches">
                   <For each={['blue', 'violet', 'mint'] as const}>
                     {(color) => (
@@ -168,7 +335,7 @@ export function SettingsPage(props: {
                   </For>
                 </div>
               </Row>
-              <Row title="Show sidebar">
+              <Row item={settingItems.sidebar}>
                 <input
                   type="checkbox"
                   aria-label="Workspace sidebar"
@@ -180,10 +347,7 @@ export function SettingsPage(props: {
           </Show>
           <Show when={section() === 'Terminal'}>
             <section class="settings-group">
-              <Row
-                title="Font size"
-                description="Applies to every live terminal and refits the PTY grid."
-              >
+              <Row item={settingItems.fontSize}>
                 <input
                   type="number"
                   aria-label="Terminal font size"
@@ -198,7 +362,7 @@ export function SettingsPage(props: {
                 />
                 <span class="unit">px</span>
               </Row>
-              <Row title="Font family">
+              <Row item={settingItems.fontFamily}>
                 <select
                   aria-label="Terminal font family"
                   value={terminal().fontFamily}
@@ -214,10 +378,7 @@ export function SettingsPage(props: {
           </Show>
           <Show when={section() === 'Multiplexer'}>
             <section class="settings-group">
-              <Row
-                title="Confirm before closing"
-                description="Ask before closing a tab or pane. Closing a view never terminates its daemon session."
-              >
+              <Row item={settingItems.confirmClose}>
                 <input
                   type="checkbox"
                   aria-label="Confirm before closing"
@@ -237,7 +398,14 @@ export function SettingsPage(props: {
               </p>
               <For each={shortcuts}>
                 {(item) => (
-                  <div class="setting-row shortcut-row">
+                  <div
+                    class="setting-row shortcut-row"
+                    data-setting-id={`shortcut:${item.id}`}
+                    classList={{
+                      'setting-row-highlighted': highlighted() === `shortcut:${item.id}`,
+                    }}
+                    tabIndex={-1}
+                  >
                     <div class="setting-copy">
                       <strong>{item.label}</strong>
                     </div>
@@ -272,6 +440,10 @@ export function SettingsPage(props: {
               <button
                 type="button"
                 class="reset-button"
+                data-setting-id={settingItems.resetShortcuts.id}
+                classList={{
+                  'setting-row-highlighted': highlighted() === settingItems.resetShortcuts.id,
+                }}
                 onClick={() => update({ keybindings: {} })}
               >
                 Restore default shortcuts
@@ -280,10 +452,7 @@ export function SettingsPage(props: {
           </Show>
           <Show when={section() === 'Sessions'}>
             <section class="settings-group">
-              <Row
-                title="Save session history"
-                description="Retain output and snapshots so detached sessions can be recovered."
-              >
+              <Row item={settingItems.saveHistory}>
                 <input
                   type="checkbox"
                   aria-label="Save session history"
@@ -291,10 +460,7 @@ export function SettingsPage(props: {
                   onChange={(e) => setPersistence({ enabled: e.currentTarget.checked })}
                 />
               </Row>
-              <Row
-                title="Retention"
-                description="Delete expired session history after this many days."
-              >
+              <Row item={settingItems.retention}>
                 <input
                   type="number"
                   aria-label="Retention days"
@@ -308,7 +474,7 @@ export function SettingsPage(props: {
                 />
                 <span class="unit">days</span>
               </Row>
-              <Row title="Storage limit" description="Maximum on-disk bytes retained per session.">
+              <Row item={settingItems.storageLimit}>
                 <select
                   aria-label="Storage limit"
                   value={persistence().maxSessionBytes}
@@ -322,10 +488,7 @@ export function SettingsPage(props: {
                   <option value={4294967296}>4 GB</option>
                 </select>
               </Row>
-              <Row
-                title="Record input"
-                description="Store keystrokes as well as output. May include secrets; off by default."
-              >
+              <Row item={settingItems.recordInput}>
                 <input
                   type="checkbox"
                   aria-label="Record input"
@@ -337,14 +500,11 @@ export function SettingsPage(props: {
           </Show>
           <Show when={section() === 'Daemon'}>
             <section class="settings-group">
-              <Row
-                title="Status"
-                description="PTYs and session history are owned by the Zig daemon."
-              >
+              <Row item={settingItems.daemonStatus}>
                 <span class="daemon-state">{props.diagnostics?.state ?? 'Checking…'}</span>
               </Row>
               <Row
-                title="Recovery"
+                item={settingItems.daemonRecovery}
                 description={
                   props.diagnostics?.lastReason ??
                   props.diagnostics?.lastError ??
