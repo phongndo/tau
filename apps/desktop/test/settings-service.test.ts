@@ -47,6 +47,11 @@ test('shortcuts match exact modifiers and allow unbinding', () => {
   expect(parseBinding('Mod+D')?.meta).toBe(true)
   const input = { key: 'd', control: false, meta: true, alt: false, shift: false }
   expect(findShortcut(input, defaultSettings, 'darwin')).toBe('split-right')
+  expect(findShortcut({ ...input, key: 'b' }, defaultSettings, 'darwin')).toBe('toggle-sidebar')
+  expect(findShortcut({ ...input, key: 'w' }, defaultSettings, 'darwin')).toBe('close-pane')
+  expect(findShortcut({ ...input, key: 'w', shift: true }, defaultSettings, 'darwin')).toBe(
+    'close-tab',
+  )
   expect(
     findShortcut({ ...input, control: true, meta: false }, defaultSettings, 'darwin'),
   ).toBeNull()

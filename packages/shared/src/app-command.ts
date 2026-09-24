@@ -4,6 +4,7 @@ export type AppCommand =
   | { type: 'new-tab' }
   | { type: 'close-tab' }
   | { type: 'close-pane' }
+  | { type: 'toggle-sidebar' }
   | { type: 'split-pane-vertical' }
   | { type: 'split-pane-horizontal' }
   | { type: 'switch-tab'; index: number }

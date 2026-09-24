@@ -20,6 +20,8 @@ export function TerminalPane(props: {
   searchToken: number
   onTitleChange?(title: string): void
   onProcessTitleChange?(title: string): void
+  onCwdChange?(cwd: string): void
+  onExit?(): void
   onRestartSession?(): void
 }) {
   let surface: HTMLDivElement | undefined
@@ -60,6 +62,8 @@ export function TerminalPane(props: {
           argv: props.argv,
           onTitle: (title) => props.onTitleChange?.(title),
           onProcessTitle: (title) => props.onProcessTitleChange?.(title),
+          onCwd: (cwd) => props.onCwdChange?.(cwd),
+          onExit: () => props.onExit?.(),
           onArchived: () => {
             if (!disposed) setArchived(true)
           },

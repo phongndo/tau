@@ -46,6 +46,7 @@ export interface TauState {
   selectPaneByDirection(direction: PaneFocusDirection): void
   restartPaneSession(paneId: string): void
   setPaneTitle(paneId: string, title: string): void
+  setPaneCwd(paneId: string, cwd: string): void
   renameTab(tabId: string, name: string): void
   splitPane(paneId: string, direction: MosaicDirection): void
   splitActivePane(direction: MosaicDirection): void
@@ -67,6 +68,21 @@ export interface Workspace {
   id: string
   name: string
   activeTabId?: string
+}
+
+export function workspaceFolderName(
+  workspace: Workspace,
+  tabs: readonly Tab[],
+  panes: readonly Pane[],
+): string {
+  const tab =
+    tabs.find((item) => item.workspaceId === workspace.id && item.id === workspace.activeTabId) ??
+    tabs.find((item) => item.workspaceId === workspace.id)
+  const paneId = tab?.lastActivePaneId ?? (tab ? getFirstPaneId(tab.layout) : null)
+  const cwd = panes.find((pane) => pane.id === paneId)?.cwd
+  if (!cwd) return workspace.name
+  const trimmed = cwd.replace(/\/+$/u, '')
+  return trimmed.split('/').at(-1) || '/'
 }
 
 const DEFAULT_WORKSPACE_ID = 'default'
@@ -816,6 +832,18 @@ export const useTauStore = createStore<TauState>((set, get) => ({
         return extensionRecord(tab.extensions).tauManualName ? tab : { ...tab, name: normalized }
       })
       return { panes, tabs, graphRev: bumpRev(state) }
+    })
+  },
+
+  setPaneCwd(paneId, cwd) {
+    if (!cwd.startsWith('/') || cwd.includes('\0')) return
+    set((state) => {
+      const pane = state.panes.find((item) => item.id === paneId)
+      if (!pane || pane.cwd === cwd) return state
+      return {
+        panes: state.panes.map((item) => (item.id === paneId ? { ...item, cwd } : item)),
+        graphRev: bumpRev(state),
+      }
     })
   },
 

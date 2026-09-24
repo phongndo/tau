@@ -18,7 +18,14 @@ import {
 } from '../state/layout'
 import { startGraphSync } from '../state/graph-sync'
 import { useTau } from '../state/solid'
-import { useTauStore, type Pane, type Tab, type Workspace } from '../state/store'
+import {
+  useTauStore,
+  workspaceFolderName,
+  type Pane,
+  type Tab,
+  type Workspace,
+} from '../state/store'
+import { handleTerminalSessionExit } from '../state/terminal-session-exit'
 import { TerminalPane } from './TerminalPane'
 import { SettingsPage } from './SettingsPage'
 
@@ -58,6 +65,14 @@ function PaneLeaf(props: {
             onProcessTitleChange={(title) => {
               const id = props.pane?.id
               if (id) props.onProcessTitle(id, title)
+            }}
+            onCwdChange={(cwd) => {
+              const id = props.pane?.id
+              if (id) useTauStore.getState().setPaneCwd(id, cwd)
+            }}
+            onExit={() => {
+              const id = props.pane?.id
+              if (id) handleTerminalSessionExit(id, sessionId, () => window.close())
             }}
             onRestartSession={() => {
               const id = props.pane?.id
@@ -255,7 +270,6 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = createSignal(false)
   const [settingsSearchFocus, setSettingsSearchFocus] = createSignal(0)
   const [sidebarWidth, setSidebarWidth] = createSignal(196)
-  const [editingWorkspace, setEditingWorkspace] = createSignal<string | null>(null)
   const [editingTab, setEditingTab] = createSignal<string | null>(null)
   const [processTitles, setProcessTitles] = createSignal<Record<string, string>>({})
   const [settings, setSettings] = createSignal<SettingsData>(defaultSettings)
@@ -313,7 +327,9 @@ export function App() {
   const closeWorkspace = (workspace: Workspace) => {
     if (
       settings().behavior?.confirmClose &&
-      !window.confirm(`Close ${workspace.name}? Sessions stay available for recovery.`)
+      !window.confirm(
+        `Close ${workspaceFolderName(workspace, tabs(), panes())}? Sessions stay available for recovery.`,
+      )
     )
       return
     useTauStore.getState().closeWorkspace(workspace.id)
@@ -352,6 +368,14 @@ export function App() {
       throw error
     }
   }
+  const toggleSidebar = () =>
+    void saveSettings({
+      ...settings(),
+      appearance: {
+        ...settings().appearance!,
+        sidebar: !settings().appearance?.sidebar,
+      },
+    })
   const closeTab = (id: string) => {
     if (
       settings().behavior?.confirmClose &&
@@ -366,7 +390,10 @@ export function App() {
       !window.confirm('Close this pane? Sessions stay available for recovery.')
     )
       return
-    useTauStore.getState().closeActivePane()
+    const state = useTauStore.getState()
+    const finalPane = state.panes.length === 1
+    state.closeActivePane()
+    if (finalPane) window.close()
   }
   const runCommand = (command: AppCommand) => {
     const state = useTauStore.getState()
@@ -380,6 +407,9 @@ export function App() {
         break
       case 'close-pane':
         closePane()
+        break
+      case 'toggle-sidebar':
+        toggleSidebar()
         break
       case 'split-pane-vertical':
         state.splitActivePane('row')
@@ -542,55 +572,22 @@ export function App() {
                   class="sidebar-tab"
                   classList={{ selected: workspace.id === activeWorkspaceId() }}
                 >
-                  <Show
-                    when={editingWorkspace() === workspace.id}
-                    fallback={
-                      <button
-                        type="button"
-                        class="sidebar-tab-select"
-                        aria-current={workspace.id === activeWorkspaceId() ? 'page' : undefined}
-                        title={`${workspace.name} · Double-click to rename`}
-                        onClick={() => {
-                          setSettingsOpen(false)
-                          useTauStore.getState().selectWorkspace(workspace.id)
-                        }}
-                        onDblClick={() => setEditingWorkspace(workspace.id)}
-                      >
-                        <span class="truncate">{workspace.name}</span>
-                      </button>
-                    }
+                  <button
+                    type="button"
+                    class="sidebar-tab-select"
+                    aria-current={workspace.id === activeWorkspaceId() ? 'page' : undefined}
+                    title={workspaceFolderName(workspace, tabs(), panes())}
+                    onClick={() => {
+                      setSettingsOpen(false)
+                      useTauStore.getState().selectWorkspace(workspace.id)
+                    }}
                   >
-                    <input
-                      class="workspace-name-input no-drag"
-                      aria-label="Workspace name"
-                      value={workspace.name}
-                      ref={(element) =>
-                        queueMicrotask(() => {
-                          element.focus()
-                          element.select()
-                        })
-                      }
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          useTauStore
-                            .getState()
-                            .renameWorkspace(workspace.id, event.currentTarget.value)
-                          setEditingWorkspace(null)
-                        } else if (event.key === 'Escape') setEditingWorkspace(null)
-                      }}
-                      onBlur={(event) => {
-                        if (editingWorkspace() !== workspace.id) return
-                        useTauStore
-                          .getState()
-                          .renameWorkspace(workspace.id, event.currentTarget.value)
-                        setEditingWorkspace(null)
-                      }}
-                    />
-                  </Show>
+                    <span class="truncate">{workspaceFolderName(workspace, tabs(), panes())}</span>
+                  </button>
                   <button
                     type="button"
                     class="sidebar-tab-close"
-                    aria-label={`Close ${workspace.name}`}
+                    aria-label={`Close ${workspaceFolderName(workspace, tabs(), panes())}`}
                     onClick={() => closeWorkspace(workspace)}
                   >
                     ×
@@ -636,15 +633,7 @@ export function App() {
               class="topbar-icon no-drag"
               aria-label="Toggle sidebar"
               title="Toggle sidebar"
-              onClick={() =>
-                void saveSettings({
-                  ...settings(),
-                  appearance: {
-                    ...settings().appearance!,
-                    sidebar: !settings().appearance?.sidebar,
-                  },
-                })
-              }
+              onClick={toggleSidebar}
             >
               <svg viewBox="0 0 20 20" aria-hidden="true">
                 <rect x="2" y="3" width="16" height="14" rx="2" />

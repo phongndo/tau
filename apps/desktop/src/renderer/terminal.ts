@@ -25,7 +25,9 @@ type CreateTerminalOptions = {
   readonly argv?: readonly string[]
   readonly onTitle?: (title: string) => void
   readonly onProcessTitle?: (title: string) => void
+  readonly onCwd?: (cwd: string) => void
   readonly onArchived?: () => void
+  readonly onExit?: () => void
   readonly onAttach?: (result: AttachSessionResult) => void
 }
 
@@ -55,7 +57,9 @@ type TerminalRuntime = {
   lastUsedAt: number
   onTitle?: (title: string) => void
   onProcessTitle?: (title: string) => void
+  onCwd?: (cwd: string) => void
   onArchived?: () => void
+  onExit?: () => void
   onAttach?: (result: AttachSessionResult) => void
 }
 
@@ -400,7 +404,9 @@ export async function createTerminal(
     try {
       existingRuntime.onTitle = options.onTitle
       existingRuntime.onProcessTitle = options.onProcessTitle
+      existingRuntime.onCwd = options.onCwd
       existingRuntime.onArchived = options.onArchived
+      existingRuntime.onExit = options.onExit
       existingRuntime.onAttach = options.onAttach
       attachTerminalRuntime(existingRuntime, container)
       if (existingRuntime.attachResult) options.onAttach?.(existingRuntime.attachResult)
@@ -462,7 +468,9 @@ export async function createTerminal(
       lastUsedAt: Date.now(),
       onTitle: options.onTitle,
       onProcessTitle: options.onProcessTitle,
+      onCwd: options.onCwd,
       onArchived: options.onArchived,
+      onExit: options.onExit,
       onAttach: options.onAttach,
     }
     terminalRuntimes.set(sessionId, runtime)
@@ -517,6 +525,7 @@ export async function createTerminal(
   const unsubProcessTitle = window.electronAPI.onSessionProcessTitle(sessionId, (title) => {
     runtime.onProcessTitle?.(title)
   })
+  const unsubCwd = window.electronAPI.onSessionCwd(sessionId, (cwd) => runtime.onCwd?.(cwd))
   let stopResizeObserver: (() => void) | null = null
   let archived = false
   let bufferingStartupOutput = true
@@ -715,17 +724,7 @@ export async function createTerminal(
     term.write(`\r\n\x1b[31m[Session Error: ${error}]\x1b[0m\r\n`)
   })
 
-  const unsubSessionExit = window.electronAPI.onSessionExit(
-    sessionId,
-    (info: { exitCode: number; signal?: number }) => {
-      const msg =
-        info.signal != null
-          ? `Shell killed by signal ${info.signal}`
-          : `Shell exited with code ${info.exitCode}`
-      outputWriter.flush()
-      term.write(`\r\n\x1b[33m[${msg}]\x1b[0m\r\n`)
-    },
-  )
+  const unsubSessionExit = window.electronAPI.onSessionExit(sessionId, () => runtime.onExit?.())
 
   let didAttachSession = false
 
@@ -789,6 +788,7 @@ export async function createTerminal(
     unsubSessionTitle?.()
     titleSubscription?.dispose()
     unsubProcessTitle()
+    unsubCwd()
     outputWriter.dispose()
     terminalDiagnosticsRegistry().delete(sessionId)
     if (didAttachSession) {
@@ -832,6 +832,7 @@ export async function createTerminal(
     unsubSessionTitle?.()
     titleSubscription?.dispose()
     unsubProcessTitle()
+    unsubCwd()
     outputWriter.dispose()
     terminalDiagnosticsRegistry().delete(sessionId)
     void window.electronAPI.detachSession(sessionId)

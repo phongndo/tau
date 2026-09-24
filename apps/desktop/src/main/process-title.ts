@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { basename } from 'node:path'
+import { readlink } from 'node:fs/promises'
 
 export type ProcessRow = {
   readonly pid: number
@@ -108,6 +109,65 @@ export async function readProcessTitle(rootPid: number, fallbackTitle: string): 
 
   const rows = await readProcessRows()
   return resolveProcessTitle(rows, rootPid, fallbackTitle)
+}
+
+/** Prefer the foreground child (including a nix develop subshell) over its parent shell. */
+export function resolveCwdProcessPid(rows: readonly ProcessRow[], rootPid: number): number {
+  if (!Number.isInteger(rootPid) || rootPid <= 0) return rootPid
+  const children = new Map<number, ProcessRow[]>()
+  for (const row of rows) {
+    const siblings = children.get(row.ppid) ?? []
+    siblings.push(row)
+    children.set(row.ppid, siblings)
+  }
+  let selected = rootPid
+  let selectedDepth = -1
+  const stack = (children.get(rootPid) ?? []).map((row) => ({ row, depth: 1 }))
+  const seen = new Set([rootPid])
+  while (stack.length) {
+    const { row, depth } = stack.pop()!
+    if (seen.has(row.pid)) continue
+    seen.add(row.pid)
+    if (row.stat.includes('+') && !row.stat.includes('Z') && depth > selectedDepth) {
+      selected = row.pid
+      selectedDepth = depth
+    }
+    for (const child of children.get(row.pid) ?? []) stack.push({ row: child, depth: depth + 1 })
+  }
+  return selected
+}
+
+export function parseLsofCwd(output: string): string | undefined {
+  const path = output
+    .split('\n')
+    .find((line) => line.startsWith('n/'))
+    ?.slice(1)
+  return path?.startsWith('/') ? path : undefined
+}
+
+async function processCwd(pid: number): Promise<string | undefined> {
+  if (process.platform === 'linux') {
+    try {
+      return await readlink(`/proc/${pid}/cwd`)
+    } catch {
+      return undefined
+    }
+  }
+  if (process.platform !== 'darwin') return undefined
+  return new Promise((resolve) => {
+    execFile(
+      'lsof',
+      ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'],
+      { timeout: 1000, maxBuffer: 16 * 1024 },
+      (_error, stdout) => resolve(parseLsofCwd(stdout)),
+    )
+  })
+}
+
+export async function readProcessCwd(rootPid: number): Promise<string | undefined> {
+  if (!Number.isInteger(rootPid) || rootPid <= 0) return undefined
+  const selected = resolveCwdProcessPid(await readProcessRows(), rootPid)
+  return (await processCwd(selected)) ?? (selected === rootPid ? undefined : processCwd(rootPid))
 }
 
 function readProcessRows(): Promise<ProcessRow[]> {

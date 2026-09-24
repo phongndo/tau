@@ -106,6 +106,7 @@ const sessionSnapshotCallbacks = new Map<string, SessionSnapshotCallback[]>()
 const sessionResizeCallbacks = new Map<string, SessionResizeCallback[]>()
 const sessionTitleCallbacks = new Map<string, SessionTitleCallback[]>()
 const sessionProcessTitleCallbacks = new Map<string, SessionTitleCallback[]>()
+const sessionCwdCallbacks = new Map<string, SessionTitleCallback[]>()
 const sessionExitCallbacks = new Map<string, SessionExitCallback[]>()
 const sessionErrorCallbacks = new Map<string, SessionErrorCallback[]>()
 const ptyErrorCallbacks = new Map<string, PtyErrorCallback[]>()
@@ -264,6 +265,7 @@ function clearSessionState(sessionId: string) {
   sessionResizeCallbacks.delete(sessionId)
   sessionTitleCallbacks.delete(sessionId)
   sessionProcessTitleCallbacks.delete(sessionId)
+  sessionCwdCallbacks.delete(sessionId)
   sessionExitCallbacks.delete(sessionId)
   sessionErrorCallbacks.delete(sessionId)
   ptyErrorCallbacks.delete(sessionId)
@@ -380,6 +382,9 @@ function handlePtyMessage(message: PtyServiceMessage) {
       for (const callback of sessionProcessTitleCallbacks.get(message.sessionId) ?? [])
         callback(message.title)
       break
+    case 'cwd':
+      for (const callback of sessionCwdCallbacks.get(message.sessionId) ?? []) callback(message.cwd)
+      break
     case 'snapshot':
       handleSessionSnapshot({
         sessionId: message.sessionId,
@@ -435,6 +440,9 @@ function decodePtyServiceMessage(message: unknown): PtyServiceMessage | null {
     case 'title':
     case 'process-title':
       if (typeof message.title !== 'string') return null
+      break
+    case 'cwd':
+      if (typeof message.cwd !== 'string' || !message.cwd.startsWith('/')) return null
       break
     case 'snapshot':
       if (typeof message.dataBase64 !== 'string') return null
@@ -805,6 +813,12 @@ const electronAPI = {
     const callbacks = callbacksFor(sessionProcessTitleCallbacks, sessionId)
     callbacks.push(callback)
     return () => removeCallback(sessionProcessTitleCallbacks, sessionId, callback)
+  },
+
+  onSessionCwd(sessionId: string, callback: (cwd: string) => void): () => void {
+    const callbacks = callbacksFor(sessionCwdCallbacks, sessionId)
+    callbacks.push(callback)
+    return () => removeCallback(sessionCwdCallbacks, sessionId, callback)
   },
 
   onSessionExit(sessionId: string, callback: (info: ExitInfo) => void): () => void {

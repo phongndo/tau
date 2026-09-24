@@ -106,10 +106,9 @@ pub fn Context(comptime Daemon: type) type {
                 _ = try self.markExitedAndBroadcast(session_id, -1, 0);
                 return;
             };
-            if (amount == 0) {
-                _ = try self.markExitedAndBroadcast(session_id, -1, 0);
-                return;
-            }
+            // An EOF means the slave closed. The reader loop reaps the child and publishes its
+            // real exit code, including successful `exit` after an inner shell has returned.
+            if (amount == 0) return;
 
             const payload = buffer[0..amount];
             daemon.recordPtyRead();

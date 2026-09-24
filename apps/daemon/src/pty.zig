@@ -199,6 +199,8 @@ pub const Driver = struct {
             if (amount < 0) {
                 switch (std.posix.errno(amount)) {
                     .INTR => continue,
+                    // Linux reports EIO when the slave closes after a normal shell exit.
+                    .IO => return 0,
                     else => return error.ReadFailed,
                 }
             }

@@ -269,6 +269,9 @@ function createWindow(): BrowserWindowInstance {
       case 'close-pane-ctrl':
         sendAppCommand({ type: 'close-pane' })
         break
+      case 'toggle-sidebar':
+        sendAppCommand({ type: 'toggle-sidebar' })
+        break
       case 'split-right':
         sendAppCommand({ type: 'split-pane-vertical' })
         break

@@ -13,7 +13,7 @@ import type { SettingsData } from '@tau/shared/session'
 import { TaudClient, type TaudControlResponse, type TaudSessionStream } from './taud-client'
 import { sessionChannelBacklogExceeded } from './session-channel-backpressure'
 import { decodeTaudExitPayload, decodeTaudResizePayload } from './taud-stream'
-import { processTitleFromShell, readProcessTitle } from './process-title'
+import { processTitleFromShell, readProcessCwd, readProcessTitle } from './process-title'
 
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 const ATTACH_STREAM_READY_TIMEOUT_MS = 500
@@ -35,6 +35,7 @@ type BridgeSession = {
   pid?: number
   fallbackTitle: string
   lastProcessTitle?: string
+  lastCwd?: string
 }
 
 type SessionChannelPendingFrame = {
@@ -577,13 +578,21 @@ export class TaudPtyBridge {
   }
 
   private async publishProcessTitle(sessionId: string, session: BridgeSession): Promise<void> {
-    const title = session.pid
-      ? await readProcessTitle(session.pid, session.fallbackTitle)
-      : session.fallbackTitle
+    const [title, cwd] = session.pid
+      ? await Promise.all([
+          readProcessTitle(session.pid, session.fallbackTitle),
+          readProcessCwd(session.pid),
+        ])
+      : [session.fallbackTitle, undefined]
     if (this.sessions.get(sessionId) !== session || !session.stream) return
-    if (session.lastProcessTitle === title) return
-    session.lastProcessTitle = title
-    this.post({ type: 'process-title', sessionId, title })
+    if (session.lastProcessTitle !== title) {
+      session.lastProcessTitle = title
+      this.post({ type: 'process-title', sessionId, title })
+    }
+    if (cwd && session.lastCwd !== cwd) {
+      session.lastCwd = cwd
+      this.post({ type: 'cwd', sessionId, cwd })
+    }
   }
 
   private wireStream(sessionId: string, session: BridgeSession, stream: TaudSessionStream): void {

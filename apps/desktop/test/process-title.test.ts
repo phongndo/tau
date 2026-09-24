@@ -3,12 +3,25 @@ import test from 'node:test'
 import {
   parsePsOutput,
   processTitleFromShell,
+  parseLsofCwd,
+  resolveCwdProcessPid,
   resolveProcessTitle,
 } from '../src/main/process-title'
 
 test('process title falls back to the configured shell for blank terminals', () => {
   assert.equal(resolveProcessTitle(parsePsOutput('123 1 Ss /bin/zsh\n'), 123, 'zsh'), 'zsh')
   assert.equal(processTitleFromShell('/bin/zsh'), 'zsh')
+})
+
+test('cwd follows the foreground nested shell and returns to its parent after exit', () => {
+  const nested = parsePsOutput(`
+    100 1 Ss /bin/zsh
+    200 100 S+ /nix/store/nix/bin/nix develop
+    201 200 S+ /bin/bash
+  `)
+  assert.equal(resolveCwdProcessPid(nested, 100), 201)
+  assert.equal(resolveCwdProcessPid(nested.slice(0, 1), 100), 100)
+  assert.equal(parseLsofCwd('p201\nfcwd\nn/Users/me/my project\n'), '/Users/me/my project')
 })
 
 test('process title prefers the command running under the shell', () => {

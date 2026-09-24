@@ -8,6 +8,7 @@ import {
   selectMuxGraphSnapshot,
   selectPaneLayoutData,
   useTauStore,
+  workspaceFolderName,
 } from '../src/renderer/state/store'
 import { searchSettings } from '../src/renderer/ui/settings-search'
 
@@ -72,6 +73,28 @@ test('tabs and splits retain their workspace', () => {
   const layout = selectPaneLayoutData(state)
   assert.equal(layout.version, PANE_LAYOUT_VERSION)
   assert.equal('workspaces' in layout, false)
+})
+
+test('workspace label follows the selected terminal folder across tabs and splits', () => {
+  resetStore()
+  let state = useTauStore.getState()
+  const workspace = state.workspaces[0]!
+  const first = state.activePaneId!
+  state.setPaneCwd(first, '/Users/me/project/')
+  state = useTauStore.getState()
+  assert.equal(workspaceFolderName(state.workspaces[0]!, state.tabs, state.panes), 'project')
+  state.newTab()
+  state = useTauStore.getState()
+  assert.equal(workspaceFolderName(state.workspaces[0]!, state.tabs, state.panes), workspace.name)
+  state.setPaneCwd(state.activePaneId!, '/tmp/another')
+  state = useTauStore.getState()
+  assert.equal(workspaceFolderName(state.workspaces[0]!, state.tabs, state.panes), 'another')
+  state.selectPane(first)
+  state = useTauStore.getState()
+  assert.equal(workspaceFolderName(state.workspaces[0]!, state.tabs, state.panes), 'project')
+  state.setPaneCwd(first, '/')
+  state = useTauStore.getState()
+  assert.equal(workspaceFolderName(state.workspaces[0]!, state.tabs, state.panes), '/')
 })
 
 test('explicit tab names survive terminal titles and graph restore; clearing restores automatic naming', () => {

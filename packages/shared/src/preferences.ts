@@ -2,9 +2,10 @@ import type { SettingsData } from './session'
 
 export const shortcuts = [
   { id: 'new-tab', label: 'New tab', defaultKey: 'Mod+T', linuxKey: 'Ctrl+Shift+T' },
-  { id: 'close-tab', label: 'Close tab', defaultKey: 'Mod+W', linuxKey: 'Ctrl+Shift+W' },
-  { id: 'close-pane', label: 'Close pane', defaultKey: 'Mod+Shift+W', linuxKey: 'Ctrl+Shift+Q' },
+  { id: 'close-tab', label: 'Close tab', defaultKey: 'Mod+Shift+W', linuxKey: 'Ctrl+Shift+Q' },
+  { id: 'close-pane', label: 'Close pane', defaultKey: 'Mod+W', linuxKey: 'Ctrl+Shift+W' },
   { id: 'close-pane-ctrl', label: 'Close pane (alternate)', defaultKey: '' },
+  { id: 'toggle-sidebar', label: 'Toggle sidebar', defaultKey: 'Mod+B', linuxKey: 'Ctrl+Shift+B' },
   { id: 'split-right', label: 'Split right', defaultKey: 'Mod+D', linuxKey: 'Ctrl+Shift+D' },
   { id: 'split-down', label: 'Split down', defaultKey: 'Mod+Shift+D', linuxKey: 'Ctrl+Shift+E' },
   { id: 'search', label: 'Find in terminal', defaultKey: 'Mod+F', linuxKey: 'Ctrl+Shift+F' },
