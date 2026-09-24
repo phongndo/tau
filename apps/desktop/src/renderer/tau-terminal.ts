@@ -162,6 +162,7 @@ export class TauTerminal {
     this.vt.resize(this.cols, this.rows, Math.round(this.cellWidth), Math.round(this.cellHeight))
 
     canvas.addEventListener('pointerdown', this.pointerDown)
+    canvas.addEventListener('mousedown', this.mouseDown)
     canvas.addEventListener('pointermove', this.pointerMove)
     canvas.addEventListener('pointerup', this.pointerUp)
     canvas.addEventListener('pointercancel', this.pointerUp)
@@ -496,6 +497,13 @@ export class TauTerminal {
     this.canvas?.setPointerCapture(event.pointerId)
   }
 
+  private readonly mouseDown = (event: MouseEvent): void => {
+    // Focusing on pointerdown alone loses a race with Chromium's subsequent default mousedown:
+    // it focuses the non-focusable canvas/body and steals keys from the hidden textarea.
+    event.preventDefault()
+    this.focus()
+  }
+
   private readonly pointerMove = (event: PointerEvent): void => {
     if (this.mouseReporting) {
       const button = (event.buttons & 1) !== 0 ? 1 : (event.buttons & 2) !== 0 ? 2 : null
@@ -671,6 +679,7 @@ export class TauTerminal {
     this.disposed = true
     if (this.animationFrame !== null) window.cancelAnimationFrame(this.animationFrame)
     this.canvas?.removeEventListener('pointerdown', this.pointerDown)
+    this.canvas?.removeEventListener('mousedown', this.mouseDown)
     this.canvas?.removeEventListener('pointermove', this.pointerMove)
     this.canvas?.removeEventListener('pointerup', this.pointerUp)
     this.canvas?.removeEventListener('pointercancel', this.pointerUp)

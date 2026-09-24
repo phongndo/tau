@@ -1397,7 +1397,9 @@ async function runElectronSmoke(): Promise<void> {
   const beforeMetrics = await waitForElectronSmokeBaseline(window, () => smokeSettled)
   const result = await smokePromise
   if (process.env.TAU_ELECTRON_SMOKE_SURFACE === '1') {
-    await withTimeout(
+    const keyboardCommand =
+      "printf '\\164\\141\\165\\055\\151\\156\\160\\165\\164\\055\\157\\153\\012'\n"
+    const surface = await withTimeout(
       window.webContents.executeJavaScript(
         `new Promise((resolve, reject) => {
           const deadline = performance.now() + 10000;
@@ -1410,20 +1412,15 @@ async function runElectronSmoke(): Promise<void> {
                 performance.getEntriesByName('tau:terminal:ready').length > 0) {
               const sessionId = canvas.closest('[data-session-id]')?.dataset.sessionId;
               if (!sessionId) return reject(new Error('Tau canvas is not bound to a session'));
-              const before = canvas.toDataURL();
-              input.focus();
-              input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'a', code: 'KeyA' }));
-              const verify = () => {
-                if (canvas.toDataURL() !== before) {
-                  const readable = document.querySelector('.tau-native-terminal-screen-reader');
-                  if (!readable?.textContent?.trim()) return reject(new Error('Tau screen-reader viewport is empty'));
-                  return resolve({ width: canvas.width, height: canvas.height, sessionId });
-                }
-                if (performance.now() >= deadline) return reject(new Error('Tau canvas did not paint keyboard echo'));
-                setTimeout(verify, 30);
-              };
-              setTimeout(verify, 30);
-              return;
+              if (document.activeElement !== input) {
+                if (performance.now() >= deadline) return reject(new Error('Tau terminal input did not focus: ' + document.activeElement?.className));
+                setTimeout(inspect, 20);
+                return;
+              }
+              const readable = document.querySelector('.tau-native-terminal-screen-reader');
+              if (!readable?.textContent?.trim()) return reject(new Error('Tau screen-reader viewport is empty'));
+              const bounds = canvas.getBoundingClientRect();
+              return resolve({ width: canvas.width, height: canvas.height, sessionId, clickX: Math.round(bounds.left + bounds.width / 2), clickY: Math.round(bounds.top + bounds.height / 2) });
             }
             if (performance.now() >= deadline) return reject(new Error('Tau canvas did not mount'));
             setTimeout(inspect, 20);
@@ -1435,6 +1432,53 @@ async function runElectronSmoke(): Promise<void> {
       ELECTRON_SMOKE_TIMEOUT_MS,
       'Electron Ghostty canvas surface',
     )
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.tau-native-terminal-input').blur()`,
+      true,
+    )
+    window.webContents.sendInputEvent({
+      type: 'mouseDown',
+      button: 'left',
+      x: surface.clickX,
+      y: surface.clickY,
+      clickCount: 1,
+    })
+    window.webContents.sendInputEvent({
+      type: 'mouseUp',
+      button: 'left',
+      x: surface.clickX,
+      y: surface.clickY,
+      clickCount: 1,
+    })
+    const clickFocusedInput = await window.webContents.executeJavaScript(
+      `new Promise(resolve => setTimeout(() => resolve(document.activeElement?.className === 'tau-native-terminal-input'), 50))`,
+      true,
+    )
+    if (!clickFocusedInput) throw new Error('Clicking the Tau canvas did not focus terminal input')
+    const outputPromise = window.webContents.executeJavaScript(
+      `new Promise((resolve, reject) => {
+        let output = '';
+        const deadline = performance.now() + 10000;
+        const off = window.electronAPI.onPtyData(${JSON.stringify(surface.sessionId)}, (data) => {
+          output = (output + data).slice(-4096);
+          if (output.includes('tau-input-ok')) { off(); clearInterval(timer); resolve(true); }
+        });
+        const timer = setInterval(() => {
+          if (performance.now() < deadline) return;
+          clearInterval(timer);
+          off();
+          reject(new Error('Tau keyboard did not execute shell command: ' + JSON.stringify(output)));
+        }, 30);
+      })`,
+      true,
+    )
+    for (const char of keyboardCommand) {
+      const keyCode = char === '\n' ? 'Return' : char
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode })
+      if (char !== '\n') window.webContents.sendInputEvent({ type: 'char', keyCode })
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode })
+    }
+    await withTimeout(outputPromise, ELECTRON_SMOKE_TIMEOUT_MS, 'Electron keyboard-to-PTY echo')
   }
   if (process.env.TAU_ELECTRON_SMOKE_IMAGE === '1') {
     const red = Buffer.alloc(8 * 8 * 4)
@@ -1449,9 +1493,11 @@ async function runElectronSmoke(): Promise<void> {
         `new Promise((resolve, reject) => {
           const canvas = document.querySelector('.tau-native-terminal-canvas');
           if (!canvas) return reject(new Error('Tau canvas not mounted for image smoke'));
+          const canvasSessionId = canvas.closest('[data-session-id]')?.dataset.sessionId;
+          if (!canvasSessionId) return reject(new Error('Tau canvas is not bound to a session for image smoke'));
           const context = canvas.getContext('2d', { alpha: false });
           const deadline = performance.now() + 10000;
-          window.electronAPI.writeSessionInput(${JSON.stringify(result.sessionId)}, ${JSON.stringify(command)});
+          window.electronAPI.writeSessionInput(canvasSessionId, ${JSON.stringify(command)});
           const inspect = () => {
             const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
             for (let i = 0; i < pixels.length; i += 4) {
