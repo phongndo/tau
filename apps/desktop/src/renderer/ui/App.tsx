@@ -355,7 +355,7 @@ export function App() {
     onCleanup(() => cancelAnimationFrame(frame))
   })
   createEffect(() => {
-    document.title = activeTab() ? `${activeTab()!.name} — Tau` : 'Tau'
+    document.title = activeTab()?.name ?? 'Terminal'
   })
   createEffect(() => {
     if (!loaded()) return
@@ -410,7 +410,6 @@ export function App() {
       <Show when={loaded()}>
         <aside class="sidebar drag-region" aria-label="Tabs">
           <div class="sidebar-header">
-            <span class="sidebar-title">Tau</span>
             <button
               type="button"
               class="sidebar-add no-drag"

@@ -208,7 +208,7 @@ function createWindow(): BrowserWindowInstance {
     ...(process.platform === 'darwin'
       ? { transparent: true, vibrancy: 'sidebar' as const, visualEffectState: 'active' as const }
       : {}),
-    title: 'Tau',
+    title: 'Terminal',
     ...(appIcon ? { icon: appIcon } : {}),
     show: false, // Show only when terminal is ready
     // Accept first mouse click immediately (no click-through delay)

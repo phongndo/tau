@@ -17,10 +17,10 @@ html {
   --muted: #a0a2a8;
   --subtle: #777a82;
   --chrome: #242529;
-  --sidebar: #303136;
+  --sidebar: #222326;
   --edge: rgb(255 255 255 / 8%);
   --hover: rgb(255 255 255 / 6%);
-  --selected: rgb(255 255 255 / 11%);
+  --selected: rgb(255 255 255 / 7%);
   --tau-terminal-background: #151515;
   background: var(--chrome);
   color: var(--text);
@@ -34,7 +34,7 @@ html {
 }
 html[data-theme='slate'] {
   --chrome: #293038;
-  --sidebar: #303942;
+  --sidebar: #282c31;
 }
 html[data-accent='violet'] {
   --accent: #b7a8d7;
@@ -75,32 +75,23 @@ input:focus-visible {
   -webkit-app-region: no-drag;
 }
 .sidebar {
-  width: 212px;
-  flex: 0 0 212px;
+  width: 196px;
+  flex: 0 0 196px;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid rgb(255 255 255 / 7%);
   background: var(--sidebar);
 }
 .macos .sidebar {
-  background: rgb(29 30 33 / 62%);
+  background: rgb(24 25 28 / 50%);
   backdrop-filter: blur(28px) saturate(1.25);
 }
 .sidebar-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  flex: 0 0 48px;
-  padding: 0 10px 0 16px;
-}
-.macos .sidebar-header {
-  padding-left: 88px;
-}
-.sidebar-title {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
+  justify-content: flex-end;
+  flex: 0 0 38px;
+  padding: 0 10px;
 }
 .sidebar-add,
 .topbar-icon,
@@ -134,14 +125,14 @@ input:focus-visible {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 5px 8px;
+  padding: 2px 8px 8px;
 }
 .sidebar-tab {
   display: flex;
   align-items: center;
-  height: 34px;
+  height: 31px;
   margin: 1px 0;
-  border-radius: 6px;
+  border-radius: 4px;
   color: var(--muted);
 }
 .sidebar-tab:hover {
@@ -232,11 +223,10 @@ input:focus-visible {
   display: flex;
   align-items: center;
   gap: 9px;
-  flex: 0 0 42px;
+  flex: 0 0 38px;
   min-width: 0;
   padding: 0 10px;
-  border-bottom: 1px solid var(--edge);
-  background: var(--chrome);
+  background: var(--tau-terminal-background);
 }
 .macos.sidebar-hidden .topbar {
   padding-left: 86px;
@@ -540,18 +530,22 @@ input:focus-visible {
 .settings-nav {
   display: flex;
   flex-direction: column;
-  width: 186px;
-  flex: 0 0 186px;
-  padding: 16px 10px;
+  width: 174px;
+  flex: 0 0 174px;
+  padding: 12px 9px;
   background: var(--sidebar);
   -webkit-app-region: drag;
 }
 .macos .settings-nav {
   padding-top: 54px;
-  background: rgb(29 30 33 / 62%);
+  background: rgb(24 25 28 / 50%);
   backdrop-filter: blur(28px) saturate(1.25);
 }
 .settings-nav button {
+  -webkit-app-region: no-drag;
+}
+.settings-section-select {
+  display: none;
   -webkit-app-region: no-drag;
 }
 .settings-back,
@@ -566,7 +560,7 @@ input:focus-visible {
   text-align: left;
 }
 .settings-back {
-  margin-bottom: 27px;
+  margin-bottom: 22px;
 }
 .settings-back:hover,
 .settings-nav-item:hover {
@@ -581,41 +575,32 @@ input:focus-visible {
   min-width: 0;
   flex: 1;
   overflow: auto;
-  background: #1d1e21;
+  background: var(--tau-terminal-background);
 }
 .settings-content {
-  width: min(650px, calc(100% - 64px));
-  margin: 0 auto;
-  padding: 42px 0 65px;
+  width: min(640px, 100%);
+  padding: 34px 34px 65px;
 }
 .settings-content h1 {
   margin: 0;
-  font-size: 25px;
+  margin-bottom: 22px;
+  font-size: 21px;
   line-height: 1.2;
   font-weight: 600;
   letter-spacing: -0.035em;
 }
-.settings-lead {
-  margin: 4px 0 30px;
-  color: var(--muted);
-}
-.settings-card {
-  margin: 0 0 32px;
-}
-.settings-card h2 {
-  margin: 0 0 8px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 .setting-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  min-height: 64px;
-  padding: 13px 0;
-  border-bottom: 1px solid var(--edge);
+  min-height: 51px;
+  padding: 8px 0;
 }
 .setting-copy {
   min-width: 0;
@@ -625,7 +610,7 @@ input:focus-visible {
   font-weight: 600;
 }
 .setting-copy p {
-  margin: 3px 0 0;
+  margin: 2px 0 0;
   max-width: 390px;
   color: var(--muted);
   font-size: 11px;
@@ -644,7 +629,7 @@ input:focus-visible {
   min-height: 30px;
   border: 1px solid var(--edge);
   border-radius: 6px;
-  background: #2c2e32;
+  background: #26272a;
   color: var(--text);
   padding: 4px 9px;
 }
@@ -712,15 +697,11 @@ input:focus-visible {
   outline: 1px solid var(--text);
   outline-offset: 2px;
 }
-.card-intro,
-.settings-note {
+.card-intro {
   margin: 5px 0 14px;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.5;
-}
-.settings-note {
-  padding: 0 3px;
 }
 .shortcut-row {
   min-height: 43px;
@@ -754,7 +735,7 @@ input:focus-visible {
 }
 @media (max-width: 760px) {
   .settings-content {
-    width: calc(100% - 40px);
+    padding-inline: 24px;
   }
   .setting-row {
     align-items: flex-start;
@@ -782,33 +763,32 @@ input:focus-visible {
   .macos .settings-nav {
     flex-direction: row;
     align-items: center;
-    gap: 2px;
+    justify-content: space-between;
     width: 100%;
     flex: 0 0 auto;
-    overflow-x: auto;
-    padding: 7px;
-    border-bottom: 1px solid var(--edge);
-    scrollbar-width: thin;
-    scrollbar-color: rgb(255 255 255 / 24%) transparent;
-  }
-  .settings-nav::-webkit-scrollbar {
-    height: 3px;
-  }
-  .settings-nav::-webkit-scrollbar-thumb {
-    background: rgb(255 255 255 / 24%);
+    padding: 6px 12px;
   }
   .macos .settings-nav {
     padding-top: 44px;
   }
-  .settings-nav-item,
+  .settings-nav-item {
+    display: none;
+  }
+  .settings-section-select {
+    display: block;
+    min-height: 30px;
+    min-width: 140px;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: 5px;
+    background: var(--selected);
+    color: var(--text);
+  }
   .settings-back {
     width: auto;
-    flex: 0 0 auto;
     margin: 0;
-    white-space: nowrap;
   }
   .settings-content {
-    width: calc(100% - 32px);
-    padding-top: 26px;
+    padding: 25px 20px 55px;
   }
 }

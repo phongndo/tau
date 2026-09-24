@@ -7,13 +7,13 @@ import type {
 } from '@tau/shared/taud-protocol'
 
 type Section = 'Appearance' | 'Terminal' | 'Multiplexer' | 'Keyboard' | 'Sessions' | 'Daemon'
-const sections: { name: Section; description: string }[] = [
-  { name: 'Appearance', description: 'Colors and layout' },
-  { name: 'Terminal', description: 'Font and display' },
-  { name: 'Multiplexer', description: 'Tabs and panes' },
-  { name: 'Keyboard', description: 'Shortcuts' },
-  { name: 'Sessions', description: 'History and retention' },
-  { name: 'Daemon', description: 'Connection and recovery' },
+const sections: Section[] = [
+  'Appearance',
+  'Terminal',
+  'Multiplexer',
+  'Keyboard',
+  'Sessions',
+  'Daemon',
 ]
 
 export function SettingsPage(props: {
@@ -84,22 +84,17 @@ export function SettingsPage(props: {
     if (!/^(?:[A-Z0-9]|Tab|Enter|Escape|,|Arrow(?:Up|Down|Left|Right))$/u.test(key)) return
     setBinding(id, [...modifiers, key].join('+'))
   }
-  const Row = (row: { title: string; description: string; children: any }) => (
+  const Row = (row: { title: string; description?: string; children: any }) => (
     <div class="setting-row">
       <div class="setting-copy">
         <strong>{row.title}</strong>
-        <p>{row.description}</p>
+        <Show when={row.description}>
+          <p>{row.description}</p>
+        </Show>
       </div>
       <div class="setting-control">{row.children}</div>
     </div>
   )
-  const Card = (card: { title: string; children: any }) => (
-    <section class="settings-card">
-      <h2>{card.title}</h2>
-      {card.children}
-    </section>
-  )
-  const selected = () => sections.find((item) => item.name === section())!
 
   return (
     <div class="settings-layout">
@@ -112,33 +107,40 @@ export function SettingsPage(props: {
             <button
               type="button"
               class="settings-nav-item"
-              classList={{ current: section() === item.name }}
+              classList={{ current: section() === item }}
               onClick={() => {
                 capture(null)
-                setSection(item.name)
+                setSection(item)
               }}
-              aria-current={section() === item.name ? 'page' : undefined}
+              aria-current={section() === item ? 'page' : undefined}
             >
-              {item.name}
+              {item}
             </button>
           )}
         </For>
+        <select
+          class="settings-section-select"
+          aria-label="Settings section"
+          value={section()}
+          onChange={(event) => {
+            capture(null)
+            setSection(event.currentTarget.value as Section)
+          }}
+        >
+          <For each={sections}>{(item) => <option value={item}>{item}</option>}</For>
+        </select>
       </nav>
       <main class="settings-main" aria-label="Settings">
         <div class="settings-content">
-          <h1>{selected().name}</h1>
-          <p class="settings-lead">{selected().description}</p>
+          <h1>{section()}</h1>
           <Show when={error()}>
             <div class="settings-error" role="alert">
               {error()}
             </div>
           </Show>
           <Show when={section() === 'Appearance'}>
-            <Card title="Interface">
-              <Row
-                title="Color palette"
-                description="Choose the depth of the interface around your terminal."
-              >
+            <section class="settings-group">
+              <Row title="Color palette">
                 <select
                   aria-label="Color palette"
                   value={appearance().theme}
@@ -150,7 +152,7 @@ export function SettingsPage(props: {
                   <option value="slate">Slate</option>
                 </select>
               </Row>
-              <Row title="Accent" description="Selection, focus and active workspace highlight.">
+              <Row title="Accent">
                 <div class="swatches">
                   <For each={['blue', 'violet', 'mint'] as const}>
                     {(color) => (
@@ -166,7 +168,7 @@ export function SettingsPage(props: {
                   </For>
                 </div>
               </Row>
-              <Row title="Workspace sidebar" description="Show your open tabs in a vertical rail.">
+              <Row title="Show sidebar">
                 <input
                   type="checkbox"
                   aria-label="Workspace sidebar"
@@ -174,10 +176,10 @@ export function SettingsPage(props: {
                   onChange={(e) => setAppearance({ sidebar: e.currentTarget.checked })}
                 />
               </Row>
-            </Card>
+            </section>
           </Show>
           <Show when={section() === 'Terminal'}>
-            <Card title="Display">
+            <section class="settings-group">
               <Row
                 title="Font size"
                 description="Applies to every live terminal and refits the PTY grid."
@@ -196,7 +198,7 @@ export function SettingsPage(props: {
                 />
                 <span class="unit">px</span>
               </Row>
-              <Row title="Font family" description="Choose a locally installed monospace family.">
+              <Row title="Font family">
                 <select
                   aria-label="Terminal font family"
                   value={terminal().fontFamily}
@@ -208,10 +210,10 @@ export function SettingsPage(props: {
                   <option value="Cascadia Code, monospace">Cascadia Code</option>
                 </select>
               </Row>
-            </Card>
+            </section>
           </Show>
           <Show when={section() === 'Multiplexer'}>
-            <Card title="Pane behavior">
+            <section class="settings-group">
               <Row
                 title="Confirm before closing"
                 description="Ask before closing a tab or pane. Closing a view never terminates its daemon session."
@@ -225,14 +227,10 @@ export function SettingsPage(props: {
                   }
                 />
               </Row>
-            </Card>
-            <div class="settings-note">
-              Tabs and splits live in the daemon mux graph. Restarting the window reattaches to live
-              sessions.
-            </div>
+            </section>
           </Show>
           <Show when={section() === 'Keyboard'}>
-            <Card title="Shortcuts">
+            <section class="settings-group">
               <p class="card-intro">
                 Click a shortcut and press a new combination. Escape cancels; clear passes the key
                 to your shell. Mod means ⌘ on macOS or Super on Linux.
@@ -278,10 +276,10 @@ export function SettingsPage(props: {
               >
                 Restore default shortcuts
               </button>
-            </Card>
+            </section>
           </Show>
           <Show when={section() === 'Sessions'}>
-            <Card title="Persistence">
+            <section class="settings-group">
               <Row
                 title="Save session history"
                 description="Retain output and snapshots so detached sessions can be recovered."
@@ -335,10 +333,10 @@ export function SettingsPage(props: {
                   onChange={(e) => setPersistence({ persistInput: e.currentTarget.checked })}
                 />
               </Row>
-            </Card>
+            </section>
           </Show>
           <Show when={section() === 'Daemon'}>
-            <Card title="Terminal service">
+            <section class="settings-group">
               <Row
                 title="Status"
                 description="PTYs and session history are owned by the Zig daemon."
@@ -367,7 +365,7 @@ export function SettingsPage(props: {
                   </button>
                 </Show>
               </Row>
-            </Card>
+            </section>
             <Show when={props.recoverError}>
               <div class="settings-error" role="alert">
                 {props.recoverError}
