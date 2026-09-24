@@ -1,6 +1,6 @@
 # Tau
 
-Tau is a graphical terminal multiplexer built with Electron, xterm.js, and a Zig daemon (`taud`). It opens into a shell; tabs and splits organize terminals, while daemon-owned PTYs can survive a window or renderer restart.
+Tau is an experiment to see how fast a native Electron terminal multiplexer can be. It uses xterm.js and a Zig daemon (`taud`). It opens into a shell; tabs and splits organize terminals, while daemon-owned PTYs can survive a window or renderer restart.
 
 Today the desktop app has a sidebar-based mux UI, terminal search, preferences (appearance, terminal, shortcuts, sessions), and session recovery. A structured control CLI and extension runtime are product goals, **not shipped APIs**. Pi, Git, and project workflows are not built into the terminal.
 
