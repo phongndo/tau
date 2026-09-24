@@ -7,13 +7,13 @@ import type {
 } from '@tau/shared/taud-protocol'
 
 type Section = 'Appearance' | 'Terminal' | 'Multiplexer' | 'Keyboard' | 'Sessions' | 'Daemon'
-const sections: { name: Section; icon: string; description: string }[] = [
-  { name: 'Appearance', icon: '◈', description: 'Make Tau your own' },
-  { name: 'Terminal', icon: '⌘', description: 'Type, scale and canvas' },
-  { name: 'Multiplexer', icon: '▦', description: 'Tabs and pane behavior' },
-  { name: 'Keyboard', icon: '⌨', description: 'Shortcuts and navigation' },
-  { name: 'Sessions', icon: '◷', description: 'History and retention' },
-  { name: 'Daemon', icon: '◉', description: 'Connection and recovery' },
+const sections: { name: Section; description: string }[] = [
+  { name: 'Appearance', description: 'Colors and layout' },
+  { name: 'Terminal', description: 'Font and display' },
+  { name: 'Multiplexer', description: 'Tabs and panes' },
+  { name: 'Keyboard', description: 'Shortcuts' },
+  { name: 'Sessions', description: 'History and retention' },
+  { name: 'Daemon', description: 'Connection and recovery' },
 ]
 
 export function SettingsPage(props: {
@@ -103,11 +103,10 @@ export function SettingsPage(props: {
 
   return (
     <div class="settings-layout">
-      <nav class="settings-nav glass" aria-label="Settings navigation">
+      <nav class="settings-nav" aria-label="Settings navigation">
         <button class="settings-back" type="button" onClick={props.onBack}>
-          ← <span>Back to terminal</span>
+          ← <span>Terminal</span>
         </button>
-        <div class="settings-nav-heading">PREFERENCES</div>
         <For each={sections}>
           {(item) => (
             <button
@@ -120,16 +119,13 @@ export function SettingsPage(props: {
               }}
               aria-current={section() === item.name ? 'page' : undefined}
             >
-              <span class="settings-nav-icon">{item.icon}</span>
               {item.name}
             </button>
           )}
         </For>
-        <div class="settings-nav-version">TAU / PREFERENCES</div>
       </nav>
       <main class="settings-main" aria-label="Settings">
         <div class="settings-content">
-          <div class="eyebrow">CONFIGURATION / {section().toUpperCase()}</div>
           <h1>{selected().name}</h1>
           <p class="settings-lead">{selected().description}</p>
           <Show when={error()}>
@@ -150,8 +146,8 @@ export function SettingsPage(props: {
                     setAppearance({ theme: e.currentTarget.value as 'midnight' | 'slate' })
                   }
                 >
-                  <option value="midnight">Midnight glass</option>
-                  <option value="slate">Slate glass</option>
+                  <option value="midnight">Charcoal</option>
+                  <option value="slate">Slate</option>
                 </select>
               </Row>
               <Row title="Accent" description="Selection, focus and active workspace highlight.">

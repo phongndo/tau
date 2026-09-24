@@ -38,6 +38,9 @@ try {
     resolve(outdir, 'entry.mjs'),
     `--user-data-dir=${resolve(outdir, 'profile')}`,
     ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
+    // GitHub's Linux runner cannot install Electron's SUID helper from node_modules.
+    // These disposable test windows only load local fixtures; the desktop app does not use this flag.
+    ...(process.platform === 'linux' && process.env.CI === 'true' ? ['--no-sandbox'] : []),
     ...args,
   ]
   const child = Bun.spawn([electronPath, ...electronArgs], {

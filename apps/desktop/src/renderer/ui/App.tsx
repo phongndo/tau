@@ -226,6 +226,8 @@ function PaneTree(props: {
 }
 
 export function App() {
+  const isMac = navigator.platform.startsWith('Mac')
+  document.documentElement.dataset.platform = isMac ? 'macos' : 'other'
   const tabs = useTau((state) => state.tabs)
   const panes = useTau((state) => state.panes)
   const activeTabId = useTau((state) => state.activeTabId)
@@ -399,39 +401,39 @@ export function App() {
   return (
     <div
       class="tau-shell"
-      classList={{ 'sidebar-hidden': settings().appearance?.sidebar === false }}
+      classList={{
+        'sidebar-hidden': settings().appearance?.sidebar === false,
+        'settings-open': settingsOpen(),
+        macos: isMac,
+      }}
     >
       <Show when={loaded()}>
-        <aside class="sidebar glass" aria-label="Workspaces">
-          <div class="sidebar-brand drag-region">
-            <span class="brand-mark">τ</span>
-            <span>tau</span>
-            <span class="brand-caption">/ TERMINAL</span>
-          </div>
-          <div class="sidebar-section-title">
-            WORKSPACES{' '}
+        <aside class="sidebar drag-region" aria-label="Tabs">
+          <div class="sidebar-header">
+            <span class="sidebar-title">Tau</span>
             <button
               type="button"
+              class="sidebar-add no-drag"
               aria-label="New tab"
               title="New tab"
               onClick={() => useTauStore.getState().newTab()}
             >
-              ＋
+              +
             </button>
           </div>
           <nav class="sidebar-tabs" aria-label="Terminal tabs">
             <For each={sorted()}>
-              {(tab, index) => (
+              {(tab) => (
                 <div class="sidebar-tab" classList={{ selected: tab.id === activeTabId() }}>
                   <button
                     type="button"
                     class="sidebar-tab-select"
+                    aria-current={tab.id === activeTabId() ? 'page' : undefined}
                     onClick={() => {
                       setSettingsOpen(false)
                       useTauStore.getState().selectTab(tab.id)
                     }}
                   >
-                    <span class="tab-index">{String(index() + 1).padStart(2, '0')}</span>
                     <span class="truncate">{tabTitle(tab)}</span>
                   </button>
                   <button
@@ -452,13 +454,16 @@ export function App() {
               class="sidebar-footer-button"
               onClick={() => setSettingsOpen(true)}
             >
-              ⚙ <span>Settings</span>
-              <span class="sidebar-footer-hint">⌘ ,</span>
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <circle cx="10" cy="10" r="3" />
+                <path d="M10 1.8v2M10 16.2v2M1.8 10h2M16.2 10h2M4.2 4.2l1.4 1.4m8.8 8.8 1.4 1.4m0-11.6-1.4 1.4m-8.8 8.8-1.4 1.4" />
+              </svg>
+              Settings
             </button>
           </div>
         </aside>
         <section class="workspace">
-          <header class="topbar glass drag-region">
+          <header class="topbar drag-region">
             <button
               type="button"
               class="topbar-icon no-drag"
@@ -474,14 +479,47 @@ export function App() {
                 })
               }
             >
-              ☷
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <rect x="2" y="3" width="16" height="14" rx="2" />
+                <path d="M7 3v14" />
+              </svg>
             </button>
-            <span class="topbar-divider" />
-            <span class="topbar-location">WORKSPACE</span>
-            <span class="topbar-chevron">/</span>
-            <strong class="topbar-title">
-              {activeTab() ? tabTitle(activeTab()!) : 'Terminal'}
-            </strong>
+            <nav class="topbar-tabstrip no-drag" aria-label="Terminal tabs">
+              <For each={sorted()}>
+                {(tab) => (
+                  <div class="topbar-tab" classList={{ selected: tab.id === activeTabId() }}>
+                    <button
+                      type="button"
+                      class="topbar-tab-select"
+                      aria-current={tab.id === activeTabId() ? 'page' : undefined}
+                      onClick={() => {
+                        setSettingsOpen(false)
+                        useTauStore.getState().selectTab(tab.id)
+                      }}
+                    >
+                      {tabTitle(tab)}
+                    </button>
+                    <button
+                      type="button"
+                      class="topbar-tab-close"
+                      aria-label={`Close ${tab.name}`}
+                      onClick={() => closeTab(tab.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+              </For>
+              <button
+                type="button"
+                class="topbar-tab-add"
+                aria-label="New tab"
+                title="New tab"
+                onClick={() => useTauStore.getState().newTab()}
+              >
+                +
+              </button>
+            </nav>
             <div class="topbar-actions no-drag">
               <button
                 type="button"
@@ -489,7 +527,10 @@ export function App() {
                 aria-label="Split right"
                 onClick={() => useTauStore.getState().splitActivePane('row')}
               >
-                ◫
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <rect x="2" y="3" width="16" height="14" rx="2" />
+                  <path d="M10 3v14" />
+                </svg>
               </button>
               <button
                 type="button"
@@ -497,53 +538,42 @@ export function App() {
                 aria-label="Split down"
                 onClick={() => useTauStore.getState().splitActivePane('column')}
               >
-                ⊟
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <rect x="2" y="3" width="16" height="14" rx="2" />
+                  <path d="M2 10h16" />
+                </svg>
               </button>
               <button
                 type="button"
-                title="New tab"
-                aria-label="New tab"
-                onClick={() => useTauStore.getState().newTab()}
-              >
-                ＋
-              </button>
-              <button
-                type="button"
+                class="topbar-settings"
                 title="Settings"
                 aria-label="Settings"
                 onClick={() => setSettingsOpen(true)}
               >
-                ⚙
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <circle cx="10" cy="10" r="3" />
+                  <path d="M10 1.8v2M10 16.2v2M1.8 10h2M16.2 10h2M4.2 4.2l1.4 1.4m8.8 8.8 1.4 1.4m0-11.6-1.4 1.4m-8.8 8.8-1.4 1.4" />
+                </svg>
               </button>
             </div>
           </header>
           <div class="workspace-body" style={{ display: settingsOpen() ? 'none' : '' }}>
             <Show when={activeTab()}>
               {(tab) => (
-                <div class="pane-frame">
-                  <div class="pane-header">
-                    <span class="live-dot" />{' '}
-                    <span class="pane-header-label">{tabTitle(tab())}</span>
-                    <span class="pane-header-spacer" />
-                    <span class="pane-header-meta">SHELL · LIVE</span>
-                  </div>
-                  <div class="pane-content">
-                    <PaneTree
-                      node={tab().layout}
-                      panes={byId()}
-                      active={activePaneId()}
-                      focus={focus()}
-                      search={search()}
-                      onSelect={(id) => {
-                        if (id !== useTauStore.getState().activePaneId)
-                          useTauStore.getState().selectPane(id)
-                      }}
-                      onTitle={(id, title) => useTauStore.getState().setPaneTitle(id, title)}
-                      onRestart={(id) => useTauStore.getState().restartPaneSession(id)}
-                      onResize={(layout) => useTauStore.getState().setTabLayout(tab().id, layout)}
-                    />
-                  </div>
-                </div>
+                <PaneTree
+                  node={tab().layout}
+                  panes={byId()}
+                  active={activePaneId()}
+                  focus={focus()}
+                  search={search()}
+                  onSelect={(id) => {
+                    if (id !== useTauStore.getState().activePaneId)
+                      useTauStore.getState().selectPane(id)
+                  }}
+                  onTitle={(id, title) => useTauStore.getState().setPaneTitle(id, title)}
+                  onRestart={(id) => useTauStore.getState().restartPaneSession(id)}
+                  onResize={(layout) => useTauStore.getState().setTabLayout(tab().id, layout)}
+                />
               )}
             </Show>
           </div>
@@ -558,15 +588,6 @@ export function App() {
               onRecover={recover}
             />
           </Show>
-          <footer class="statusbar glass">
-            <span class="live-dot" /> <span>TAUD {diagnostics()?.state ?? 'CONNECTED'}</span>
-            <span class="statusbar-spacer" />
-            <span>
-              {panes().length} PANE{panes().length === 1 ? '' : 'S'}
-            </span>
-            <span class="statusbar-key">⌘ ,</span>
-            <span>SETTINGS</span>
-          </footer>
         </section>
       </Show>
     </div>
