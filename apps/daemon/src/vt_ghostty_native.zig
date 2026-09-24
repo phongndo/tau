@@ -15,9 +15,8 @@ pub const Options = struct {
     max_scrollback: u32 = 0,
 };
 
-// Compile Ghostty's native C ABI with its required Zig 0.16, while Tau and
-// zig-sqlite continue using the project's Zig 0.15.2 toolchain. The ABI is
-// deliberately shared with the browser WASM build of the same revision.
+// The daemon and Ghostty's native C ABI use the same Zig 0.16 toolchain.
+// The C ABI is shared with the browser WASM build of the same revision.
 fn createHandle(cols: u16, rows: u16, max_scrollback: u32) !c.GhosttyTerminal {
     var handle: c.GhosttyTerminal = null;
     if (c.ghostty_terminal_new(null, &handle, cols, rows) != c.GHOSTTY_SUCCESS) return error.OutOfMemory;

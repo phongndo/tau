@@ -175,7 +175,7 @@ pub fn readCurrentScreenPath(allocator: std.mem.Allocator, path: []const u8) !?D
 }
 
 pub fn deleteCurrentScreenPath(path: []const u8) !void {
-    std.fs.cwd().deleteFile(path) catch |err| switch (err) {
+    std.Io.Dir.cwd().deleteFile(@import("sync_io.zig").io(), path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return error.FileDeleteFailed,
     };
@@ -200,10 +200,7 @@ fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, limit: usize) !
     }
     defer _ = std.c.close(fd);
 
-    var stat: std.c.Stat = undefined;
-    if (std.c.fstat(fd, &stat) != 0) return error.FileStatFailed;
-    if (stat.size < 0) return error.FileTooBig;
-    const size: usize = @intCast(stat.size);
+    const size: usize = std.math.cast(usize, try @import("sync_io.zig").fileSize(fd)) orelse return error.FileTooBig;
     if (size > limit) return error.FileTooBig;
 
     const data = try allocator.alloc(u8, size);

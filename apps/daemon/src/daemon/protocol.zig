@@ -1,6 +1,7 @@
 const std = @import("std");
 const rpc = @import("../rpc.zig");
 const session = @import("../session.zig");
+const sync_io = @import("../sync_io.zig");
 
 pub const AttachKind = enum {
     live,
@@ -68,7 +69,7 @@ fn readProtocolFixtureAlloc(allocator: std.mem.Allocator, name: []const u8) ![]u
         .{name},
     );
     defer allocator.free(path);
-    return std.fs.cwd().readFileAlloc(allocator, path, 4096);
+    return std.Io.Dir.cwd().readFileAlloc(sync_io.io(), path, allocator, .limited(4096));
 }
 
 test "session response matches shared golden fixture" {

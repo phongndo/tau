@@ -77,8 +77,8 @@ function output(command: string, args: readonly string[], cwd = daemonRoot): str
 
 function assertZigVersion(): string {
   const version = output('zig', ['version'])
-  if (version !== '0.15.2') {
-    fail(`taud requires Zig 0.15.2; found ${version}. Run inside nix develop`)
+  if (version !== '0.16.0') {
+    fail(`taud requires Zig 0.16.0; found ${version}. Run inside nix develop`)
   }
   return version
 }
@@ -93,9 +93,7 @@ function ensureGhosttyNative(): string {
     !existsSync(revisionFile) ||
     readFileSync(revisionFile, 'utf8').trim() !== GHOSTTY_REVISION
   ) {
-    run('nix', ['shell', 'nixpkgs#zig_0_16', '-c', 'bun', 'scripts/build-ghostty-vt-native.ts'], {
-      cwd: repoRoot,
-    })
+    run('bun', ['scripts/build-ghostty-vt-native.ts'], { cwd: repoRoot })
   }
   if (!existsSync(archive)) fail('Ghostty native archive is missing after build')
   return archive

@@ -2,11 +2,11 @@
     .name = .taud,
     .version = "0.1.0",
     .fingerprint = 0x949b613244f5f41c, // Name hash for .taud; preserve the package identity's random suffix.
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .sqlite = .{
-            .url = "https://github.com/vrischmann/zig-sqlite/archive/29c0e65a80b38203c010ed31e7a72d2f804649a5.tar.gz",
-            .hash = "sqlite-3.48.0-F2R_a8eODgCnwT0ssaQUTNrsbDeDOtmuOPzF33cgvN13",
+            .url = "https://github.com/vrischmann/zig-sqlite/archive/961c14efb2c9cc4bc6c065926ac3bdb74520c995.tar.gz",
+            .hash = "sqlite-3.48.0-F2R_a-akDgC9Nl0WrJKKmmsRppgaacuXNU5758BOFt-6",
         },
     },
     .paths = .{

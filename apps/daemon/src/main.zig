@@ -1,14 +1,14 @@
 const std = @import("std");
 const taud = @import("taud");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (debugAllocatorEnabled()) {
         var debug_allocator: std.heap.DebugAllocator(.{}) = .{
             .backing_allocator = std.heap.smp_allocator,
         };
         const allocator = debug_allocator.allocator();
 
-        realMain(allocator) catch |err| {
+        realMain(allocator, init.minimal.args) catch |err| {
             if (debug_allocator.deinit() == .leak) std.process.exit(1);
             return err;
         };
@@ -16,14 +16,13 @@ pub fn main() !void {
         return;
     }
 
-    try realMain(std.heap.smp_allocator);
+    try realMain(std.heap.smp_allocator, init.minimal.args);
 }
 
-fn realMain(allocator: std.mem.Allocator) !void {
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
+fn realMain(allocator: std.mem.Allocator, process_args: std.process.Args) !void {
+    const home = std.mem.span(std.c.getenv("HOME") orelse return error.HomeNotSet);
 
-    var args = try std.process.argsWithAllocator(allocator);
+    var args = try std.process.Args.Iterator.initAllocator(process_args, allocator);
     defer args.deinit();
     _ = args.skip();
 
@@ -53,11 +52,6 @@ fn realMain(allocator: std.mem.Allocator) !void {
 }
 
 fn debugAllocatorEnabled() bool {
-    const allocator = std.heap.smp_allocator;
-    const value = std.process.getEnvVarOwned(allocator, "TAUD_DEBUG_ALLOC") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => return false,
-        else => return false,
-    };
-    defer allocator.free(value);
-    return std.mem.eql(u8, value, "1");
+    const value = std.c.getenv("TAUD_DEBUG_ALLOC") orelse return false;
+    return std.mem.eql(u8, std.mem.span(value), "1");
 }

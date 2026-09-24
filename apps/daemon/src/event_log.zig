@@ -238,7 +238,7 @@ fn migrateLegacyEventLogPath(allocator: std.mem.Allocator, dir: []const u8) ![]u
     defer allocator.free(legacy_path);
 
     if (!fileExists(current_path) and fileExists(legacy_path)) {
-        std.fs.cwd().rename(legacy_path, current_path) catch |err| switch (err) {
+        @import("sync_io.zig").rename(legacy_path, current_path) catch |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
         };
@@ -633,11 +633,7 @@ fn openReadFile(allocator: std.mem.Allocator, path: []const u8) !?OpenReadFile {
     }
     errdefer _ = std.c.close(fd);
 
-    var stat: std.c.Stat = undefined;
-    if (std.c.fstat(fd, &stat) != 0) return error.FileStatFailed;
-    if (stat.size < 0) return error.FileTooBig;
-
-    return .{ .fd = fd, .size = @intCast(stat.size) };
+    return .{ .fd = fd, .size = try @import("sync_io.zig").fileSize(fd) };
 }
 
 fn readExactFd(fd: std.c.fd_t, out: []u8) !usize {
@@ -733,10 +729,7 @@ fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, limit: usize) !
     }
     defer _ = std.c.close(fd);
 
-    var stat: std.c.Stat = undefined;
-    if (std.c.fstat(fd, &stat) != 0) return error.FileStatFailed;
-    if (stat.size < 0) return error.FileTooBig;
-    const size: usize = @intCast(stat.size);
+    const size: usize = std.math.cast(usize, try @import("sync_io.zig").fileSize(fd)) orelse return error.FileTooBig;
     if (size > limit) return error.FileTooBig;
 
     const data = try allocator.alloc(u8, size);
@@ -854,7 +847,7 @@ fn mkdirPath(allocator: std.mem.Allocator, path: []const u8, mode: std.c.mode_t)
 }
 
 fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    std.Io.Dir.cwd().access(@import("sync_io.zig").io(), path, .{}) catch return false;
     return true;
 }
 

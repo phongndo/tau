@@ -134,7 +134,7 @@ pub fn reloadPersistencePolicyFromSettingsLocked(self: anytype) void {
     };
     defer self.allocator.free(settings_path);
 
-    const bytes = std.fs.cwd().readFileAlloc(self.allocator, settings_path, 64 * 1024) catch |err| switch (err) {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(@import("../sync_io.zig").io(), settings_path, self.allocator, .limited(64 * 1024)) catch |err| switch (err) {
         error.FileNotFound => return,
         else => {
             std.log.warn("failed to read persistence settings: {t}", .{err});

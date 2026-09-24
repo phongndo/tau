@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const required_zig_version = std.SemanticVersion{ .major = 0, .minor = 15, .patch = 2 };
+const required_zig_version = std.SemanticVersion{ .major = 0, .minor = 16, .patch = 0 };
 
 comptime {
     if (builtin.zig_version.order(required_zig_version) != .eq) {

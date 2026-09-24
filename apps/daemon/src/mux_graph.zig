@@ -99,7 +99,7 @@ pub const Graph = struct {
 
         const next_rev = std.math.add(u64, self.graph_rev, 1) catch return Error.InvalidGraph;
         const next_seq = std.math.add(u64, self.event_seq, 1) catch return Error.InvalidGraph;
-        const at_ms = std.time.milliTimestamp();
+        const at_ms = @import("sync_io.zig").nowMs();
         // Persist committed counters inside the snapshot body so RPC consumers see one coherent state.
         const copy = try injectSnapshotRevisions(self.allocator, json, next_rev, next_seq);
         errdefer self.allocator.free(copy);
@@ -129,23 +129,19 @@ pub const Graph = struct {
 
         const temporary_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp-{d}", .{ path, std.c.getpid() });
         defer self.allocator.free(temporary_path);
-        std.fs.cwd().deleteFile(temporary_path) catch {};
-        errdefer std.fs.cwd().deleteFile(temporary_path) catch {};
+        std.Io.Dir.cwd().deleteFile(@import("sync_io.zig").io(), temporary_path) catch {};
+        errdefer std.Io.Dir.cwd().deleteFile(@import("sync_io.zig").io(), temporary_path) catch {};
+        try @import("sync_io.zig").writePrivateFile(temporary_path, out.written());
 
-        var file = try std.fs.cwd().createFile(temporary_path, .{ .truncate = true, .mode = 0o600 });
-        defer file.close();
-        try file.writeAll(out.written());
-        try file.sync();
-
-        std.fs.cwd().deleteFile(previous_path) catch |err| switch (err) {
+        std.Io.Dir.cwd().deleteFile(@import("sync_io.zig").io(), previous_path) catch |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
         };
-        std.fs.cwd().rename(path, previous_path) catch |err| switch (err) {
+        @import("sync_io.zig").rename(path, previous_path) catch |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
         };
-        try std.fs.cwd().rename(temporary_path, path);
+        try @import("sync_io.zig").rename(temporary_path, path);
     }
 
     pub fn restore(self: *Graph, path: []const u8, previous_path: []const u8) !bool {
@@ -154,7 +150,7 @@ pub const Graph = struct {
     }
 
     fn restoreOne(self: *Graph, path: []const u8) !bool {
-        const bytes = std.fs.cwd().readFileAlloc(self.allocator, path, limits.graph_snapshot_bytes_max) catch |err| switch (err) {
+        const bytes = std.Io.Dir.cwd().readFileAlloc(@import("sync_io.zig").io(), path, self.allocator, .limited(limits.graph_snapshot_bytes_max)) catch |err| switch (err) {
             error.FileNotFound => return false,
             else => return err,
         };
@@ -183,7 +179,7 @@ pub const Graph = struct {
         if (self.event_seq > 0) try self.events.append(self.allocator, .{
             .event_seq = self.event_seq,
             .graph_rev = self.graph_rev,
-            .at_ms = std.time.milliTimestamp(),
+            .at_ms = @import("sync_io.zig").nowMs(),
         });
         return true;
     }
@@ -210,8 +206,8 @@ fn injectSnapshotRevisions(
     defer parsed.deinit();
     switch (parsed.value) {
         .object => |*object| {
-            try object.put("graphRev", .{ .integer = @intCast(graph_rev) });
-            try object.put("eventSeq", .{ .integer = @intCast(event_seq) });
+            try object.put(allocator, "graphRev", .{ .integer = @intCast(graph_rev) });
+            try object.put(allocator, "eventSeq", .{ .integer = @intCast(event_seq) });
         },
         else => return Error.InvalidGraph,
     }
@@ -547,7 +543,7 @@ test "graph recovers previous valid atomic checkpoint" {
     try graph.persist(current, previous);
     try graph.replaceSnapshot(validFixture(), 1);
     try graph.persist(current, previous);
-    try std.fs.cwd().writeFile(.{ .sub_path = current, .data = "truncated" });
+    try std.Io.Dir.cwd().writeFile(@import("sync_io.zig").io(), .{ .sub_path = current, .data = "truncated" });
 
     var restored = Graph.init(std.testing.allocator);
     defer restored.deinit();

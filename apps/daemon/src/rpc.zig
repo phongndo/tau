@@ -243,7 +243,7 @@ pub fn responseJsonAlloc(allocator: std.mem.Allocator, response: ControlResponse
 
 pub fn responseJsonWithTraceAlloc(allocator: std.mem.Allocator, response: []const u8, trace_id: ?[]const u8) ![]u8 {
     const trace = trace_id orelse return allocator.dupe(u8, response);
-    const trimmed = std.mem.trimRight(u8, response, " \n\r\t");
+    const trimmed = std.mem.trimEnd(u8, response, " \n\r\t");
     if (trimmed.len == 0 or trimmed[trimmed.len - 1] != '}') return allocator.dupe(u8, response);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -254,7 +254,7 @@ pub fn responseJsonWithTraceAlloc(allocator: std.mem.Allocator, response: []cons
 }
 
 pub fn responseJsonWithControlDiagnosticsAlloc(allocator: std.mem.Allocator, response: []const u8, diagnostics: ControlDiagnostics) ![]u8 {
-    const trimmed = std.mem.trimRight(u8, response, " \n\r\t");
+    const trimmed = std.mem.trimEnd(u8, response, " \n\r\t");
     if (trimmed.len == 0 or trimmed[trimmed.len - 1] != '}') return allocator.dupe(u8, response);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -562,7 +562,7 @@ fn readProtocolFixtureAlloc(allocator: std.mem.Allocator, name: []const u8) ![]u
         .{name},
     );
     defer allocator.free(path);
-    return std.fs.cwd().readFileAlloc(allocator, path, 4096);
+    return std.Io.Dir.cwd().readFileAlloc(@import("sync_io.zig").io(), path, allocator, .limited(4096));
 }
 
 const ProtocolSpecFixture = struct {

@@ -70,8 +70,8 @@
             nixd # Nix language server
             bun # Package manager, TypeScript runtime, test runner and benchmark bundler
             unzip # Electron's installer extracts its downloaded runtime with unzip
-            zig_0_15 # taud daemon + Ghostty/Zig tooling
-            zls_0_15 # Zig language server matching Zig 0.15.x
+            zig_0_16 # taud daemon + pinned Ghostty native/WASM builds
+            zls_0_16 # Zig language server matching Zig 0.16.x
             nixpkgs-fmt # nix fmt / CI format check
           ]) ++ pkgs.lib.optionals pkgs.stdenv.isLinux (with pkgs; [
             patchelf # Repair npm Electron's Linux interpreter in the dev shell

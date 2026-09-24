@@ -284,7 +284,7 @@ fn decodeExitStatus(status: c_int) ExitStatus {
         return decoded;
     }
     if (std.c.W.IFSIGNALED(raw_status)) {
-        const decoded: ExitStatus = .{ .exit_code = -1, .signal = @intCast(std.c.W.TERMSIG(raw_status)) };
+        const decoded: ExitStatus = .{ .exit_code = -1, .signal = @intCast(@intFromEnum(std.c.W.TERMSIG(raw_status))) };
         assert(decoded.signal > 0);
         return decoded;
     }
@@ -356,20 +356,20 @@ test "pty detached reaper reaps terminated child" {
 }
 
 fn absolutePathExists(path: []const u8) bool {
-    std.fs.accessAbsolute(path, .{}) catch return false;
+    std.Io.Dir.accessAbsolute(@import("sync_io.zig").io(), path, .{}) catch return false;
     return true;
 }
 
 fn expectProcessGone(pid: std.c.pid_t) !void {
     var attempt: usize = 0;
     while (attempt < 200) : (attempt += 1) {
-        if (std.c.kill(pid, 0) != 0) {
+        if (std.c.kill(pid, @enumFromInt(0)) != 0) {
             switch (std.posix.errno(-1)) {
                 .SRCH => return,
                 else => return error.UnexpectedErrno,
             }
         }
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        @import("sync_io.zig").sleepMs(10);
     }
     return error.ProcessStillExists;
 }

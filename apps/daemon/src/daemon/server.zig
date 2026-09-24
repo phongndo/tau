@@ -49,7 +49,7 @@ fn logControlRequestIfNeeded(request_type: rpc.RequestType, trace_id: ?[]const u
 pub fn prepareStorage(self: anytype) !void {
     try ensureOwnerOnlyDir(self.allocator, self.config.root_dir);
     try ensureOwnerOnlyDir(self.allocator, self.config.run_dir);
-    try std.fs.cwd().makePath(self.config.sessions_dir);
+    try std.Io.Dir.cwd().createDirPath(@import("../sync_io.zig").io(), self.config.sessions_dir);
     _ = try self.mux_graph.restore(self.config.graph_path, self.config.graph_previous_path);
     self.reloadPersistencePolicyFromSettingsLocked();
     if (self.database == null) self.database = try db.Database.open(self.allocator, self.config.database_path);
@@ -74,9 +74,9 @@ pub fn printConfig(self: anytype) void {
 pub fn runForever(self: anytype) !void {
     try removeInactiveSocketPath(self.config.socket_path);
 
-    const address = try std.net.Address.initUnix(self.config.socket_path);
-    var server = try address.listen(.{});
-    defer server.deinit();
+    const address = try std.Io.net.UnixAddress.init(self.config.socket_path);
+    var server = try address.listen(@import("../sync_io.zig").io(), .{});
+    defer server.deinit(@import("../sync_io.zig").io());
     try chmodPath(self.allocator, self.config.socket_path, owner_socket_mode);
     const socket_stat = try lstatPath(self.config.socket_path);
     assert(std.posix.S.ISSOCK(socket_stat.mode));
@@ -87,22 +87,21 @@ pub fn runForever(self: anytype) !void {
 
     const ConnectionContext = struct {
         daemon: @TypeOf(self),
-        stream: std.net.Stream,
+        stream: std.Io.net.Stream,
     };
 
     while (true) {
-        const connection = try server.accept();
-        const stream = connection.stream;
+        const stream = try server.accept(@import("../sync_io.zig").io());
         if (!self.reserveControlConnection()) {
             std.log.warn("refusing control RPC connection: active connection cap reached ({d})", .{limits.control_connections_max});
-            stream.close();
+            stream.close(@import("../sync_io.zig").io());
             continue;
         }
         assert(self.active_control_connections.load(.monotonic) <= limits.control_connections_max);
 
         const context = self.allocator.create(ConnectionContext) catch |err| {
             self.releaseControlConnection();
-            stream.close();
+            stream.close(@import("../sync_io.zig").io());
             return err;
         };
         context.* = .{ .daemon = self, .stream = stream };
@@ -142,10 +141,10 @@ pub fn handleControlRequest(self: anytype, allocator: std.mem.Allocator, request
 
     const request_type = request.requestType();
     const trace_id = request.requestTraceId();
-    const started_ns = std.time.nanoTimestamp();
+    const started_ns = @import("../sync_io.zig").nowNs();
     var ok = false;
     defer {
-        const elapsed_ns = std.time.nanoTimestamp() - started_ns;
+        const elapsed_ns = @import("../sync_io.zig").nowNs() - started_ns;
         const duration_ms: u64 = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms)) else 0;
         self.recordControlDiagnosticsLocked(request_type, trace_id, duration_ms, ok);
         logControlRequestIfNeeded(request_type, trace_id, duration_ms, ok);
@@ -231,13 +230,14 @@ fn responsePayloadOk(allocator: std.mem.Allocator, response: []const u8) bool {
     return parsed.value.ok;
 }
 
-pub fn handleStream(self: anytype, stream: std.net.Stream) !void {
-    defer stream.close();
-    assert(stream.handle >= 0);
+pub fn handleStream(self: anytype, stream: std.Io.net.Stream) !void {
+    defer stream.close(@import("../sync_io.zig").io());
+    const fd = stream.socket.handle;
+    assert(fd >= 0);
 
-    try verifyPeerOwner(stream.handle);
+    try verifyPeerOwner(fd);
 
-    var control = try readControlPayloadWithTimeout(self.allocator, stream.handle, limits.control_first_line_timeout_ms);
+    var control = try readControlPayloadWithTimeout(self.allocator, fd, limits.control_first_line_timeout_ms);
     defer control.deinit(self.allocator);
 
     var parsed = std.json.parseFromSlice(rpc.ControlRequestJson, self.allocator, control.payload, .{
@@ -248,7 +248,7 @@ pub fn handleStream(self: anytype, stream: std.net.Stream) !void {
             .error_message = @errorName(err),
         });
         defer self.allocator.free(response);
-        try writeAllFd(stream.handle, response);
+        try writeAllFd(fd, response);
         return;
     };
     defer parsed.deinit();
@@ -258,11 +258,11 @@ pub fn handleStream(self: anytype, stream: std.net.Stream) !void {
     defer self.allocator.free(response);
     const traced_response = try rpc.responseJsonWithTraceAlloc(self.allocator, response, request.requestTraceId());
     defer self.allocator.free(traced_response);
-    try writeAllFd(stream.handle, traced_response);
+    try writeAllFd(fd, traced_response);
 
     if (request.requestType() == .attach) {
         if (request.requestSessionId()) |session_id| {
-            try self.streamAttachedSession(stream.handle, session_id, control.tail);
+            try self.streamAttachedSession(fd, session_id, control.tail);
         }
     }
 }
@@ -279,18 +279,15 @@ pub fn writePidFile(self: anytype) !void {
     const pid_text = try std.fmt.bufPrint(&pid_buffer, "{d}\n", .{std.c.getpid()});
     const temporary_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp-{d}", .{ self.config.pid_path, std.c.getpid() });
     defer self.allocator.free(temporary_path);
-    std.fs.cwd().deleteFile(temporary_path) catch {};
-    errdefer std.fs.cwd().deleteFile(temporary_path) catch {};
-    var file = try std.fs.cwd().createFile(temporary_path, .{ .truncate = true, .mode = 0o600 });
-    defer file.close();
-    try file.writeAll(pid_text);
-    try file.sync();
-    try std.fs.cwd().rename(temporary_path, self.config.pid_path);
+    std.Io.Dir.cwd().deleteFile(@import("../sync_io.zig").io(), temporary_path) catch {};
+    errdefer std.Io.Dir.cwd().deleteFile(@import("../sync_io.zig").io(), temporary_path) catch {};
+    try @import("../sync_io.zig").writePrivateFile(temporary_path, pid_text);
+    try @import("../sync_io.zig").rename(temporary_path, self.config.pid_path);
 }
 
 fn ensureOwnerOnlyDir(allocator: std.mem.Allocator, path: []const u8) !void {
     assert(path.len > 0);
-    try std.fs.cwd().makePath(path);
+    try std.Io.Dir.cwd().createDirPath(@import("../sync_io.zig").io(), path);
     const stat = try lstatPath(path);
     if (!std.posix.S.ISDIR(stat.mode) or stat.uid != std.c.geteuid()) return error.UnsafeSocketPath;
     try chmodPath(allocator, path, owner_dir_mode);
@@ -307,22 +304,57 @@ fn removeInactiveSocketPath(path: []const u8) !void {
     };
     if (!std.posix.S.ISSOCK(stat.mode) or stat.uid != std.c.geteuid()) return error.UnsafeSocketPath;
 
-    if (std.net.connectUnixSocket(path)) |stream| {
-        stream.close();
-        return error.ActiveSocketAlreadyExists;
-    } else |err| switch (err) {
-        error.ConnectionRefused => {},
-        else => return err,
-    }
+    // Zig 0.16's UnixAddress.ConnectError omits ECONNREFUSED. Probe via libc so a stale
+    // socket is removable, while every other connect failure remains a hard error.
+    if (try socketAcceptsConnections(path)) return error.ActiveSocketAlreadyExists;
 
-    std.fs.cwd().deleteFile(path) catch |err| switch (err) {
+    std.Io.Dir.cwd().deleteFile(@import("../sync_io.zig").io(), path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
 }
 
-fn lstatPath(path: []const u8) !std.posix.Stat {
-    return std.posix.fstatat(std.fs.cwd().fd, path, std.posix.AT.SYMLINK_NOFOLLOW);
+const PathStat = struct { mode: std.c.mode_t, uid: std.c.uid_t };
+
+fn socketAcceptsConnections(path: []const u8) !bool {
+    var address: std.c.sockaddr.un = .{ .path = undefined };
+    @memset(&address.path, 0);
+    if (path.len == 0 or path.len >= address.path.len or std.mem.indexOfScalar(u8, path, 0) != null)
+        return error.UnsafeSocketPath;
+    @memcpy(address.path[0..path.len], path);
+    const fd = std.c.socket(std.c.AF.UNIX, std.c.SOCK.STREAM, 0);
+    if (fd < 0) return error.SocketProbeFailed;
+    defer _ = std.c.close(fd);
+    if (std.c.connect(fd, @ptrCast(&address), @sizeOf(@TypeOf(address))) == 0) return true;
+    return switch (std.posix.errno(-1)) {
+        .CONNREFUSED => false,
+        else => error.SocketProbeFailed,
+    };
+}
+
+fn lstatPath(path: []const u8) !PathStat {
+    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
+    defer std.heap.page_allocator.free(path_z);
+    if (builtin.os.tag == .linux) {
+        var stat: std.os.linux.Statx = undefined;
+        if (std.c.statx(std.os.linux.AT.FDCWD, path_z, std.os.linux.AT.SYMLINK_NOFOLLOW, .BASIC_STATS, &stat) != 0) {
+            return switch (std.posix.errno(-1)) {
+                .NOENT => error.FileNotFound,
+                else => error.FileStatFailed,
+            };
+        }
+        if (!stat.mask.TYPE or !stat.mask.MODE or !stat.mask.UID) return error.FileStatFailed;
+        return .{ .mode = stat.mode, .uid = stat.uid };
+    } else {
+        var stat: std.c.Stat = undefined;
+        if (std.c.fstatat(std.c.AT.FDCWD, path_z, &stat, std.c.AT.SYMLINK_NOFOLLOW) != 0) {
+            return switch (std.posix.errno(-1)) {
+                .NOENT => error.FileNotFound,
+                else => error.FileStatFailed,
+            };
+        }
+        return .{ .mode = stat.mode, .uid = stat.uid };
+    }
 }
 
 fn chmodPath(allocator: std.mem.Allocator, path: []const u8, mode: std.c.mode_t) !void {
@@ -343,12 +375,9 @@ fn verifyPeerOwner(socket_fd: std.c.fd_t) !void {
                 gid: std.c.gid_t,
             };
             var credentials: UCred = undefined;
-            try std.posix.getsockopt(
-                socket_fd,
-                std.posix.SOL.SOCKET,
-                std.posix.SO.PEERCRED,
-                std.mem.asBytes(&credentials),
-            );
+            var length: std.c.socklen_t = @sizeOf(UCred);
+            if (std.c.getsockopt(socket_fd, std.c.SOL.SOCKET, std.c.SO.PEERCRED, &credentials, &length) != 0 or length != @sizeOf(UCred))
+                return error.UnauthorizedPeer;
             if (credentials.uid != std.c.geteuid()) return error.UnauthorizedPeer;
         },
         .macos => {
@@ -382,18 +411,18 @@ test "daemon storage and socket paths are owner-only" {
     defer daemon.deinit();
     try daemon.prepareStorage();
 
-    const root_stat = try std.fs.cwd().statFile(config.root_dir);
-    const run_stat = try std.fs.cwd().statFile(config.run_dir);
-    try std.testing.expectEqual(@as(std.fs.File.Mode, owner_dir_mode), root_stat.mode & 0o777);
-    try std.testing.expectEqual(@as(std.fs.File.Mode, owner_dir_mode), run_stat.mode & 0o777);
+    const root_stat = try std.Io.Dir.cwd().statFile(@import("../sync_io.zig").io(), config.root_dir, .{});
+    const run_stat = try std.Io.Dir.cwd().statFile(@import("../sync_io.zig").io(), config.run_dir, .{});
+    try std.testing.expectEqual(@as(std.c.mode_t, owner_dir_mode), root_stat.permissions.toMode() & 0o777);
+    try std.testing.expectEqual(@as(std.c.mode_t, owner_dir_mode), run_stat.permissions.toMode() & 0o777);
 
-    const address = try std.net.Address.initUnix(config.socket_path);
-    var listener = try address.listen(.{});
-    defer listener.deinit();
+    const address = try std.Io.net.UnixAddress.init(config.socket_path);
+    var listener = try address.listen(@import("../sync_io.zig").io(), .{});
+    defer listener.deinit(@import("../sync_io.zig").io());
     try chmodPath(std.testing.allocator, config.socket_path, owner_socket_mode);
 
-    const socket_stat = try std.fs.cwd().statFile(config.socket_path);
-    try std.testing.expectEqual(@as(std.fs.File.Mode, owner_socket_mode), socket_stat.mode & 0o777);
+    const socket_stat = try std.Io.Dir.cwd().statFile(@import("../sync_io.zig").io(), config.socket_path, .{});
+    try std.testing.expectEqual(@as(std.c.mode_t, owner_socket_mode), socket_stat.permissions.toMode() & 0o777);
 }
 
 test "daemon stale socket cleanup refuses unsafe paths" {
@@ -408,10 +437,10 @@ test "daemon stale socket cleanup refuses unsafe paths" {
 
     try ensureOwnerOnlyDir(std.testing.allocator, config.root_dir);
     try ensureOwnerOnlyDir(std.testing.allocator, config.run_dir);
-    try std.fs.cwd().writeFile(.{ .sub_path = config.socket_path, .data = "not a socket" });
+    try std.Io.Dir.cwd().writeFile(@import("../sync_io.zig").io(), .{ .sub_path = config.socket_path, .data = "not a socket" });
     try std.testing.expectError(error.UnsafeSocketPath, removeInactiveSocketPath(config.socket_path));
 
-    const stat = try std.fs.cwd().statFile(config.socket_path);
+    const stat = try std.Io.Dir.cwd().statFile(@import("../sync_io.zig").io(), config.socket_path, .{});
     try std.testing.expectEqual(@as(u64, "not a socket".len), stat.size);
 }
 
@@ -428,14 +457,14 @@ test "daemon stale socket cleanup refuses live sockets and removes stale owned s
     try ensureOwnerOnlyDir(std.testing.allocator, config.root_dir);
     try ensureOwnerOnlyDir(std.testing.allocator, config.run_dir);
 
-    const address = try std.net.Address.initUnix(config.socket_path);
-    var listener = try address.listen(.{});
+    const address = try std.Io.net.UnixAddress.init(config.socket_path);
+    var listener = try address.listen(@import("../sync_io.zig").io(), .{});
     try chmodPath(std.testing.allocator, config.socket_path, owner_socket_mode);
     try std.testing.expectError(error.ActiveSocketAlreadyExists, removeInactiveSocketPath(config.socket_path));
-    listener.deinit();
+    listener.deinit(@import("../sync_io.zig").io());
 
     try removeInactiveSocketPath(config.socket_path);
-    try std.testing.expectError(error.FileNotFound, std.fs.cwd().statFile(config.socket_path));
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(@import("../sync_io.zig").io(), config.socket_path, .{}));
 }
 
 test "daemon peer owner check accepts same-user local sockets" {

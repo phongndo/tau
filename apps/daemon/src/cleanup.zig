@@ -1,6 +1,7 @@
 const std = @import("std");
 const event_log = @import("event_log.zig");
 const limits = @import("limits.zig");
+const sync_io = @import("sync_io.zig");
 
 pub const session_dirs_scan_max = limits.session_dirs_scan_max;
 
@@ -128,11 +129,11 @@ pub fn isActiveSession(session_id: []const u8, active_session_ids: []const []con
 }
 
 fn listSessionDirs(allocator: std.mem.Allocator, sessions_dir: []const u8) ![]SessionDirInfo {
-    var dir = std.fs.cwd().openDir(sessions_dir, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = std.Io.Dir.cwd().openDir(sync_io.io(), sessions_dir, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return allocator.alloc(SessionDirInfo, 0),
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(sync_io.io());
 
     var dirs: std.ArrayList(SessionDirInfo) = .empty;
     errdefer {
@@ -141,11 +142,11 @@ fn listSessionDirs(allocator: std.mem.Allocator, sessions_dir: []const u8) ![]Se
     }
 
     var iterator = dir.iterate();
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(sync_io.io())) |entry| {
         if (entry.kind != .directory) continue;
         if (dirs.items.len >= session_dirs_scan_max) return error.TooManySessionDirs;
 
-        const stat = dir.statFile(entry.name) catch continue;
+        const stat = dir.statFile(sync_io.io(), entry.name, .{}) catch continue;
 
         const session_id = try allocator.dupe(u8, entry.name);
         errdefer allocator.free(session_id);
@@ -156,7 +157,7 @@ fn listSessionDirs(allocator: std.mem.Allocator, sessions_dir: []const u8) ![]Se
         try dirs.append(allocator, .{
             .session_id = session_id,
             .path = path,
-            .mtime_ms = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms)),
+            .mtime_ms = stat.mtime.toMilliseconds(),
             .size = size,
         });
     }
@@ -170,15 +171,15 @@ fn deinitSessionDirs(allocator: std.mem.Allocator, dirs: []SessionDirInfo) void 
 }
 
 fn directorySize(allocator: std.mem.Allocator, path: []const u8) !u64 {
-    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = std.Io.Dir.cwd().openDir(sync_io.io(), path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return 0,
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(sync_io.io());
 
     var total: u64 = 0;
     var iterator = dir.iterate();
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(sync_io.io())) |entry| {
         switch (entry.kind) {
             .directory => {
                 const child_path = try std.fs.path.join(allocator, &.{ path, entry.name });
@@ -186,7 +187,7 @@ fn directorySize(allocator: std.mem.Allocator, path: []const u8) !u64 {
                 total += directorySize(allocator, child_path) catch 0;
             },
             .file => {
-                const stat = dir.statFile(entry.name) catch continue;
+                const stat = dir.statFile(sync_io.io(), entry.name, .{}) catch continue;
                 total += stat.size;
             },
             else => {},
@@ -202,7 +203,7 @@ fn deletePath(path: []const u8, size: u64) !MaintenanceResult {
 }
 
 fn deleteTree(path: []const u8) !void {
-    return std.fs.cwd().deleteTree(path);
+    return std.Io.Dir.cwd().deleteTree(sync_io.io(), path);
 }
 
 fn sessionDirOlderThan(_: void, lhs: SessionDirInfo, rhs: SessionDirInfo) bool {

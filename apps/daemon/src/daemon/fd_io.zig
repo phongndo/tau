@@ -1,5 +1,6 @@
 const std = @import("std");
 const limits = @import("../limits.zig");
+const sync_io = @import("../sync_io.zig");
 
 pub const control_payload_max = limits.control_payload_bytes_max;
 
@@ -63,14 +64,15 @@ pub fn writeAllFdNonBlocking(fd: std.posix.fd_t, data: []const u8) !void {
 
 pub fn setNonBlockingFd(fd: std.posix.fd_t) !void {
     assert(fd >= 0);
-    var flags = try std.posix.fcntl(fd, std.posix.F.GETFL, 0);
-    flags |= 1 << @bitOffsetOf(std.posix.O, "NONBLOCK");
-    _ = try std.posix.fcntl(fd, std.posix.F.SETFL, flags);
+    var flags = std.c.fcntl(fd, std.c.F.GETFL);
+    if (flags < 0) return error.FcntlFailed;
+    flags |= 1 << @bitOffsetOf(std.c.O, "NONBLOCK");
+    if (std.c.fcntl(fd, std.c.F.SETFL, flags) < 0) return error.FcntlFailed;
 }
 
 fn remainingTimeoutMs(start_ms: i64, timeout_ms: i32) ?i32 {
     assert(timeout_ms > 0);
-    const elapsed = std.time.milliTimestamp() - start_ms;
+    const elapsed = sync_io.nowMs() - start_ms;
     if (elapsed >= timeout_ms) return null;
     return @intCast(timeout_ms - elapsed);
 }
@@ -84,7 +86,7 @@ pub fn readControlPayloadWithTimeout(allocator: std.mem.Allocator, fd: std.c.fd_
     var tail: std.ArrayList(u8) = .empty;
     errdefer tail.deinit(allocator);
 
-    const start_ms = std.time.milliTimestamp();
+    const start_ms = sync_io.nowMs();
 
     while (true) {
         const remaining_ms = remainingTimeoutMs(start_ms, timeout_ms) orelse return error.ControlPayloadTimedOut;
@@ -131,9 +133,9 @@ test "control payload reader preserves attach tails and rejects oversize lines" 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "with-tail", .data = "{\"type\":\"attach\"}\nstream-tail" });
-    var with_tail = try tmp.dir.openFile("with-tail", .{});
-    defer with_tail.close();
+    try tmp.dir.writeFile(sync_io.io(), .{ .sub_path = "with-tail", .data = "{\"type\":\"attach\"}\nstream-tail" });
+    const with_tail = try tmp.dir.openFile(sync_io.io(), "with-tail", .{});
+    defer with_tail.close(sync_io.io());
 
     var control = try readControlPayload(std.testing.allocator, with_tail.handle);
     defer control.deinit(std.testing.allocator);
@@ -143,17 +145,17 @@ test "control payload reader preserves attach tails and rejects oversize lines" 
     const oversized = try std.testing.allocator.alloc(u8, control_payload_max + 1);
     defer std.testing.allocator.free(oversized);
     @memset(oversized, 'x');
-    try tmp.dir.writeFile(.{ .sub_path = "oversized", .data = oversized });
-    var oversized_file = try tmp.dir.openFile("oversized", .{});
-    defer oversized_file.close();
+    try tmp.dir.writeFile(sync_io.io(), .{ .sub_path = "oversized", .data = oversized });
+    const oversized_file = try tmp.dir.openFile(sync_io.io(), "oversized", .{});
+    defer oversized_file.close(sync_io.io());
 
     try std.testing.expectError(error.ControlPayloadTooLarge, readControlPayload(std.testing.allocator, oversized_file.handle));
 }
 
 test "control payload reader times out waiting for first line" {
-    const pipe_fds = try std.posix.pipe();
-    defer std.posix.close(pipe_fds[0]);
-    defer std.posix.close(pipe_fds[1]);
+    const pipe_fds = try sync_io.pipe();
+    defer _ = std.c.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[1]);
 
     try std.testing.expectError(
         error.ControlPayloadTimedOut,
@@ -162,11 +164,11 @@ test "control payload reader times out waiting for first line" {
 }
 
 test "control payload reader enforces timeout across partial first line" {
-    const pipe_fds = try std.posix.pipe();
-    defer std.posix.close(pipe_fds[0]);
-    defer std.posix.close(pipe_fds[1]);
+    const pipe_fds = try sync_io.pipe();
+    defer _ = std.c.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[1]);
 
-    _ = try std.posix.write(pipe_fds[1], "partial");
+    try std.testing.expectEqual(@as(isize, 7), std.c.write(pipe_fds[1], "partial", 7));
 
     try std.testing.expectError(
         error.ControlPayloadTimedOut,

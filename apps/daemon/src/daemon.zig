@@ -8,6 +8,8 @@ const session = @import("session.zig");
 const snapshot = @import("snapshot.zig");
 const vt = @import("vt.zig");
 const mux_graph_mod = @import("mux_graph.zig");
+const sync_io = @import("sync_io.zig");
+const thread_sync = @import("thread_sync.zig");
 
 const daemon_config = @import("daemon/config.zig");
 const fd_io = @import("daemon/fd_io.zig");
@@ -53,8 +55,8 @@ pub const Daemon = struct {
     database: ?db.Database,
     persistence: PersistencePolicy,
     mux_graph: mux_graph_mod.Graph,
-    mutex: std.Thread.Mutex = .{},
-    graph_condition: std.Thread.Condition = .{},
+    mutex: thread_sync.Mutex = .{},
+    graph_condition: thread_sync.Condition = .{},
     active_control_connections: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     active_session_readers: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     stream_input_frames_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -128,7 +130,7 @@ pub const Daemon = struct {
             if (spins != 0 and spins % 400 == 0) {
                 std.log.warn("daemon teardown still waiting for {d} session readers", .{self.active_session_readers.load(.acquire)});
             }
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            sync_io.sleepMs(10);
         }
     }
 
@@ -152,7 +154,7 @@ pub const Daemon = struct {
         return server.handleControlRequest(self, allocator, request);
     }
 
-    pub fn handleStream(self: *Daemon, stream: std.net.Stream) !void {
+    pub fn handleStream(self: *Daemon, stream: std.Io.net.Stream) !void {
         return server.handleStream(self, stream);
     }
 
@@ -169,7 +171,7 @@ pub const Daemon = struct {
         }
         self.last_control_duration_ms = duration_ms;
         self.last_control_ok = ok;
-        const recorded_at = std.time.milliTimestamp();
+        const recorded_at = sync_io.nowMs();
         self.last_control_recorded_at_ms = if (recorded_at > 0) @intCast(recorded_at) else 0;
     }
 
@@ -446,7 +448,7 @@ pub const Daemon = struct {
     }
 
     pub fn recordPtyRead(self: *Daemon) void {
-        const timestamp = std.time.nanoTimestamp();
+        const timestamp = sync_io.nowNs();
         self.last_pty_read_ns.store(if (timestamp > 0) @intCast(timestamp) else 0, .monotonic);
     }
 
@@ -814,8 +816,8 @@ test "daemon synthetic exit clears PTY ownership before exited transition" {
     );
     defer std.testing.allocator.free(created);
 
-    const pipe_fds = try std.posix.pipe();
-    defer std.posix.close(pipe_fds[1]);
+    const pipe_fds = try sync_io.pipe();
+    defer _ = std.c.close(pipe_fds[1]);
 
     const item = daemon.sessions.find("exit-session").?;
     {

@@ -11,12 +11,8 @@ if (
   !existsSync(revision) ||
   readFileSync(revision, 'utf8').trim() !== GHOSTTY_WEB_ARTIFACT_ID
 ) {
-  execFileSync(
-    'nix',
-    ['shell', 'nixpkgs#zig_0_16', '-c', 'bun', 'scripts/build-ghostty-vt-wasm.ts'],
-    {
-      cwd: resolve(import.meta.dir, '..'),
-      stdio: 'inherit',
-    },
-  )
+  execFileSync('bun', ['scripts/build-ghostty-vt-wasm.ts'], {
+    cwd: resolve(import.meta.dir, '..'),
+    stdio: 'inherit',
+  })
 }

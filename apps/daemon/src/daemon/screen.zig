@@ -124,8 +124,9 @@ pub fn sendCurrentScreenSnapshotToSubscriber(self: anytype, session_id: []const 
         const snapshot_payload = (try item.currentScreenSnapshotAlloc(self.allocator)) orelse break :frame null;
         defer self.allocator.free(snapshot_payload);
 
-        const duplicated_fd = try std.posix.dup(socket_fd);
-        errdefer std.posix.close(duplicated_fd);
+        const duplicated_fd = std.c.dup(socket_fd);
+        if (duplicated_fd < 0) return error.FileDupFailed;
+        errdefer _ = std.c.close(duplicated_fd);
 
         const encoded_snapshot = try snapshot.encodeAlloc(self.allocator, .{
             .seq = item.last_seq,
@@ -143,7 +144,7 @@ pub fn sendCurrentScreenSnapshotToSubscriber(self: anytype, session_id: []const 
     };
 
     const encoded = frame orelse return;
-    defer std.posix.close(encoded.fd);
+    defer _ = std.c.close(encoded.fd);
     defer self.allocator.free(encoded.encoded);
     try writeAllFd(encoded.fd, encoded.encoded);
 }
