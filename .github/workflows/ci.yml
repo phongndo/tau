@@ -98,6 +98,18 @@ jobs:
         run: bun run tsc
       - name: Persistence and tooling tests
         run: bun run test
+      - name: Electron terminal surface correctness (software display)
+        timeout-minutes: 3
+        run: |
+          if ! command -v Xvfb >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y xvfb
+          fi
+          Xvfb :97 -screen 0 1280x800x24 -nolisten tcp &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+          export DISPLAY=:97
+          bun run test:surface
 
   # ── Build matrix across platforms ──
   build:

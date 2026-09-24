@@ -49,6 +49,7 @@
     "bench:all": "bash bench/run-all.sh",
     "test:persistence": "bun ../../scripts/ensure-ghostty-vt-wasm.ts && bun test src/main/taud-stream.test.ts src/main/taud-client-lifecycle.test.ts test/terminal-output-writer.test.ts test/mux-shell.test.ts test/mux-graph-property.test.ts test/security-boundaries.test.ts test/bundle-workflow-absent.test.ts test/smoke-output.test.ts test/preload-output.test.ts test/sequenced-output-writer.test.ts test/taud-pty-bridge.test.ts test/ghostty-vt.test.ts",
     "test:taud-lifecycle": "bun test src/main/taud-client-real-lifecycle.test.ts",
+    "test:surface": "bun ../../scripts/ensure-ghostty-vt-wasm.ts && bun build test/surface-entry.ts --target=browser --format=iife --outfile .bench-cache/tau-surface.js && bun bench/run-electron.ts test/surface-electron.ts",
     "fmt": "oxfmt .",
     "fmt:check": "oxfmt --check .",
     "lint": "oxlint . --jsx-a11y-plugin --deny-warnings --report-unused-disable-directives",

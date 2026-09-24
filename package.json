@@ -63,6 +63,7 @@
     "bench:tooling": "bun scripts/bench-tooling.ts",
     "test": "bun run test:persistence && bun test scripts/",
     "test:persistence": "bun run --filter @tau/desktop test:persistence",
+    "test:surface": "bun run --filter @tau/desktop test:surface",
     "postinstall": "bun scripts/electron-install.ts",
     "fmt": "bun run fmt:ts && bun run zig:fmt",
     "fmt:check": "bun run fmt:ts:check && bun run zig:fmt:check",

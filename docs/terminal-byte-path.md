@@ -52,6 +52,8 @@ Input bypasses the output batching queue. Keep context isolation, sandboxing, an
 
 `bun run test:persistence` covers the real preload dispatch using a mocked Electron transport, decoder lifetime/UTF-8 boundaries, startup buffering and overflow, mixed subscribers, writer ownership, batch ordering, acknowledgements, snapshot filtering, and disposal. The package smoke tests exercise actual Electron IPC; unit tests do not model contextBridge serialization costs.
 
+Surface correctness: `bun run test:surface` bundles the actual `TauTerminal` into a sandboxed Electron renderer with the packaged Ghostty WASM. It needs a display (`DISPLAY` on Linux); for a headless Linux host, run under Xvfb (for example `Xvfb :97 -screen 0 1280x800x24 &` followed by `DISPLAY=:97 nix develop -c bun run test:surface`, then stop Xvfb). CI runs this separately under Xvfb. Its browser checks exercise canvas pixels, accessible viewport text, Unicode, erase/SGR, alternate screen, resize, search, keyboard/IME/paste, title/PTY/clipboard effects, synchronized output, links, actual pointer selection and mouse reporting, scrollback, Kitty image pixels, reset and disposal. It uses an in-process HTTP fixture and a mocked `electronAPI`, not the packaged preload or daemon; it does not assert font-identical screenshots, platform IME behavior, all VT sequences, or hardware GPU composition. Keep it separate from `bun run test` so headless unit checks do not silently depend on a display. Manual review on the actual supported display/OS is still required for appearance and platform input behavior.
+
 For performance work distinguish:
 
 - Decoder/buffer construction counts and retained queue bytes: deterministic allocation probes.
