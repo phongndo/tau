@@ -1,6 +1,5 @@
-import { createRoot } from 'react-dom/client'
+import { render } from 'solid-js/web'
 import { App } from './ui/App'
-import 'react-mosaic-component/react-mosaic-component.css'
 import './styles.css'
 
 const rootElement = document.getElementById('root')
@@ -9,4 +8,4 @@ if (!rootElement) {
   throw new Error('Missing #root element')
 }
 
-createRoot(rootElement).render(<App />)
+render(() => <App />, rootElement)

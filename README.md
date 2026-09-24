@@ -2,7 +2,7 @@
 
 Tau is a graphical terminal multiplexer built with Electron, xterm.js, and a Zig daemon (`taud`). It opens into a shell; tabs and splits organize terminals, while daemon-owned PTYs can survive a window or renderer restart.
 
-Today the desktop app has a minimal mux UI, terminal search, settings, and session recovery. A structured control CLI and extension runtime are product goals, **not shipped APIs**. Pi, Git, and project workflows are not built into the terminal.
+Today the desktop app has a sidebar-based mux UI, terminal search, preferences (appearance, terminal, shortcuts, sessions), and session recovery. A structured control CLI and extension runtime are product goals, **not shipped APIs**. Pi, Git, and project workflows are not built into the terminal.
 
 ## Run locally
 
@@ -24,7 +24,7 @@ Use `bun run build`, not `bun build` (Bun's own bundler). Script names and bench
 
 ## Find your way around
 
-- [apps/desktop](apps/desktop): Electron main and preload, React UI, terminal tests and benchmarks.
+- [apps/desktop](apps/desktop): Electron shell and preload, Solid UI, Bun preferences service, terminal tests and benchmarks.
 - [apps/daemon](apps/daemon): Zig PTY, mux graph, snapshots, event log and SQLite metadata.
 - [packages/shared](packages/shared): shared schemas and protocol definitions.
 - [docs/README.md](docs/README.md): current technical notes and dated performance evidence.

@@ -37,7 +37,9 @@ const {
   shell,
 } = electronApi
 import { disposeMainRuntime } from './runtime'
-import { defaultSettings, readSettings, writeSettings } from './settings-store'
+import { defaultSettings, validateSettings } from '@tau/shared/preferences'
+import { conflictingShortcut, findShortcut } from './shortcuts'
+import { readSettingsFromBun, writeSettingsToBun, stopSettingsService } from './settings-sidecar'
 import { TaudPtyBridge } from './taud-pty-bridge'
 import { TaudClient } from './taud-client'
 import { observeSmokeOutput } from './smoke-output'
@@ -118,6 +120,9 @@ function decodeTaudMuxGraph(state: TaudMuxGraphState): MuxGraphSnapshot {
 function decodeSettingsData(data: unknown): SettingsData {
   const decoded = Schema.decodeUnknownOption(SettingsDataSchema)(data)
   if (decoded._tag === 'None') throw new Error('Invalid settings data')
+  validateSettings(decoded.value)
+  const conflict = conflictingShortcut(decoded.value)
+  if (conflict) throw new Error(`Invalid or conflicting shortcut: ${conflict}`)
   return decoded.value
 }
 
@@ -150,6 +155,8 @@ let mainWindow: BrowserWindowInstance | null = null
 let mainWindowLoadPromise: Promise<void> | null = null
 let taudBridge: TaudPtyBridge | null = null
 let taudClient: TaudClient | null = null
+let currentSettings: SettingsData = defaultSettings
+let capturingShortcut = false
 
 // ─── Application Icon ───
 
@@ -243,79 +250,58 @@ function createWindow(): BrowserWindowInstance {
   })
 
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown') return
+    if (input.type !== 'keyDown' || capturingShortcut) return
 
-    const key = input.key.toLowerCase()
-    const digitIndex = key >= '0' && key <= '9' ? (key === '0' ? 9 : Number(key) - 1) : null
-
-    if (input.meta && !input.alt && !input.control && !input.shift && digitIndex !== null) {
-      event.preventDefault()
-      sendAppCommand({ type: 'switch-tab', index: digitIndex })
-      return
-    }
-
-    if (input.control && !input.meta && !input.alt && !input.shift && digitIndex !== null) {
-      event.preventDefault()
-      sendAppCommand({ type: 'switch-tab', index: digitIndex })
-      return
-    }
-
-    if (input.control && !input.meta && !input.alt && !input.shift) {
-      if (key === 'x') {
+    const shortcut = findShortcut(input, currentSettings)
+    if (!shortcut) {
+      // Preserve the original Ctrl+digit navigation alongside configurable Super/⌘+digit.
+      const digit = input.key >= '0' && input.key <= '9' ? Number(input.key) : -1
+      if (
+        input.control &&
+        !input.meta &&
+        !input.alt &&
+        !input.shift &&
+        digit >= 0 &&
+        currentSettings.keybindings?.[`tab-${digit}`] === undefined
+      ) {
         event.preventDefault()
+        sendAppCommand({ type: 'switch-tab', index: digit === 0 ? 9 : digit - 1 })
+      }
+      return
+    }
+    event.preventDefault()
+    switch (shortcut) {
+      case 'new-tab':
+        sendAppCommand({ type: 'new-tab' })
+        break
+      case 'close-tab':
+        sendAppCommand({ type: 'close-tab' })
+        break
+      case 'close-pane':
+      case 'close-pane-ctrl':
         sendAppCommand({ type: 'close-pane' })
-        return
+        break
+      case 'split-right':
+        sendAppCommand({ type: 'split-pane-vertical' })
+        break
+      case 'split-down':
+        sendAppCommand({ type: 'split-pane-horizontal' })
+        break
+      case 'search':
+        sendAppCommand({ type: 'search-terminal' })
+        break
+      case 'settings':
+        sendAppCommand({ type: 'open-settings' })
+        break
+      default: {
+        if (shortcut.startsWith('tab-')) {
+          const digit = Number(shortcut.slice(4))
+          sendAppCommand({ type: 'switch-tab', index: digit === 0 ? 9 : digit - 1 })
+        } else {
+          const direction = shortcut.slice('focus-'.length) as PaneFocusDirection
+          sendAppCommand({ type: 'focus-pane', direction })
+        }
       }
-
-      const directionByKey: Record<string, PaneFocusDirection> = {
-        h: 'left',
-        j: 'down',
-        k: 'up',
-        l: 'right',
-      }
-      const direction = directionByKey[key]
-      if (direction) {
-        event.preventDefault()
-        sendAppCommand({ type: 'focus-pane', direction })
-        return
-      }
-    }
-
-    if (!input.meta || input.alt || input.control) return
-
-    if (key === ',' && !input.shift) {
-      event.preventDefault()
-      sendAppCommand({ type: 'open-settings' })
-      return
-    }
-
-    if (key === 't' && !input.shift) {
-      event.preventDefault()
-      sendAppCommand({ type: 'new-tab' })
-      return
-    }
-
-    if (key === 'w' && !input.shift) {
-      event.preventDefault()
-      sendAppCommand({ type: 'close-tab' })
-      return
-    }
-
-    if (key === 'w' && input.shift) {
-      event.preventDefault()
-      sendAppCommand({ type: 'close-pane' })
-      return
-    }
-
-    if (key === 'f' && !input.shift) {
-      event.preventDefault()
-      sendAppCommand({ type: 'search-terminal' })
-      return
-    }
-
-    if (key === 'd') {
-      event.preventDefault()
-      sendAppCommand({ type: input.shift ? 'split-pane-horizontal' : 'split-pane-vertical' })
     }
   })
 
@@ -325,6 +311,7 @@ function createWindow(): BrowserWindowInstance {
     : mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
 
   mainWindow.on('closed', () => {
+    capturingShortcut = false
     mainWindow = null
     mainWindowLoadPromise = null
   })
@@ -439,15 +426,22 @@ ipcMain.handle('mux-graph:wait', async (event, afterEventSeq: unknown) => {
   return decodeTaudMuxGraph(await ensureTaudClient().waitForMuxGraph(afterEventSeq as number))
 })
 
+ipcMain.on('settings:capture', (event, active: unknown) => {
+  if (event.sender !== mainWindow?.webContents || typeof active !== 'boolean') return
+  capturingShortcut = active
+})
+
 ipcMain.handle('settings:read', async (event) => {
   if (event.sender !== mainWindow?.webContents) return null
-  return (await readSettings()) ?? defaultSettings
+  currentSettings = await readSettingsFromBun()
+  return currentSettings
 })
 
 ipcMain.handle('settings:write', async (event, data: unknown) => {
   if (event.sender !== mainWindow?.webContents) return
   const settings = decodeSettingsData(data)
-  await writeSettings(settings)
+  await writeSettingsToBun(settings)
+  currentSettings = settings
   await taudBridge?.syncPersistenceSettings(settings)
 })
 
@@ -1848,6 +1842,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  stopSettingsService()
   void disposeSessionBackends()
   void disposeMainRuntime()
 })

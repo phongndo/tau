@@ -1,6 +1,6 @@
-import type { MosaicDirection } from 'react-mosaic-component'
+import type { MosaicDirection } from './layout'
 import { Schema } from 'effect'
-import { create } from 'zustand'
+import { createStore } from 'zustand/vanilla'
 import type { PaneFocusDirection } from '@tau/shared/app-command'
 import { PANE_LAYOUT_VERSION, type PaneLayoutData } from '@tau/shared/session'
 import type { MuxGraphSnapshot } from '@tau/shared/mux-graph'
@@ -351,7 +351,7 @@ const initialShell = ensureDefaultShell({
   activePaneId: null,
 })
 
-export const useTauStore = create<TauState>((set, get) => ({
+export const useTauStore = createStore<TauState>((set, get) => ({
   ...initialShell,
   graphRev: 0,
   eventSeq: 0,

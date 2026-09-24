@@ -916,6 +916,10 @@ const electronAPI = {
     return assertMuxGraphSnapshot(await ipcRenderer.invoke('mux-graph:wait', afterEventSeq))
   },
 
+  captureShortcut(active: boolean): void {
+    ipcRenderer.send('settings:capture', active)
+  },
+
   readSettings(): Promise<SettingsData | null> {
     return ipcRenderer.invoke('settings:read') as Promise<SettingsData | null>
   },

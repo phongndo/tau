@@ -1,5 +1,5 @@
-import type { TauTerminal as Terminal } from '../tau-terminal'
-import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
+import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
+import type { TauTerminal } from '../tau-terminal'
 import {
   clearTerminalSearch,
   createTerminal,
@@ -10,53 +10,7 @@ import {
   setTerminalCursorVisible,
 } from '../terminal'
 
-type TerminalError = {
-  title?: string
-  message: string
-  detail?: string
-}
-
-function renderAfterWindowShown(terminal: Terminal, isCurrent: () => boolean): () => void {
-  let frame: number | null = null
-  let timer: number | null = null
-  let cancelled = false
-
-  void window.electronAPI.signalReady().then(() => {
-    if (cancelled || !isCurrent()) return
-    forceTerminalRender(terminal)
-    frame = window.requestAnimationFrame(() => {
-      frame = null
-      if (!cancelled && isCurrent()) forceTerminalRender(terminal)
-    })
-    timer = window.setTimeout(() => {
-      timer = null
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame)
-        frame = null
-      }
-      if (!cancelled && isCurrent()) forceTerminalRender(terminal)
-    }, 50)
-  })
-
-  return () => {
-    cancelled = true
-    if (frame !== null) window.cancelAnimationFrame(frame)
-    if (timer !== null) window.clearTimeout(timer)
-  }
-}
-
-export function TerminalPane({
-  sessionId,
-  terminalId,
-  cwd,
-  argv,
-  isActive,
-  focusToken,
-  searchToken,
-  onTitleChange,
-  onRestartSession,
-  onArchiveStateChange,
-}: {
+export function TerminalPane(props: {
   sessionId: string
   terminalId?: string
   cwd?: string
@@ -66,184 +20,123 @@ export function TerminalPane({
   searchToken: number
   onTitleChange?(title: string): void
   onRestartSession?(): void
-  onArchiveStateChange?(archived: boolean): void
 }) {
-  const surfaceRef = useRef<HTMLDivElement | null>(null)
-  const searchInputRef = useRef<HTMLInputElement | null>(null)
-  const terminalRef = useRef<Terminal | null>(null)
-  const onTitleChangeRef = useRef(onTitleChange)
-  const onArchiveStateChangeRef = useRef(onArchiveStateChange)
-  const cwdRef = useRef(cwd)
-  const terminalReadyRef = useRef(false)
-  const lastOpenedSearchTokenRef = useRef(0)
-  const [terminalError, setTerminalError] = useState<TerminalError | null>(null)
-  const [isOpening, setIsOpening] = useState(true)
-  const [isArchived, setIsArchived] = useState(false)
-  const [searchVisible, setSearchVisible] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchResult, setSearchResult] = useState({ resultIndex: -1, resultCount: 0 })
+  let surface: HTMLDivElement | undefined
+  let searchInput: HTMLInputElement | undefined
+  let terminal: TauTerminal | null = null
+  let lastSearchToken = 0
+  const [error, setError] = createSignal('')
+  const [opening, setOpening] = createSignal(true)
+  const [archived, setArchived] = createSignal(false)
+  const [searchVisible, setSearchVisible] = createSignal(false)
+  const [query, setQuery] = createSignal('')
+  const [result, setResult] = createSignal({ resultIndex: -1, resultCount: 0 })
 
-  useEffect(() => {
-    onTitleChangeRef.current = onTitleChange
-  }, [onTitleChange])
-
-  useEffect(() => {
-    onArchiveStateChangeRef.current = onArchiveStateChange
-  }, [onArchiveStateChange])
-
-  useEffect(() => {
-    cwdRef.current = cwd
-  }, [cwd])
-
-  useEffect(() => {
+  onMount(() => {
     let disposed = false
-    let cleanupWindowRender: (() => void) | null = null
-    let searchResultsSubscription: { dispose(): void } | null = null
-
-    async function mountTerminal() {
-      const surface = surfaceRef.current
-      if (!surface) return
-
-      if (!window.electronAPI) {
-        setTerminalError({
-          message: 'FATAL: window.electronAPI is undefined',
-          detail: 'Preload script failed. Check DevTools.',
+    let cleanupSearch: { dispose(): void } | undefined
+    let frame: number | undefined
+    let timer: number | undefined
+    const sessionId = props.sessionId
+    const renderShown = (instance: TauTerminal) => {
+      void window.electronAPI.signalReady().then(() => {
+        if (disposed || terminal !== instance) return
+        forceTerminalRender(instance)
+        frame = requestAnimationFrame(() => {
+          if (!disposed && terminal === instance) forceTerminalRender(instance)
         })
-        return
-      }
-
+        timer = window.setTimeout(() => {
+          if (!disposed && terminal === instance) forceTerminalRender(instance)
+        }, 50)
+      })
+    }
+    void (async () => {
       try {
-        setTerminalError(null)
-        setIsOpening(true)
-        setIsArchived(false)
-        onArchiveStateChangeRef.current?.(false)
-        const terminal = await createTerminal(surface, sessionId, {
-          terminalId,
-          cwd: cwdRef.current,
-          argv,
-          onTitle: (title) => onTitleChangeRef.current?.(title),
+        if (!window.electronAPI || !surface) throw new Error('Terminal surface unavailable')
+        const instance = await createTerminal(surface, sessionId, {
+          terminalId: props.terminalId,
+          cwd: props.cwd,
+          argv: props.argv,
+          onTitle: (title) => props.onTitleChange?.(title),
           onArchived: () => {
-            if (!disposed) {
-              setIsArchived(true)
-              onArchiveStateChangeRef.current?.(true)
-            }
+            if (!disposed) setArchived(true)
           },
         })
         if (disposed) {
-          detachTerminalSurface(sessionId, terminal)
+          detachTerminalSurface(sessionId, instance)
           return
         }
-
-        terminalRef.current = terminal
-        terminalReadyRef.current = true
-        setIsOpening(false)
-        searchResultsSubscription = onTerminalSearchResults(terminal, (result) => {
-          if (!disposed) setSearchResult(result)
-        })
-        setTerminalCursorVisible(terminal, isActive && !isArchived)
-        if (isActive && !isArchived) {
-          terminal.focus()
-          cleanupWindowRender = renderAfterWindowShown(
-            terminal,
-            () => !disposed && terminalRef.current === terminal,
-          )
-        } else {
-          terminal.blur()
-        }
-      } catch (err) {
-        if (disposed) {
-          if (isActive) void window.electronAPI.signalReady()
-          return
-        }
-        const message = err instanceof Error ? err.message : String(err)
-        console.error('[renderer] Failed:', err)
-        setIsOpening(false)
-        setTerminalError({
-          title: 'Failed to initialize terminal',
-          message,
-        })
-        if (isActive) void window.electronAPI.signalReady()
+        terminal = instance
+        setOpening(false)
+        cleanupSearch = onTerminalSearchResults(instance, setResult)
+        setTerminalCursorVisible(instance, props.isActive && !archived())
+        if (props.isActive && !archived()) {
+          instance.focus()
+          renderShown(instance)
+        } else instance.blur()
+      } catch (cause) {
+        if (disposed) return
+        console.error('[renderer] Failed to initialize terminal', cause)
+        setError(cause instanceof Error ? cause.message : String(cause))
+        setOpening(false)
+        if (props.isActive) void window.electronAPI.signalReady()
       }
-    }
-
-    void mountTerminal()
-
-    return () => {
+    })()
+    onCleanup(() => {
       disposed = true
-      cleanupWindowRender?.()
-      searchResultsSubscription?.dispose()
-      terminalReadyRef.current = false
-      detachTerminalSurface(sessionId, terminalRef.current)
-      terminalRef.current = null
-    }
-  }, [sessionId, terminalId, argv])
-
-  useEffect(() => {
-    const terminal = terminalRef.current
-    if (!terminal) return
-
-    setTerminalCursorVisible(terminal, isActive && !isArchived)
-    if (isActive && !isArchived) {
-      terminal.focus()
-      if (terminalReadyRef.current) {
-        return renderAfterWindowShown(terminal, () => terminalRef.current === terminal)
-      }
-    } else {
-      terminal.blur()
-    }
-  }, [focusToken, isActive, isArchived])
-
-  useEffect(() => {
-    if (searchToken <= 0 || searchToken <= lastOpenedSearchTokenRef.current) return
-    if (!isActive || isArchived) return
-
-    lastOpenedSearchTokenRef.current = searchToken
-    setSearchVisible(true)
-  }, [isActive, isArchived, searchToken])
-
-  useEffect(() => {
-    if (!searchVisible) return
-
-    const frame = window.requestAnimationFrame(() => {
-      searchInputRef.current?.focus()
-      searchInputRef.current?.select()
+      cleanupSearch?.dispose()
+      if (frame !== undefined) cancelAnimationFrame(frame)
+      if (timer !== undefined) clearTimeout(timer)
+      detachTerminalSurface(sessionId, terminal)
+      terminal = null
     })
-    return () => window.cancelAnimationFrame(frame)
-  }, [searchToken, searchVisible])
+  })
 
-  useEffect(() => {
-    if (!isArchived) return
+  createEffect(() => {
+    const active = props.isActive && !archived()
+    void props.focusToken
+    if (!terminal) return
+    setTerminalCursorVisible(terminal, active)
+    if (active) {
+      terminal.focus()
+      forceTerminalRender(terminal)
+    } else terminal.blur()
+  })
 
-    const terminal = terminalRef.current
+  createEffect(() => {
+    const token = props.searchToken
+    if (token <= lastSearchToken || !props.isActive || archived()) return
+    lastSearchToken = token
+    setSearchVisible(true)
+    requestAnimationFrame(() => {
+      searchInput?.focus()
+      searchInput?.select()
+    })
+  })
+
+  createEffect(() => {
+    if (!archived()) return
     if (terminal) clearTerminalSearch(terminal)
     setSearchVisible(false)
-    setSearchResult({ resultIndex: -1, resultCount: 0 })
-  }, [isArchived])
+  })
 
-  function runSearch(query: string, direction: 'next' | 'previous', incremental = false) {
-    const terminal = terminalRef.current
+  const runSearch = (text: string, direction: 'next' | 'previous', incremental = false) => {
     if (!terminal) return
-
-    if (query.length === 0) {
+    if (text) searchTerminalBuffer(terminal, text, direction, incremental)
+    else {
       clearTerminalSearch(terminal)
-      setSearchResult({ resultIndex: -1, resultCount: 0 })
-      return
+      setResult({ resultIndex: -1, resultCount: 0 })
     }
-
-    searchTerminalBuffer(terminal, query, direction, incremental)
   }
-
-  function closeSearch() {
-    const terminal = terminalRef.current
+  const closeSearch = () => {
     if (terminal) {
       clearTerminalSearch(terminal)
-      if (isActive && !isArchived) terminal.focus()
+      if (props.isActive && !archived()) terminal.focus()
     }
     setSearchVisible(false)
-    setSearchResult({ resultIndex: -1, resultCount: 0 })
+    setResult({ resultIndex: -1, resultCount: 0 })
   }
-
-  function handleSearchControlKeyDown(event: KeyboardEvent<HTMLElement>) {
+  const searchKey = (event: KeyboardEvent) => {
     event.stopPropagation()
     if (event.key === 'Escape') {
       event.preventDefault()
@@ -251,91 +144,85 @@ export function TerminalPane({
     }
   }
 
-  const activeSearchIndex = searchResult.resultIndex >= 0 ? searchResult.resultIndex + 1 : 0
-
   return (
-    <div
-      className={
-        isArchived ? 'terminal-container terminal-container-archived' : 'terminal-container'
-      }
-    >
-      <div className="terminal-surface" ref={surfaceRef} />
-      {isOpening && !terminalError && !isArchived ? (
-        <div className="terminal-opening" aria-live="polite">
-          <span className="terminal-opening-dot" aria-hidden="true" />
-          <span>Opening terminal</span>
+    <div class="terminal-container">
+      <div
+        class="terminal-surface"
+        ref={(element) => {
+          surface = element
+        }}
+      />
+      <Show when={opening() && !error() && !archived()}>
+        <div class="terminal-opening" aria-live="polite">
+          <span class="terminal-opening-dot" /> Opening terminal…
         </div>
-      ) : null}
-      {searchVisible && !isArchived && !terminalError ? (
+      </Show>
+      <Show when={searchVisible() && !archived() && !error()}>
         <form
-          className="terminal-search-panel"
+          class="terminal-search-panel"
           onSubmit={(event) => {
             event.preventDefault()
-            runSearch(searchQuery, 'next')
+            runSearch(query(), 'next')
           }}
         >
           <span aria-hidden="true">⌕</span>
           <input
-            ref={searchInputRef}
+            ref={(element) => {
+              searchInput = element
+            }}
             aria-label="Find in terminal"
-            value={searchQuery}
-            placeholder="Find"
-            spellCheck={false}
-            onKeyDown={handleSearchControlKeyDown}
-            onChange={(event) => {
-              const nextQuery = event.target.value
-              setSearchQuery(nextQuery)
-              runSearch(nextQuery, 'next', true)
+            value={query()}
+            placeholder="Find in terminal"
+            spellcheck={false}
+            onKeyDown={searchKey}
+            onInput={(event) => {
+              setQuery(event.currentTarget.value)
+              runSearch(query(), 'next', true)
             }}
           />
-          <span className="terminal-search-count" aria-live="polite">
-            {searchQuery.length > 0 ? `${activeSearchIndex}/${searchResult.resultCount}` : ''}
+          <span class="terminal-search-count" aria-live="polite">
+            {query() ? `${result().resultIndex + 1}/${result().resultCount}` : ''}
           </span>
           <button
             type="button"
             aria-label="Previous match"
-            title="Previous match"
-            onKeyDown={handleSearchControlKeyDown}
-            onClick={() => runSearch(searchQuery, 'previous')}
+            onClick={() => runSearch(query(), 'previous')}
+            onKeyDown={searchKey}
           >
             ↑
           </button>
           <button
             type="button"
             aria-label="Next match"
-            title="Next match"
-            onKeyDown={handleSearchControlKeyDown}
-            onClick={() => runSearch(searchQuery, 'next')}
+            onClick={() => runSearch(query(), 'next')}
+            onKeyDown={searchKey}
           >
             ↓
           </button>
           <button
             type="button"
             aria-label="Close search"
-            title="Close search"
-            onKeyDown={handleSearchControlKeyDown}
             onClick={closeSearch}
+            onKeyDown={searchKey}
           >
             ×
           </button>
         </form>
-      ) : null}
-      {terminalError ? (
-        <div className="terminal-error">
-          {terminalError.title ? <h2>{terminalError.title}</h2> : null}
-          <pre>{terminalError.message}</pre>
-          {terminalError.detail ? <p>{terminalError.detail}</p> : null}
+      </Show>
+      <Show when={error()}>
+        <div class="terminal-error">
+          <h2>Failed to initialize terminal</h2>
+          <pre>{error()}</pre>
         </div>
-      ) : null}
-      {isArchived && !terminalError ? (
-        <div className="terminal-archive-banner">
-          <span className="terminal-archive-label">Read-only archive</span>
-          <span className="terminal-archive-detail">Input is ignored until you start fresh.</span>
-          <button type="button" onClick={onRestartSession} disabled={!onRestartSession}>
+      </Show>
+      <Show when={archived() && !error()}>
+        <div class="terminal-archive-banner">
+          Read-only archive · Input is disabled
+          <button type="button" onClick={() => props.onRestartSession?.()}>
             Start fresh shell
           </button>
         </div>
-      ) : null}
+      </Show>
     </div>
   )
 }

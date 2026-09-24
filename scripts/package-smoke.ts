@@ -12,6 +12,11 @@ const require = createRequire(resolve(desktopRoot, 'package.json'))
 const electronPath = require('electron') as string
 const outRoot = resolve(desktopRoot, 'out')
 const taudPath = resolve(outRoot, 'bin', process.platform === 'win32' ? 'taud.exe' : 'taud')
+const settingsServicePath = resolve(
+  outRoot,
+  'bin',
+  process.platform === 'win32' ? 'tau-settings.exe' : 'tau-settings',
+)
 
 function positiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name]
@@ -67,6 +72,7 @@ function assertPackageLayout(): void {
   assertFile(resolve(outRoot, 'preload/index.cjs'), 'preload bundle')
   assertFile(resolve(outRoot, 'renderer/index.html'), 'renderer entrypoint')
   assertExecutable(taudPath, 'taud binary')
+  assertExecutable(settingsServicePath, 'Bun settings service')
 }
 
 function runTaudCheck(): void {
@@ -245,7 +251,9 @@ assertPackageLayout()
 runTaudCheck()
 runElectronLaunchSmoke()
   .then(() => {
-    console.log('[package-smoke] packaged taud, adapters, and Electron launch passed smoke checks')
+    console.log(
+      '[package-smoke] packaged taud, Bun settings service, and Electron launch passed smoke checks',
+    )
   })
   .catch((error: unknown) => {
     fail(error instanceof Error ? error.message : String(error))

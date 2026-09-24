@@ -1,8 +1,16 @@
-import type { MosaicNode, MosaicSplitNode, MosaicTabsNode } from 'react-mosaic-component'
-
-export type MosaicLayoutNode = MosaicNode<string>
-export type MosaicSplitLayoutNode = MosaicSplitNode<string>
-export type MosaicTabsLayoutNode = MosaicTabsNode<string>
+export type MosaicDirection = 'row' | 'column'
+export type MosaicLayoutNode = string | MosaicSplitLayoutNode | MosaicTabsLayoutNode
+export type MosaicSplitLayoutNode = {
+  type: 'split'
+  direction: MosaicDirection
+  children: MosaicLayoutNode[]
+  splitPercentages?: number[]
+}
+export type MosaicTabsLayoutNode = {
+  type: 'tabs'
+  tabs: string[]
+  activeTabIndex: number
+}
 
 export type PaneBounds = {
   left: number

@@ -1,7 +1,8 @@
 import { Schema } from 'effect'
 import type { MessagePortMain } from 'electron'
 import { TaudStreamFrameKind, type AttachSessionMode } from '@tau/shared/taud-protocol'
-import { defaultSettings, readSettings } from './settings-store'
+import { defaultSettings } from '@tau/shared/preferences'
+import { readSettingsFromBun as readSettings } from './settings-sidecar'
 import {
   type PtyClientMessage,
   PtyClientMessageSchema,

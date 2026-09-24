@@ -7,6 +7,7 @@
     "./app-command": "./src/app-command.ts",
     "./current-screen-snapshot": "./src/current-screen-snapshot.ts",
     "./mux-graph": "./src/mux-graph.ts",
+    "./preferences": "./src/preferences.ts",
     "./session": "./src/session.ts",
     "./storage-path": "./src/storage-path.ts",
     "./taud-protocol": "./src/taud-protocol.ts"

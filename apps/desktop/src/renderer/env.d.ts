@@ -84,6 +84,7 @@ export interface ElectronAPI {
   getMuxGraph(): Promise<MuxGraphSnapshot>
   replaceMuxGraph(snapshot: MuxGraphSnapshot, expectedRev: number): Promise<MuxGraphSnapshot>
   waitMuxGraph(afterEventSeq: number): Promise<MuxGraphSnapshot>
+  captureShortcut(active: boolean): void
   readSettings(): Promise<SettingsData | null>
   writeSettings(data: SettingsData): Promise<void>
 }

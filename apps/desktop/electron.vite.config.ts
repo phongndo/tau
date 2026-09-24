@@ -9,7 +9,7 @@ import {
   statSync,
 } from 'node:fs'
 import { basename, resolve } from 'node:path'
-import react from '@vitejs/plugin-react'
+import solid from 'vite-plugin-solid'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 
 /**
@@ -148,7 +148,7 @@ export default defineConfig({
     },
   },
   renderer: {
-    plugins: [react(), exposeNightlyAssets()],
+    plugins: [solid(), exposeNightlyAssets()],
     publicDir: resolve(__dirname, 'public'),
     build: {
       sourcemap: false,

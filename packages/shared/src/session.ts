@@ -76,6 +76,29 @@ export const PaneLayoutDataSchema = Schema.Struct({
 
 export const SettingsDataSchema = Schema.Struct({
   version: Schema.Number,
+  appearance: Schema.optional(
+    Schema.Struct({
+      theme: Schema.Union([Schema.Literal('midnight'), Schema.Literal('slate')]),
+      accent: Schema.Union([
+        Schema.Literal('blue'),
+        Schema.Literal('violet'),
+        Schema.Literal('mint'),
+      ]),
+      sidebar: Schema.Boolean,
+    }),
+  ),
+  terminal: Schema.optional(
+    Schema.Struct({
+      fontSize: Schema.Number,
+      fontFamily: Schema.String,
+    }),
+  ),
+  behavior: Schema.optional(
+    Schema.Struct({
+      confirmClose: Schema.Boolean,
+    }),
+  ),
+  keybindings: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   persistence: Schema.optional(
     Schema.Struct({
       enabled: Schema.Boolean,

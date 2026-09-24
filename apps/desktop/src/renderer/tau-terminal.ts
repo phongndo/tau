@@ -1,7 +1,5 @@
 import { GhosttyVt, type GhosttyCell, type GhosttyFrame } from './ghostty-vt'
 
-const FONT_FAMILY = '"SF Mono", Menlo, Monaco, "JetBrains Mono", monospace'
-const FONT_SIZE = 14
 const decoder = new TextDecoder()
 let wasmBytes: Promise<ArrayBuffer> | null = null
 
@@ -40,6 +38,8 @@ export class TauTerminal {
   private readonly rowsCache: GhosttyCell[][] = []
   private readonly imageCanvases = new Map<string, HTMLCanvasElement>()
   private lastFrame: GhosttyFrame | null = null
+  private fontSize = 14
+  private fontFamily = '"SF Mono", Menlo, Monaco, "JetBrains Mono", monospace'
   private cellWidth = 8
   private cellHeight = 18
   private baseline = 14
@@ -150,13 +150,7 @@ export class TauTerminal {
     wrapper.replaceChildren(canvas, textarea, screenReader)
     const metrics = canvas.getContext('2d', { alpha: false })
     if (!metrics) throw new Error('Canvas 2D renderer unavailable')
-    metrics.font = `${FONT_SIZE}px ${FONT_FAMILY}`
-    const size = metrics.measureText('M')
-    this.cellWidth = Math.max(1, size.width)
-    this.cellHeight = Math.ceil(
-      Math.max(FONT_SIZE + 4, size.actualBoundingBoxAscent + size.actualBoundingBoxDescent + 3),
-    )
-    this.baseline = Math.round((this.cellHeight - FONT_SIZE) / 2 + FONT_SIZE - 2)
+    this.updateFontMetrics(metrics)
     // terminal_new does not know browser cell pixels; set them even when the fitted grid is
     // exactly 80x24 and no later column/row resize occurs (Kitty placement needs geometry).
     this.vt.resize(this.cols, this.rows, Math.round(this.cellWidth), Math.round(this.cellHeight))
@@ -174,6 +168,38 @@ export class TauTerminal {
     textarea.addEventListener('compositionend', this.compositionEnd)
     textarea.addEventListener('paste', this.paste)
     textarea.addEventListener('copy', this.copy)
+    window.addEventListener('tau:appearance', this.appearanceChanged)
+    this.refresh()
+  }
+
+  private updateFontMetrics(ctx: CanvasRenderingContext2D): void {
+    const css = getComputedStyle(document.documentElement)
+    const size = Number.parseInt(css.getPropertyValue('--terminal-font-size'), 10)
+    this.fontSize = Number.isFinite(size) && size >= 10 && size <= 28 ? size : 14
+    this.fontFamily =
+      css.getPropertyValue('--terminal-font-family').trim() ||
+      '"SF Mono", Menlo, Monaco, "JetBrains Mono", monospace'
+    ctx.font = `${this.fontSize}px ${this.fontFamily}`
+    const measurement = ctx.measureText('M')
+    this.cellWidth = Math.max(1, measurement.width)
+    this.cellHeight = Math.ceil(
+      Math.max(
+        this.fontSize + 4,
+        measurement.actualBoundingBoxAscent + measurement.actualBoundingBoxDescent + 3,
+      ),
+    )
+    this.baseline = Math.round((this.cellHeight - this.fontSize) / 2 + this.fontSize - 2)
+  }
+
+  private appearanceChanged = () => {
+    if (!this.canvas || this.disposed) return
+    const ctx = this.canvas.getContext('2d', { alpha: false })
+    if (!ctx) return
+    this.updateFontMetrics(ctx)
+    this.rowsCache.length = 0
+    this.lastFrame = null
+    const size = this.proposeDimensions()
+    if (size) this.resize(size.cols, size.rows)
     this.refresh()
   }
 
@@ -247,7 +273,7 @@ export class TauTerminal {
     }
     ctx.setTransform(scale, 0, 0, scale, 0, 0)
     ctx.textBaseline = 'alphabetic'
-    ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`
+    ctx.font = `${this.fontSize}px ${this.fontFamily}`
     const frame = this.vt.render()
     const previous = this.lastFrame
     const previousCursor = previous?.cursor
@@ -377,7 +403,7 @@ export class TauTerminal {
       const py = y * this.cellHeight
       ctx.fillStyle = foregrounds[x]
       ctx.globalAlpha = cell.faint ? 0.6 : 1
-      ctx.font = `${cell.italic ? 'italic ' : ''}${cell.bold ? 'bold ' : ''}${FONT_SIZE}px ${FONT_FAMILY}`
+      ctx.font = `${cell.italic ? 'italic ' : ''}${cell.bold ? 'bold ' : ''}${this.fontSize}px ${this.fontFamily}`
       ctx.fillText(cell.text, px, py + this.baseline)
       ctx.globalAlpha = 1
       if (cell.underline || cell.strikethrough) {
@@ -402,7 +428,7 @@ export class TauTerminal {
         const text = cells[frame.cursor.x]?.text
         if (text) {
           ctx.fillStyle = '#151515'
-          ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`
+          ctx.font = `${this.fontSize}px ${this.fontFamily}`
           ctx.fillText(text, x, top + this.baseline)
         }
       }
@@ -691,6 +717,7 @@ export class TauTerminal {
     this.textarea?.removeEventListener('compositionend', this.compositionEnd)
     this.textarea?.removeEventListener('paste', this.paste)
     this.textarea?.removeEventListener('copy', this.copy)
+    window.removeEventListener('tau:appearance', this.appearanceChanged)
     this.vt.dispose()
     this.imageCanvases.clear()
     this.wrapper?.replaceChildren()
