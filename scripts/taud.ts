@@ -111,13 +111,19 @@ function zonDependency(zonPath: string, name: string): ZonDependency {
 }
 
 function ensurePackage(dep: ZonDependency): string {
-  const envOutput = output('zig', ['env'])
-  const globalCacheDir =
-    tryParseJson(envOutput)?.global_cache_dir ??
-    envOutput.match(/\.global_cache_dir\s*=\s*"([^"]+)"/)?.[1]
-  if (!globalCacheDir) fail('Could not determine Zig global cache dir from `zig env`')
-  const packagePath = resolve(globalCacheDir, 'p', dep.hash)
-  if (!existsSync(packagePath)) run('zig', ['fetch', dep.url])
+  // Zig 0.16 `fetch` caches the archive at p/<hash>.tar.gz; `build --fetch=all`
+  // expands the full dependency tree into this project's zig-pkg directory.
+  const packagePath = resolve(daemonRoot, 'zig-pkg', dep.hash)
+  if (!existsSync(packagePath)) {
+    const envOutput = output('zig', ['env'])
+    const globalCacheDir =
+      tryParseJson(envOutput)?.global_cache_dir ??
+      envOutput.match(/\.global_cache_dir\s*=\s*"([^"]+)"/)?.[1]
+    if (!globalCacheDir) fail('Could not determine Zig global cache dir from `zig env`')
+    // Zig's ZIP fetcher requires tmp/ when the cache is overridden (as in CI).
+    mkdirSync(resolve(globalCacheDir, 'tmp'), { recursive: true })
+    run('zig', ['build', '--fetch=all'])
+  }
   if (!existsSync(packagePath)) fail(`Expected Zig package at ${packagePath}`)
   return packagePath
 }

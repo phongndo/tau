@@ -33,7 +33,9 @@ export function withGhosttySource<T>(build: (source: string) => T): T {
     )
     const digest = createHash('sha256').update(readFileSync(archive)).digest('hex')
     if (digest !== ARCHIVE_SHA256) throw new Error(`Ghostty archive checksum mismatch: ${digest}`)
-    execFileSync('tar', ['-xzf', archive, '-C', work], { stdio: 'inherit' })
+    // GNU tar on Git Bash treats an absolute C: path as a remote archive name.
+    // Both the archive and extraction directory are already under work.
+    execFileSync('tar', ['-xzf', 'ghostty.tar.gz'], { cwd: work, stdio: 'inherit' })
     return build(join(work, `ghostty-${GHOSTTY_REVISION}`))
   } finally {
     rmSync(work, { recursive: true, force: true })
