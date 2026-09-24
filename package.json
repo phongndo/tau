@@ -2,12 +2,12 @@
   "name": "tau",
   "version": "1.0.0",
   "private": true,
-  "description": "A performance-first, agent-extensible graphical terminal multiplexer powered by Electron, xterm.js, and taud",
+  "description": "A performance-first, agent-extensible graphical terminal multiplexer powered by Electron, Ghostty VT, and taud",
   "keywords": [
     "electron",
+    "ghostty",
     "multiplexer",
-    "terminal",
-    "xterm"
+    "terminal"
   ],
   "license": "MIT",
   "author": "Tau Contributors",
