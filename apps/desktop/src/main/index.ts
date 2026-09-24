@@ -256,22 +256,7 @@ function createWindow(): BrowserWindowInstance {
     if (input.type !== 'keyDown' || capturingShortcut) return
 
     const shortcut = findShortcut(input, currentSettings)
-    if (!shortcut) {
-      // Preserve the original Ctrl+digit navigation alongside configurable Super/⌘+digit.
-      const digit = input.key >= '0' && input.key <= '9' ? Number(input.key) : -1
-      if (
-        input.control &&
-        !input.meta &&
-        !input.alt &&
-        !input.shift &&
-        digit >= 0 &&
-        currentSettings.keybindings?.[`tab-${digit}`] === undefined
-      ) {
-        event.preventDefault()
-        sendAppCommand({ type: 'switch-tab', index: digit === 0 ? 9 : digit - 1 })
-      }
-      return
-    }
+    if (!shortcut) return
     event.preventDefault()
     switch (shortcut) {
       case 'new-tab':
@@ -295,6 +280,10 @@ function createWindow(): BrowserWindowInstance {
         break
       case 'settings':
         sendAppCommand({ type: 'open-settings' })
+        break
+      case 'next-tab':
+      case 'previous-tab':
+        sendAppCommand({ type: 'cycle-tab', direction: shortcut === 'next-tab' ? 1 : -1 })
         break
       default: {
         if (shortcut.startsWith('tab-')) {

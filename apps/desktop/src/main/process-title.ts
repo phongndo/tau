@@ -49,8 +49,12 @@ export function resolveProcessTitle(
 
   const byParent = new Map<number, ProcessRow[]>()
   let rootTitle: string | null = null
+  let rootForeground = false
   for (const row of rows) {
-    if (row.pid === rootPid) rootTitle = normalizeProcessName(row.command)
+    if (row.pid === rootPid) {
+      rootTitle = normalizeProcessName(row.command)
+      rootForeground = row.stat.includes('+')
+    }
     const siblings = byParent.get(row.ppid)
     if (siblings) siblings.push(row)
     else byParent.set(row.ppid, [row])
@@ -82,6 +86,13 @@ export function resolveProcessTitle(
   }
 
   candidates.sort((left, right) => left.depth - right.depth || right.row.pid - left.row.pid)
+  const foreground = candidates.filter((candidate) => candidate.row.stat.includes('+'))
+  if (foreground.length > 0)
+    return (
+      foreground.find((candidate) => !SHELL_NAMES.has(candidate.title))?.title ??
+      foreground[0]!.title
+    )
+  if (rootForeground && rootTitle) return rootTitle
 
   return (
     candidates.find((candidate) => !SHELL_NAMES.has(candidate.title))?.title ??

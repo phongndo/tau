@@ -55,6 +55,14 @@ async function run() {
   term.write('\\x1b[?25l')
   await painted()
   const blank = rgb(canvas, 3, 3)
+  document.documentElement.dataset.theme = 'light'
+  window.dispatchEvent(new Event('tau:appearance'))
+  await painted()
+  check('light appearance repaints terminal canvas', rgb(canvas, 3, 3) === '251,252,254', rgb(canvas, 3, 3))
+  document.documentElement.dataset.theme = 'dark'
+  window.dispatchEvent(new Event('tau:appearance'))
+  await painted()
+  check('dark appearance restores terminal canvas', rgb(canvas, 3, 3) === blank)
   let applied = false
   term.write('hello 🥝e\u0301', () => { applied = true })
   check('write callback acknowledges parsing before presentation', applied && !reader.textContent.includes('hello'))

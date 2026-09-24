@@ -13,9 +13,11 @@ import type { SettingsData } from '@tau/shared/session'
 import { TaudClient, type TaudControlResponse, type TaudSessionStream } from './taud-client'
 import { sessionChannelBacklogExceeded } from './session-channel-backpressure'
 import { decodeTaudExitPayload, decodeTaudResizePayload } from './taud-stream'
+import { processTitleFromShell, readProcessTitle } from './process-title'
 
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 const ATTACH_STREAM_READY_TIMEOUT_MS = 500
+const PROCESS_TITLE_POLL_MS = 1500
 /** Convert legacy number[] input in bounded chunks instead of dropping large pastes. */
 const SESSION_INPUT_ARRAY_CHUNK_BYTES = 64 * 1024
 
@@ -30,6 +32,9 @@ type BridgeSession = {
   rows: number
   archived: boolean
   attachMode: AttachSessionMode
+  pid?: number
+  fallbackTitle: string
+  lastProcessTitle?: string
 }
 
 type SessionChannelPendingFrame = {
@@ -177,6 +182,8 @@ export class TaudPtyBridge {
   private readonly supersededAttachStreams = new WeakSet<TaudSessionStream>()
   private readonly sessionAttachGenerations = new Map<string, number>()
   private readonly cleanupTimer: ReturnType<typeof setInterval>
+  private readonly processTitleTimer: ReturnType<typeof setInterval>
+  private pollingProcessTitles = false
   private messagesPostedTotal = 0
   private dataMessagesPostedTotal = 0
   private dataCharsPostedTotal = 0
@@ -198,6 +205,8 @@ export class TaudPtyBridge {
       void this.runSessionCleanup()
     }, SESSION_CLEANUP_INTERVAL_MS)
     this.cleanupTimer.unref?.()
+    this.processTitleTimer = setInterval(() => void this.pollProcessTitles(), PROCESS_TITLE_POLL_MS)
+    this.processTitleTimer.unref?.()
   }
 
   async ensureReady(): Promise<void> {
@@ -244,6 +253,7 @@ export class TaudPtyBridge {
 
   dispose(): void {
     clearInterval(this.cleanupTimer)
+    clearInterval(this.processTitleTimer)
     this.detachAllStreams()
     this.sessions.clear()
     this.port?.close()
@@ -497,6 +507,8 @@ export class TaudPtyBridge {
         rows,
         archived,
         attachMode,
+        pid: attachResponse.pid,
+        fallbackTitle: processTitleFromShell(options.argv?.[0] ?? this.defaultShell),
       }
       this.sessions.set(sessionId, session)
       this.wireStream(sessionId, session, stream)
@@ -518,6 +530,7 @@ export class TaudPtyBridge {
       }
       const size = responseSize(attachResponse, { cols, rows })
       this.postReady(sessionId, size, responseSeq(attachResponse), session)
+      void this.publishProcessTitle(sessionId, session)
     } catch (error) {
       // Port replacement/closure cancels that renderer's request. Late failures must not clear
       // the replacement renderer's ready state; unexpected errors for the current owner propagate.
@@ -545,6 +558,32 @@ export class TaudPtyBridge {
           ? [...options.argv]
           : defaultShellArgv(this.defaultShell),
     })
+  }
+
+  private async pollProcessTitles(): Promise<void> {
+    if (this.pollingProcessTitles) return
+    this.pollingProcessTitles = true
+    try {
+      await Promise.all(
+        [...this.sessions].map(([id, session]) =>
+          session.stream && this.sessionChannels.has(id)
+            ? this.publishProcessTitle(id, session)
+            : Promise.resolve(),
+        ),
+      )
+    } finally {
+      this.pollingProcessTitles = false
+    }
+  }
+
+  private async publishProcessTitle(sessionId: string, session: BridgeSession): Promise<void> {
+    const title = session.pid
+      ? await readProcessTitle(session.pid, session.fallbackTitle)
+      : session.fallbackTitle
+    if (this.sessions.get(sessionId) !== session || !session.stream) return
+    if (session.lastProcessTitle === title) return
+    session.lastProcessTitle = title
+    this.post({ type: 'process-title', sessionId, title })
   }
 
   private wireStream(sessionId: string, session: BridgeSession, stream: TaudSessionStream): void {

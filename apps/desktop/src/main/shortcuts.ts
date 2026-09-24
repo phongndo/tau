@@ -1,4 +1,4 @@
-import { shortcuts, type ShortcutId } from '@tau/shared/preferences'
+import { defaultShortcutKey, shortcuts, type ShortcutId } from '@tau/shared/preferences'
 import type { SettingsData } from '@tau/shared/session'
 
 export type KeyInput = {
@@ -31,12 +31,17 @@ export function parseBinding(value: string): KeyInput | null {
   }
 }
 
-export function conflictingShortcut(settings: SettingsData): string | null {
+export function conflictingShortcut(
+  settings: SettingsData,
+  platform = process.platform,
+): string | null {
   const seen = new Set<string>()
   for (const shortcut of shortcuts) {
     const configured = settings.keybindings?.[shortcut.id]
     if (configured === '') continue
-    const binding = parseBinding(configured ?? shortcut.defaultKey)
+    const key = configured ?? defaultShortcutKey(shortcut, platform)
+    if (key === '') continue
+    const binding = parseBinding(key)
     if (!binding) return shortcut.id
     const identity = JSON.stringify(binding)
     if (seen.has(identity)) return shortcut.id
@@ -45,12 +50,18 @@ export function conflictingShortcut(settings: SettingsData): string | null {
   return null
 }
 
-export function findShortcut(input: KeyInput, settings: SettingsData): ShortcutId | null {
+export function findShortcut(
+  input: KeyInput,
+  settings: SettingsData,
+  platform = process.platform,
+): ShortcutId | null {
   for (const shortcut of shortcuts) {
     const configured = settings.keybindings?.[shortcut.id]
     // Empty string intentionally unbinds a command, passing the key to the terminal.
     if (configured === '') continue
-    const binding = parseBinding(configured ?? shortcut.defaultKey)
+    const key = configured ?? defaultShortcutKey(shortcut, platform)
+    if (key === '') continue
+    const binding = parseBinding(key)
     if (
       binding &&
       binding.key === input.key.toLowerCase() &&

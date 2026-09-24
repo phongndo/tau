@@ -78,13 +78,27 @@ export const SettingsDataSchema = Schema.Struct({
   version: Schema.Number,
   appearance: Schema.optional(
     Schema.Struct({
-      theme: Schema.Union([Schema.Literal('midnight'), Schema.Literal('slate')]),
+      theme: Schema.Union([
+        Schema.Literal('system'),
+        Schema.Literal('dark'),
+        Schema.Literal('light'),
+        Schema.Literal('midnight'),
+        Schema.Literal('slate'),
+      ]),
       accent: Schema.Union([
         Schema.Literal('blue'),
         Schema.Literal('violet'),
         Schema.Literal('mint'),
       ]),
       sidebar: Schema.Boolean,
+      customColors: Schema.optional(
+        Schema.Struct({
+          chrome: Schema.optional(Schema.String),
+          sidebar: Schema.optional(Schema.String),
+          accent: Schema.optional(Schema.String),
+          text: Schema.optional(Schema.String),
+        }),
+      ),
     }),
   ),
   terminal: Schema.optional(

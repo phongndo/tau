@@ -7,6 +7,7 @@ export type AppCommand =
   | { type: 'split-pane-vertical' }
   | { type: 'split-pane-horizontal' }
   | { type: 'switch-tab'; index: number }
+  | { type: 'cycle-tab'; direction: 1 | -1 }
   | { type: 'focus-pane'; direction: PaneFocusDirection }
   | { type: 'focus-terminal' }
   | { type: 'search-terminal' }

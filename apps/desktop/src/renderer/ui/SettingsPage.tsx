@@ -1,6 +1,6 @@
 /* oxlint-disable jsx-a11y/prefer-tag-over-role -- Search results are interactive ARIA options, not native select options. */
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
-import { defaultSettings, shortcuts } from '@tau/shared/preferences'
+import { defaultSettings, defaultShortcutKey, shortcuts } from '@tau/shared/preferences'
 import type { SettingsData } from '@tau/shared/session'
 import type {
   TaudLifecycleDiagnostics,
@@ -31,7 +31,10 @@ export function SettingsPage(props: {
   const [query, setQuery] = createSignal('')
   const [activeResult, setActiveResult] = createSignal(0)
   const [highlighted, setHighlighted] = createSignal<string | null>(null)
-  const results = createMemo(() => searchSettings(query(), props.settings.keybindings))
+  const platform = navigator.platform.startsWith('Mac') ? 'darwin' : 'linux'
+  const systemScheme = window.matchMedia('(prefers-color-scheme: light)')
+  const [systemLight, setSystemLight] = createSignal(systemScheme.matches)
+  const results = createMemo(() => searchSettings(query(), props.settings.keybindings, platform))
   const searching = () => query().trim().length > 0
   let searchInput: HTMLInputElement | undefined
   let highlightTimer: ReturnType<typeof setTimeout> | undefined
@@ -80,6 +83,9 @@ export function SettingsPage(props: {
     if (props.searchFocusToken > 0) searchInput?.focus()
   })
   onMount(() => {
+    const updateSystemLight = () => setSystemLight(systemScheme.matches)
+    systemScheme.addEventListener('change', updateSystemLight)
+    onCleanup(() => systemScheme.removeEventListener('change', updateSystemLight))
     const focusOnSlash = (event: KeyboardEvent) => {
       if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey || capturing()) return
       const target = event.target
@@ -114,8 +120,25 @@ export function SettingsPage(props: {
   const terminal = () => props.settings.terminal ?? defaultSettings.terminal!
   const behavior = () => props.settings.behavior ?? defaultSettings.behavior!
   const persistence = () => props.settings.persistence ?? defaultSettings.persistence!
+  const lightAppearance = () =>
+    appearance().theme === 'light' || (appearance().theme === 'system' && systemLight())
+  const muxColor = (key: 'chrome' | 'sidebar' | 'text' | 'accent') => {
+    const custom = appearance().customColors?.[key]
+    if (custom) return custom
+    if (key === 'accent')
+      return lightAppearance()
+        ? { blue: '#345d91', violet: '#7052a0', mint: '#247563' }[appearance().accent]
+        : { blue: '#9fb8d4', violet: '#b7a8d7', mint: '#99c7b8' }[appearance().accent]
+    return lightAppearance()
+      ? { chrome: '#f8f9fb', sidebar: '#eef1f5', text: '#202633' }[key]
+      : { chrome: '#242529', sidebar: '#222326', text: '#e6e7e9' }[key]
+  }
+  const shortcutKey = (shortcut: (typeof shortcuts)[number]) =>
+    props.settings.keybindings?.[shortcut.id] ?? defaultShortcutKey(shortcut, platform)
   const setAppearance = (patch: Partial<NonNullable<SettingsData['appearance']>>) =>
     update({ appearance: { ...appearance(), ...patch } })
+  const setCustomColor = (key: 'chrome' | 'sidebar' | 'text' | 'accent', color: string) =>
+    setAppearance({ customColors: { ...appearance().customColors, [key]: color } })
   const setTerminal = (patch: Partial<NonNullable<SettingsData['terminal']>>) =>
     update({ terminal: { ...terminal(), ...patch } })
   const setPersistence = (patch: Partial<NonNullable<SettingsData['persistence']>>) =>
@@ -124,10 +147,7 @@ export function SettingsPage(props: {
     if (
       binding &&
       shortcuts.some(
-        (entry) =>
-          entry.id !== id &&
-          (props.settings.keybindings?.[entry.id] ?? entry.defaultKey).toLowerCase() ===
-            binding.toLowerCase(),
+        (entry) => entry.id !== id && shortcutKey(entry).toLowerCase() === binding.toLowerCase(),
       )
     ) {
       setError('This shortcut is already assigned. Clear the other binding first.')
@@ -309,14 +329,15 @@ export function SettingsPage(props: {
             <section class="settings-group">
               <Row item={settingItems.colorPalette}>
                 <select
-                  aria-label="Color palette"
+                  aria-label="Appearance"
                   value={appearance().theme}
                   onChange={(e) =>
-                    setAppearance({ theme: e.currentTarget.value as 'midnight' | 'slate' })
+                    setAppearance({ theme: e.currentTarget.value as 'system' | 'dark' | 'light' })
                   }
                 >
-                  <option value="midnight">Charcoal</option>
-                  <option value="slate">Slate</option>
+                  <option value="system">System</option>
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
                 </select>
               </Row>
               <Row item={settingItems.accent}>
@@ -326,13 +347,44 @@ export function SettingsPage(props: {
                       <button
                         type="button"
                         class={`swatch swatch-${color}`}
-                        classList={{ chosen: appearance().accent === color }}
+                        classList={{
+                          chosen:
+                            appearance().accent === color && !appearance().customColors?.accent,
+                        }}
                         aria-label={`${color} accent`}
-                        aria-pressed={appearance().accent === color}
-                        onClick={() => setAppearance({ accent: color })}
+                        aria-pressed={
+                          appearance().accent === color && !appearance().customColors?.accent
+                        }
+                        onClick={() => {
+                          const { accent: _customAccent, ...otherColors } =
+                            appearance().customColors ?? {}
+                          setAppearance({ accent: color, customColors: otherColors })
+                        }}
                       />
                     )}
                   </For>
+                </div>
+              </Row>
+              <Row item={settingItems.customColors}>
+                <div class="mux-color-controls">
+                  <For each={['chrome', 'sidebar', 'text', 'accent'] as const}>
+                    {(key) => (
+                      <label class="mux-color-control">
+                        <span>
+                          {key === 'chrome' ? 'Tabs' : key[0]!.toUpperCase() + key.slice(1)}
+                        </span>
+                        <input
+                          type="color"
+                          aria-label={`${key} color`}
+                          value={muxColor(key)}
+                          onChange={(e) => setCustomColor(key, e.currentTarget.value)}
+                        />
+                      </label>
+                    )}
+                  </For>
+                  <button type="button" onClick={() => setAppearance({ customColors: undefined })}>
+                    Reset colors
+                  </button>
                 </div>
               </Row>
               <Row item={settingItems.sidebar}>
@@ -394,9 +446,14 @@ export function SettingsPage(props: {
             <section class="settings-group">
               <p class="card-intro">
                 Click a shortcut and press a new combination. Escape cancels; clear passes the key
-                to your shell. Mod means ⌘ on macOS or Super on Linux.
+                to your shell. Defaults use ⌘ on macOS and Ctrl+Shift or Alt on Linux.
               </p>
-              <For each={shortcuts}>
+              <For
+                each={shortcuts.filter(
+                  (item) =>
+                    item.id !== 'close-pane-ctrl' || !!props.settings.keybindings?.[item.id],
+                )}
+              >
                 {(item) => (
                   <div
                     class="setting-row shortcut-row"
@@ -423,7 +480,7 @@ export function SettingsPage(props: {
                           ? 'Press keys…'
                           : props.settings.keybindings?.[item.id] === ''
                             ? 'Unbound'
-                            : (props.settings.keybindings?.[item.id] ?? item.defaultKey)}
+                            : shortcutKey(item) || 'Unbound'}
                       </button>
                       <button
                         type="button"

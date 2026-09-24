@@ -102,7 +102,7 @@ export class TauTerminal {
     wrapper.classList.add('tau-native-terminal')
     wrapper.style.position = 'relative'
     wrapper.style.overflow = 'hidden'
-    wrapper.style.background = '#151515'
+    wrapper.style.background = 'var(--tau-terminal-background)'
     const canvas = document.createElement('canvas')
     canvas.className = 'tau-native-terminal-canvas'
     canvas.style.width = '100%'
@@ -169,7 +169,7 @@ export class TauTerminal {
     textarea.addEventListener('paste', this.paste)
     textarea.addEventListener('copy', this.copy)
     window.addEventListener('tau:appearance', this.appearanceChanged)
-    this.refresh()
+    this.appearanceChanged()
   }
 
   private updateFontMetrics(ctx: CanvasRenderingContext2D): void {
@@ -195,11 +195,16 @@ export class TauTerminal {
     if (!this.canvas || this.disposed) return
     const ctx = this.canvas.getContext('2d', { alpha: false })
     if (!ctx) return
+    const light = document.documentElement.dataset.theme === 'light'
+    this.vt.setDefaultColors(light ? '#fbfcfe' : '#151515', light ? '#202633' : '#d4d4d4', light)
     this.updateFontMetrics(ctx)
     this.rowsCache.length = 0
     this.lastFrame = null
     const size = this.proposeDimensions()
+    const gridChanged = size && (size.cols !== this.cols || size.rows !== this.rows)
     if (size) this.resize(size.cols, size.rows)
+    if (!gridChanged)
+      this.vt.resize(this.cols, this.rows, Math.round(this.cellWidth), Math.round(this.cellHeight))
     this.refresh()
   }
 

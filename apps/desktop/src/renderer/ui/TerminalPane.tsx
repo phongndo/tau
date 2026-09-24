@@ -19,6 +19,7 @@ export function TerminalPane(props: {
   focusToken: number
   searchToken: number
   onTitleChange?(title: string): void
+  onProcessTitleChange?(title: string): void
   onRestartSession?(): void
 }) {
   let surface: HTMLDivElement | undefined
@@ -58,6 +59,7 @@ export function TerminalPane(props: {
           cwd: props.cwd,
           argv: props.argv,
           onTitle: (title) => props.onTitleChange?.(title),
+          onProcessTitle: (title) => props.onProcessTitleChange?.(title),
           onArchived: () => {
             if (!disposed) setArchived(true)
           },

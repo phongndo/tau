@@ -1,18 +1,40 @@
 import type { SettingsData } from './session'
 
 export const shortcuts = [
-  { id: 'new-tab', label: 'New tab', defaultKey: 'Mod+T' },
-  { id: 'close-tab', label: 'Close tab', defaultKey: 'Mod+W' },
-  { id: 'close-pane', label: 'Close pane', defaultKey: 'Mod+Shift+W' },
-  { id: 'close-pane-ctrl', label: 'Close pane (Ctrl+X)', defaultKey: 'Ctrl+X' },
-  { id: 'split-right', label: 'Split right', defaultKey: 'Mod+D' },
-  { id: 'split-down', label: 'Split down', defaultKey: 'Mod+Shift+D' },
-  { id: 'search', label: 'Find in terminal', defaultKey: 'Mod+F' },
-  { id: 'settings', label: 'Open settings', defaultKey: 'Mod+,' },
-  { id: 'focus-left', label: 'Focus left pane', defaultKey: 'Ctrl+H' },
-  { id: 'focus-down', label: 'Focus lower pane', defaultKey: 'Ctrl+J' },
-  { id: 'focus-up', label: 'Focus upper pane', defaultKey: 'Ctrl+K' },
-  { id: 'focus-right', label: 'Focus right pane', defaultKey: 'Ctrl+L' },
+  { id: 'new-tab', label: 'New tab', defaultKey: 'Mod+T', linuxKey: 'Ctrl+Shift+T' },
+  { id: 'close-tab', label: 'Close tab', defaultKey: 'Mod+W', linuxKey: 'Ctrl+Shift+W' },
+  { id: 'close-pane', label: 'Close pane', defaultKey: 'Mod+Shift+W', linuxKey: 'Ctrl+Shift+Q' },
+  { id: 'close-pane-ctrl', label: 'Close pane (alternate)', defaultKey: '' },
+  { id: 'split-right', label: 'Split right', defaultKey: 'Mod+D', linuxKey: 'Ctrl+Shift+D' },
+  { id: 'split-down', label: 'Split down', defaultKey: 'Mod+Shift+D', linuxKey: 'Ctrl+Shift+E' },
+  { id: 'search', label: 'Find in terminal', defaultKey: 'Mod+F', linuxKey: 'Ctrl+Shift+F' },
+  { id: 'settings', label: 'Open settings', defaultKey: 'Mod+,', linuxKey: 'Ctrl+Alt+S' },
+  { id: 'next-tab', label: 'Next tab', defaultKey: 'Ctrl+Tab' },
+  { id: 'previous-tab', label: 'Previous tab', defaultKey: 'Ctrl+Shift+Tab' },
+  {
+    id: 'focus-left',
+    label: 'Focus left pane',
+    defaultKey: 'Mod+Alt+ArrowLeft',
+    linuxKey: 'Ctrl+Shift+ArrowLeft',
+  },
+  {
+    id: 'focus-down',
+    label: 'Focus lower pane',
+    defaultKey: 'Mod+Alt+ArrowDown',
+    linuxKey: 'Ctrl+Shift+ArrowDown',
+  },
+  {
+    id: 'focus-up',
+    label: 'Focus upper pane',
+    defaultKey: 'Mod+Alt+ArrowUp',
+    linuxKey: 'Ctrl+Shift+ArrowUp',
+  },
+  {
+    id: 'focus-right',
+    label: 'Focus right pane',
+    defaultKey: 'Mod+Alt+ArrowRight',
+    linuxKey: 'Ctrl+Shift+ArrowRight',
+  },
   { id: 'tab-1', label: 'Switch to tab 1', defaultKey: 'Mod+1' },
   { id: 'tab-2', label: 'Switch to tab 2', defaultKey: 'Mod+2' },
   { id: 'tab-3', label: 'Switch to tab 3', defaultKey: 'Mod+3' },
@@ -27,9 +49,17 @@ export const shortcuts = [
 
 export type ShortcutId = (typeof shortcuts)[number]['id']
 
+export function defaultShortcutKey(shortcut: (typeof shortcuts)[number], platform: string): string {
+  return platform === 'darwin'
+    ? shortcut.defaultKey
+    : 'linuxKey' in shortcut
+      ? shortcut.linuxKey
+      : shortcut.defaultKey.replace('Mod+', 'Alt+')
+}
+
 export const defaultSettings: SettingsData = {
   version: 1,
-  appearance: { theme: 'midnight', accent: 'blue', sidebar: true },
+  appearance: { theme: 'system', accent: 'blue', sidebar: true },
   terminal: { fontSize: 14, fontFamily: 'monospace' },
   behavior: { confirmClose: false },
   keybindings: {},
@@ -50,6 +80,9 @@ const fontFamilies = new Set([
 
 export function validateSettings(value: SettingsData): void {
   if (value.version !== 1) throw new Error('Unsupported settings version')
+  const colors = value.appearance?.customColors
+  if (colors && Object.values(colors).some((color) => !/^#[0-9a-fA-F]{6}$/u.test(color)))
+    throw new Error('Invalid custom mux color')
   if (
     value.terminal &&
     (!Number.isInteger(value.terminal.fontSize) ||
@@ -85,9 +118,17 @@ export function validateSettings(value: SettingsData): void {
 /** Upgrade older settings without dropping saved persistence preferences. */
 export function resolveSettings(value: SettingsData | null): SettingsData {
   if (!value) return structuredClone(defaultSettings)
+  const appearance = value.appearance ?? defaultSettings.appearance!
   return {
     version: 1,
-    appearance: value.appearance ?? defaultSettings.appearance,
+    appearance: {
+      ...appearance,
+      theme:
+        appearance.theme === 'midnight' || appearance.theme === 'slate' ? 'dark' : appearance.theme,
+      ...(appearance.theme === 'slate' && !appearance.customColors
+        ? { customColors: { chrome: '#293038', sidebar: '#282c31' } }
+        : {}),
+    },
     terminal: value.terminal ?? defaultSettings.terminal,
     behavior: value.behavior ?? defaultSettings.behavior,
     keybindings: value.keybindings ?? {},

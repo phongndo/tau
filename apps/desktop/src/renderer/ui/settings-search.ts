@@ -1,4 +1,4 @@
-import { shortcuts } from '@tau/shared/preferences'
+import { defaultShortcutKey, shortcuts } from '@tau/shared/preferences'
 import type { SettingsData } from '@tau/shared/session'
 
 export const settingsSections = [
@@ -24,8 +24,16 @@ export const settingItems = {
   colorPalette: {
     id: 'color-palette',
     section: 'Appearance',
-    title: 'Color palette',
-    terms: 'theme dark charcoal slate colors interface',
+    title: 'Appearance',
+    terms: 'system dark light theme colors interface',
+  },
+  customColors: {
+    id: 'custom-colors',
+    section: 'Appearance',
+    title: 'Mux colors',
+    description:
+      'Customize tabs, sidebar, text, and accent without changing terminal program colors.',
+    terms: 'custom theme chrome tab sidebar foreground background',
   },
   accent: {
     id: 'accent',
@@ -126,6 +134,7 @@ const normalize = (value: string) =>
 export function searchSettings(
   query: string,
   keybindings: SettingsData['keybindings'],
+  platform = 'darwin',
 ): SettingsSearchResult[] {
   const normalizedQuery = normalize(query)
   if (!normalizedQuery) return []
@@ -143,13 +152,15 @@ export function searchSettings(
       targetId: item.id,
       terms: 'terms' in item ? item.terms : '',
     })),
-    ...shortcuts.map((shortcut) => ({
-      id: `shortcut:${shortcut.id}`,
-      section: 'Keyboard' as const,
-      title: shortcut.label,
-      targetId: `shortcut:${shortcut.id}`,
-      terms: `${shortcut.id} ${keybindings?.[shortcut.id] ?? shortcut.defaultKey} keybinding shortcut`,
-    })),
+    ...shortcuts
+      .filter((shortcut) => shortcut.id !== 'close-pane-ctrl' || !!keybindings?.[shortcut.id])
+      .map((shortcut) => ({
+        id: `shortcut:${shortcut.id}`,
+        section: 'Keyboard' as const,
+        title: shortcut.label,
+        targetId: `shortcut:${shortcut.id}`,
+        terms: `${shortcut.id} ${keybindings?.[shortcut.id] ?? defaultShortcutKey(shortcut, platform)} keybinding shortcut`,
+      })),
   ]
   return entries
     .map((entry, index) => {

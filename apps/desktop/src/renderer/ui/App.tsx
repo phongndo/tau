@@ -29,6 +29,7 @@ function PaneLeaf(props: {
   search: Record<string, number>
   onSelect(id: string): void
   onTitle(id: string, title: string): void
+  onProcessTitle(id: string, title: string): void
   onRestart(id: string): void
 }) {
   return (
@@ -54,6 +55,10 @@ function PaneLeaf(props: {
               const id = props.pane?.id
               if (id) props.onTitle(id, title)
             }}
+            onProcessTitleChange={(title) => {
+              const id = props.pane?.id
+              if (id) props.onProcessTitle(id, title)
+            }}
             onRestartSession={() => {
               const id = props.pane?.id
               if (id) props.onRestart(id)
@@ -73,6 +78,7 @@ function PaneTree(props: {
   search: Record<string, number>
   onSelect(id: string): void
   onTitle(id: string, title: string): void
+  onProcessTitle(id: string, title: string): void
   onRestart(id: string): void
   onResize(node: MosaicLayoutNode): void
 }) {
@@ -130,6 +136,7 @@ function PaneTree(props: {
               search={props.search}
               onSelect={props.onSelect}
               onTitle={props.onTitle}
+              onProcessTitle={props.onProcessTitle}
               onRestart={props.onRestart}
             />
           }
@@ -165,6 +172,7 @@ function PaneTree(props: {
                   search={props.search}
                   onSelect={props.onSelect}
                   onTitle={props.onTitle}
+                  onProcessTitle={props.onProcessTitle}
                   onRestart={props.onRestart}
                 />
               </div>
@@ -196,6 +204,7 @@ function PaneTree(props: {
                     search={props.search}
                     onSelect={props.onSelect}
                     onTitle={props.onTitle}
+                    onProcessTitle={props.onProcessTitle}
                     onRestart={props.onRestart}
                     onResize={(updated) => {
                       const current = split()
@@ -247,7 +256,20 @@ export function App() {
   const [settingsSearchFocus, setSettingsSearchFocus] = createSignal(0)
   const [sidebarWidth, setSidebarWidth] = createSignal(196)
   const [editingWorkspace, setEditingWorkspace] = createSignal<string | null>(null)
+  const [editingTab, setEditingTab] = createSignal<string | null>(null)
+  const [processTitles, setProcessTitles] = createSignal<Record<string, string>>({})
   const [settings, setSettings] = createSignal<SettingsData>(defaultSettings)
+  const systemColors = window.matchMedia('(prefers-color-scheme: dark)')
+  const tabTitle = (tab: Tab) => {
+    const extensions = tab.extensions as Record<string, unknown> | undefined
+    if (typeof extensions?.tauManualName === 'string') return extensions.tauManualName
+    const id = tab.lastActivePaneId ?? getFirstPaneId(tab.layout)
+    return (
+      sanitizeTerminalTitle(
+        id ? (processTitles()[id] ?? byId().get(id)?.name ?? tab.name) : tab.name,
+      ) ?? tab.name
+    )
+  }
   const [focus, setFocus] = createSignal<Record<string, number>>({})
   const [search, setSearch] = createSignal<Record<string, number>>({})
   const [diagnostics, setDiagnostics] = createSignal<TaudLifecycleDiagnostics | null>(null)
@@ -299,8 +321,17 @@ export function App() {
 
   const applySettings = (data: SettingsData) => {
     setSettings(data)
-    document.documentElement.dataset.theme = data.appearance?.theme ?? 'midnight'
-    document.documentElement.dataset.accent = data.appearance?.accent ?? 'blue'
+    const appearance = data.appearance ?? defaultSettings.appearance!
+    const theme =
+      appearance.theme === 'system' ? (systemColors.matches ? 'dark' : 'light') : appearance.theme
+    document.documentElement.dataset.theme =
+      theme === 'midnight' || theme === 'slate' ? 'dark' : theme
+    document.documentElement.dataset.accent = appearance.accent
+    for (const key of ['chrome', 'sidebar', 'accent', 'text'] as const) {
+      const color = appearance.customColors?.[key]
+      if (color) document.documentElement.style.setProperty(`--${key}`, color)
+      else document.documentElement.style.removeProperty(`--${key}`)
+    }
     document.documentElement.style.setProperty(
       '--terminal-font-size',
       `${data.terminal?.fontSize ?? 14}px`,
@@ -360,6 +391,19 @@ export function App() {
         setSettingsOpen(false)
         state.selectTabByIndex(command.index)
         break
+      case 'cycle-tab': {
+        setSettingsOpen(false)
+        const current = state.tabs.find((tab) => tab.id === state.activeTabId)
+        if (!current) break
+        const inWorkspace = state.tabs
+          .filter((tab) => tab.workspaceId === current.workspaceId)
+          .sort((a, b) => a.order - b.order)
+        const index = inWorkspace.findIndex((tab) => tab.id === current.id)
+        const next =
+          inWorkspace[(index + command.direction + inWorkspace.length) % inWorkspace.length]
+        if (next) state.selectTab(next.id)
+        break
+      }
       case 'focus-pane':
         state.selectPaneByDirection(command.direction)
         break
@@ -389,6 +433,10 @@ export function App() {
     }
   }
   onMount(() => {
+    const onSystemColorsChange = () => {
+      if (settings().appearance?.theme === 'system') applySettings(settings())
+    }
+    systemColors.addEventListener('change', onSystemColorsChange)
     try {
       const savedWidth = Number(window.localStorage.getItem('sidebar-width'))
       if (Number.isFinite(savedWidth) && savedWidth >= 156 && savedWidth <= 360)
@@ -404,6 +452,7 @@ export function App() {
       .then((value) => applySettings(value ?? defaultSettings))
       .catch((error) => console.warn('[settings]', error))
     onCleanup(() => {
+      systemColors.removeEventListener('change', onSystemColorsChange)
       stopGraph()
       stopCommands()
     })
@@ -416,12 +465,17 @@ export function App() {
     onCleanup(() => cancelAnimationFrame(frame))
   })
   createEffect(() => {
-    document.title = activeTab()?.name ?? 'Terminal'
+    document.title = activeTab() ? tabTitle(activeTab()!) : 'Terminal'
   })
   createEffect(() => {
     if (!loaded()) return
     const next = new Map(panes().map((pane) => [pane.id, pane.lastSessionId ?? pane.id]))
     for (const [id, session] of previous) if (!next.has(id)) disposeTerminalRuntime(session)
+    if ([...previous.keys()].some((id) => !next.has(id))) {
+      setProcessTitles((titles) =>
+        Object.fromEntries(Object.entries(titles).filter(([id]) => next.has(id))),
+      )
+    }
     previous = next
   })
   createEffect(() => {
@@ -454,11 +508,6 @@ export function App() {
       setRecovering(false)
     }
   }
-  const tabTitle = (tab: Tab) => {
-    const id = getFirstPaneId(tab.layout)
-    return sanitizeTerminalTitle(id ? (byId().get(id)?.name ?? tab.name) : tab.name) ?? tab.name
-  }
-
   return (
     <div
       class="tau-shell"
@@ -606,17 +655,47 @@ export function App() {
               <For each={workspaceTabs()}>
                 {(tab) => (
                   <div class="topbar-tab" classList={{ selected: tab.id === activeTabId() }}>
-                    <button
-                      type="button"
-                      class="topbar-tab-select"
-                      aria-current={tab.id === activeTabId() ? 'page' : undefined}
-                      onClick={() => {
-                        setSettingsOpen(false)
-                        useTauStore.getState().selectTab(tab.id)
-                      }}
+                    <Show
+                      when={editingTab() === tab.id}
+                      fallback={
+                        <button
+                          type="button"
+                          class="topbar-tab-select"
+                          aria-current={tab.id === activeTabId() ? 'page' : undefined}
+                          title={`${tabTitle(tab)} · Double-click to rename`}
+                          onClick={() => {
+                            setSettingsOpen(false)
+                            useTauStore.getState().selectTab(tab.id)
+                          }}
+                          onDblClick={() => setEditingTab(tab.id)}
+                        >
+                          {tabTitle(tab)}
+                        </button>
+                      }
                     >
-                      {tabTitle(tab)}
-                    </button>
+                      <input
+                        class="topbar-tab-name-input"
+                        aria-label="Tab name; clear for automatic naming"
+                        value={tabTitle(tab)}
+                        ref={(element) =>
+                          queueMicrotask(() => {
+                            element.focus()
+                            element.select()
+                          })
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            useTauStore.getState().renameTab(tab.id, event.currentTarget.value)
+                            setEditingTab(null)
+                          } else if (event.key === 'Escape') setEditingTab(null)
+                        }}
+                        onBlur={(event) => {
+                          if (editingTab() !== tab.id) return
+                          useTauStore.getState().renameTab(tab.id, event.currentTarget.value)
+                          setEditingTab(null)
+                        }}
+                      />
+                    </Show>
                     <button
                       type="button"
                       class="topbar-tab-close"
@@ -689,7 +768,19 @@ export function App() {
                       useTauStore.getState().selectPane(id)
                   }}
                   onTitle={(id, title) => useTauStore.getState().setPaneTitle(id, title)}
-                  onRestart={(id) => useTauStore.getState().restartPaneSession(id)}
+                  onProcessTitle={(id, title) => {
+                    const normalized = sanitizeTerminalTitle(title)
+                    if (normalized)
+                      setProcessTitles((current) => ({ ...current, [id]: normalized }))
+                  }}
+                  onRestart={(id) => {
+                    setProcessTitles((titles) => {
+                      const next = { ...titles }
+                      delete next[id]
+                      return next
+                    })
+                    useTauStore.getState().restartPaneSession(id)
+                  }}
                   onResize={(layout) => useTauStore.getState().setTabLayout(tab().id, layout)}
                 />
               )}

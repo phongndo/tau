@@ -26,6 +26,27 @@ test('direct Ghostty WASM preserves split parser state and paints the viewport',
   }
 })
 
+test('default terminal colors follow a live appearance change', async () => {
+  const vt = await terminal()
+  try {
+    vt.write('hello')
+    vt.render()
+    vt.setDefaultColors('#fbfcfe', '#202633', true)
+    vt.resize(vt.cols, vt.rows)
+    const frame = vt.render()
+    expect(frame.background).toBe('#fbfcfe')
+    expect(frame.foreground).toBe('#202633')
+    expect(frame.rows[0]?.cells[0]?.fg).toBe('#202633')
+    vt.write('\x1b[97mX')
+    expect(vt.render().rows[0]?.cells[5]?.fg).toBe('#24292f')
+    vt.setDefaultColors('#151515', '#d4d4d4')
+    vt.resize(vt.cols, vt.rows)
+    expect(vt.render().background).toBe('#151515')
+  } finally {
+    vt.dispose()
+  }
+})
+
 test('Ghostty keyboard encoder follows cursor mode and controls', async () => {
   const vt = await terminal()
   try {
@@ -131,6 +152,9 @@ test('VT size and color-scheme queries receive Tau pane geometry and dark theme'
     vt.resize(16, 4, 9, 18)
     vt.write('\x1b[14t\x1b[16t\x1b[18t\x1b[?996n')
     expect(responses).toEqual(['\x1b[4;72;144t', '\x1b[6;18;9t', '\x1b[8;4;16t', '\x1b[?997;1n'])
+    vt.setDefaultColors('#fbfcfe', '#202633', true)
+    vt.write('\x1b[?996n')
+    expect(responses.at(-1)).toBe('\x1b[?997;2n')
   } finally {
     vt.dispose()
   }

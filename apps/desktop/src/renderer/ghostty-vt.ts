@@ -79,6 +79,8 @@ export class GhosttyVt {
   private disposed = false
   private readonly effectBridges: WebAssembly.Instance[] = []
   private clipboardListener: ((text: string) => boolean) | null = null
+  private defaultColors = '#151515:#d4d4d4'
+  private lightColorScheme = false
 
   static async create(bytes: BufferSource, cols = 80, rows = 24): Promise<GhosttyVt> {
     const { instance } = await WebAssembly.instantiate(bytes)
@@ -184,6 +186,62 @@ export class GhosttyVt {
   private readRgb(ptr: number): string {
     const data = new Uint8Array(this.api.memory.buffer, ptr, 3)
     return `#${[...data].map((component) => component.toString(16).padStart(2, '0')).join('')}`
+  }
+
+  setDefaultColors(background: string, foreground: string, light = false): void {
+    this.lightColorScheme = light
+    const pair = `${background}:${foreground}`
+    if (this.defaultColors === pair) return
+    const write = (color: string, option: number) => {
+      const match = /^#([0-9a-f]{6})$/iu.exec(color)
+      if (!match) throw new Error('Invalid terminal color')
+      new Uint8Array(this.api.memory.buffer).set(
+        [0, 2, 4].map((index) => Number.parseInt(match[1]!.slice(index, index + 2), 16)),
+        this.scratch,
+      )
+      this.check(
+        this.api.ghostty_terminal_set(this.terminal, option, this.scratch),
+        'default color',
+      )
+    }
+    write(background, 12)
+    write(foreground, 11)
+    if (light) {
+      // Keep the 240 extended colors, but give the common ANSI colors contrast on a light page.
+      this.check(this.api.ghostty_terminal_get(this.terminal, 25, this.scratch), 'default palette')
+      const palette = Uint8Array.from(new Uint8Array(this.api.memory.buffer, this.scratch, 256 * 3))
+      const ansi = [
+        '#24292f',
+        '#b42318',
+        '#1a7f37',
+        '#9a6700',
+        '#0969da',
+        '#8250df',
+        '#0a7d83',
+        '#57606a',
+        '#6e7781',
+        '#d1242f',
+        '#238636',
+        '#9a6700',
+        '#218bff',
+        '#8250df',
+        '#168b91',
+        '#24292f',
+      ]
+      for (const [index, color] of ansi.entries()) {
+        for (let component = 0; component < 3; component++) {
+          palette[index * 3 + component] = Number.parseInt(
+            color.slice(1 + component * 2, 3 + component * 2),
+            16,
+          )
+        }
+      }
+      new Uint8Array(this.api.memory.buffer).set(palette, this.scratch)
+      this.check(this.api.ghostty_terminal_set(this.terminal, 14, this.scratch), 'light palette')
+    } else {
+      this.check(this.api.ghostty_terminal_set(this.terminal, 14, 0), 'dark palette')
+    }
+    this.defaultColors = pair
   }
 
   write(bytes: string | Uint8Array): void {
@@ -362,7 +420,7 @@ export class GhosttyVt {
       7,
       3,
       (_terminal, _userdata, ptr) => {
-        this.view().setUint32(ptr, 1, true) // GHOSTTY_COLOR_SCHEME_DARK
+        this.view().setUint32(ptr, this.lightColorScheme ? 0 : 1, true)
         return 1
       },
       true,

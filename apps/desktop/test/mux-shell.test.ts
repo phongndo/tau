@@ -74,6 +74,24 @@ test('tabs and splits retain their workspace', () => {
   assert.equal('workspaces' in layout, false)
 })
 
+test('explicit tab names survive terminal titles and graph restore; clearing restores automatic naming', () => {
+  resetStore()
+  const first = useTauStore.getState()
+  const tabId = first.activeTabId!
+  const paneId = first.activePaneId!
+  first.setPaneTitle(paneId, 'nvim')
+  first.renameTab(tabId, 'Project')
+  useTauStore.getState().setPaneTitle(paneId, 'git')
+  assert.equal(useTauStore.getState().tabs[0]?.name, 'Project')
+  const graph = selectMuxGraphSnapshot(useTauStore.getState())
+  useTauStore.getState().applyMuxGraph(graph)
+  const restored = useTauStore.getState().tabs[0]!
+  assert.equal((restored.extensions as Record<string, unknown>).tauManualName, 'Project')
+  useTauStore.getState().renameTab(tabId, '')
+  const cleared = useTauStore.getState().tabs[0]!
+  assert.equal((cleared.extensions as Record<string, unknown>).tauManualName, undefined)
+})
+
 test('workspaces keep separate tab selections across graph snapshots', () => {
   resetStore()
   const firstWorkspace = useTauStore.getState().workspaces[0]!

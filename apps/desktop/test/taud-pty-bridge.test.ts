@@ -139,7 +139,12 @@ test('late attach completion cannot replace the new renderer stream', async () =
     expect(current.input.map((bytes) => [...bytes])).toEqual([[9]])
     current.frame(3)
     expect(channel.messages).toHaveLength(2)
-    expect(f.control.messages).toHaveLength(1) // only the current ready
+    expect(f.control.messages.filter((message: any) => message.type === 'ready')).toHaveLength(1)
+    expect(f.control.messages).toContainEqual({
+      type: 'process-title',
+      sessionId: 's',
+      title: expect.any(String),
+    })
   } finally {
     f.bridge.dispose()
   }
@@ -165,7 +170,7 @@ test('replacing the control port revokes old channels and ignores queued old con
     expect(current.closed).toBe(false)
     expect(channel.closed).toBe(false)
     expect(f.pending.length).toBe(2)
-    expect(control.messages).toHaveLength(1)
+    expect(control.messages.filter((message: any) => message.type === 'ready')).toHaveLength(1)
   } finally {
     f.bridge.dispose()
   }
@@ -184,7 +189,7 @@ test('a late failure from an obsolete attach cannot clear the replacement render
     await turn()
     f.pending[0]!.reject(new Error('old attach failed'))
     await turn()
-    expect(f.control.messages).toHaveLength(1)
+    expect(f.control.messages.filter((message: any) => message.type === 'ready')).toHaveLength(1)
     expect(current.closed).toBe(false)
   } finally {
     f.bridge.dispose()
@@ -202,7 +207,7 @@ test('a newer attach on the same channel also supersedes an older pending RPC', 
     const obsolete = await f.resolve(0)
     expect(obsolete.closed).toBe(true)
     expect(current.closed).toBe(false)
-    expect(f.control.messages).toHaveLength(1)
+    expect(f.control.messages.filter((message: any) => message.type === 'ready')).toHaveLength(1)
   } finally {
     f.bridge.dispose()
   }

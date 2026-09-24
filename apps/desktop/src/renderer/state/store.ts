@@ -46,6 +46,7 @@ export interface TauState {
   selectPaneByDirection(direction: PaneFocusDirection): void
   restartPaneSession(paneId: string): void
   setPaneTitle(paneId: string, title: string): void
+  renameTab(tabId: string, name: string): void
   splitPane(paneId: string, direction: MosaicDirection): void
   splitActivePane(direction: MosaicDirection): void
   closePane(paneId: string): void
@@ -812,10 +813,24 @@ export const useTauStore = createStore<TauState>((set, get) => ({
       const tabs = state.tabs.map((tab) => {
         if (tab.id !== pane.tabId) return tab
         if (getFirstPaneId(tab.layout) !== paneId) return tab
-        return { ...tab, name: normalized }
+        return extensionRecord(tab.extensions).tauManualName ? tab : { ...tab, name: normalized }
       })
       return { panes, tabs, graphRev: bumpRev(state) }
     })
+  },
+
+  renameTab(tabId, name) {
+    const normalized = sanitizeTerminalTitle(name)
+    set((state) => ({
+      tabs: state.tabs.map((tab) => {
+        if (tab.id !== tabId) return tab
+        const extensions = { ...extensionRecord(tab.extensions) }
+        if (normalized) extensions.tauManualName = normalized
+        else delete extensions.tauManualName
+        return { ...tab, name: normalized ?? 'Shell', extensions }
+      }),
+      graphRev: bumpRev(state),
+    }))
   },
 
   splitPane(paneId, direction) {

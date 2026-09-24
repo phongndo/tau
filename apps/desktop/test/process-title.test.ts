@@ -49,3 +49,20 @@ test('process title ignores zombie child processes', () => {
 
   assert.equal(resolveProcessTitle(rows, 100, 'zsh'), 'top')
 })
+
+test('background children do not rename a foreground shell', () => {
+  const rows = parsePsOutput(`
+    100 1 Ss+ /bin/zsh
+    200 100 S /usr/bin/sleep 100
+  `)
+  assert.equal(resolveProcessTitle(rows, 100, 'zsh'), 'zsh')
+})
+
+test('foreground program wins over a newer background child', () => {
+  const rows = parsePsOutput(`
+    100 1 Ss /bin/zsh
+    200 100 S+ /usr/bin/vim
+    300 100 S /usr/bin/sleep 100
+  `)
+  assert.equal(resolveProcessTitle(rows, 100, 'zsh'), 'vim')
+})

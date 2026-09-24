@@ -4,6 +4,13 @@ Tau is an experiment to see how fast a native Electron terminal multiplexer can 
 
 Today the desktop app has a sidebar-based mux UI, terminal search, preferences (appearance, terminal, shortcuts, sessions), and session recovery. A structured control CLI and extension runtime are product goals, **not shipped APIs**. Pi, Git, and project workflows are not built into the terminal.
 
+## Everyday controls
+
+- New tab: ⌘T on macOS, Ctrl+Shift+T on Linux. Move between tabs with Ctrl+Tab / Ctrl+Shift+Tab, or use ⌘1–9 on macOS and Alt+1–9 on Linux.
+- Split right: ⌘D on macOS, Ctrl+Shift+D on Linux. Split down: ⌘Shift+D or Ctrl+Shift+E. Focus another pane with ⌘Option+Arrow on macOS or Ctrl+Shift+Arrow on Linux.
+- Double-click a tab title to name it. Clear the name to show the active pane's foreground process again. Settings lets you change or clear every shortcut.
+- Appearance offers System, Dark, and Light modes, accent presets, and custom mux colors. System follows the desktop color scheme.
+
 ## Run locally
 
 ```bash

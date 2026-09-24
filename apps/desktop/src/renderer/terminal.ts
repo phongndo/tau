@@ -24,6 +24,7 @@ type CreateTerminalOptions = {
   readonly cwd?: string
   readonly argv?: readonly string[]
   readonly onTitle?: (title: string) => void
+  readonly onProcessTitle?: (title: string) => void
   readonly onArchived?: () => void
   readonly onAttach?: (result: AttachSessionResult) => void
 }
@@ -53,6 +54,7 @@ type TerminalRuntime = {
   disposed: boolean
   lastUsedAt: number
   onTitle?: (title: string) => void
+  onProcessTitle?: (title: string) => void
   onArchived?: () => void
   onAttach?: (result: AttachSessionResult) => void
 }
@@ -397,6 +399,7 @@ export async function createTerminal(
   if (existingRuntime && !existingRuntime.disposed) {
     try {
       existingRuntime.onTitle = options.onTitle
+      existingRuntime.onProcessTitle = options.onProcessTitle
       existingRuntime.onArchived = options.onArchived
       existingRuntime.onAttach = options.onAttach
       attachTerminalRuntime(existingRuntime, container)
@@ -458,6 +461,7 @@ export async function createTerminal(
       disposed: false,
       lastUsedAt: Date.now(),
       onTitle: options.onTitle,
+      onProcessTitle: options.onProcessTitle,
       onArchived: options.onArchived,
       onAttach: options.onAttach,
     }
@@ -509,6 +513,9 @@ export async function createTerminal(
   const titleSubscription = openedTerm.onTitleChange((title) => runtime.onTitle?.(title))
   const unsubSessionTitle = window.electronAPI.onSessionTitle(sessionId, (title) => {
     runtime.onTitle?.(title)
+  })
+  const unsubProcessTitle = window.electronAPI.onSessionProcessTitle(sessionId, (title) => {
+    runtime.onProcessTitle?.(title)
   })
   let stopResizeObserver: (() => void) | null = null
   let archived = false
@@ -781,6 +788,7 @@ export async function createTerminal(
     unsubSessionExit()
     unsubSessionTitle?.()
     titleSubscription?.dispose()
+    unsubProcessTitle()
     outputWriter.dispose()
     terminalDiagnosticsRegistry().delete(sessionId)
     if (didAttachSession) {
@@ -823,6 +831,7 @@ export async function createTerminal(
     unsubSessionExit()
     unsubSessionTitle?.()
     titleSubscription?.dispose()
+    unsubProcessTitle()
     outputWriter.dispose()
     terminalDiagnosticsRegistry().delete(sessionId)
     void window.electronAPI.detachSession(sessionId)

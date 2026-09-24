@@ -12,6 +12,7 @@ body,
   overflow: hidden;
 }
 html {
+  color-scheme: dark;
   --accent: #9fb8d4;
   --text: #e6e7e9;
   --muted: #a0a2a8;
@@ -21,6 +22,7 @@ html {
   --edge: rgb(255 255 255 / 8%);
   --hover: rgb(255 255 255 / 6%);
   --selected: rgb(255 255 255 / 7%);
+  --surface: #26272a;
   --tau-terminal-background: #151515;
   background: var(--chrome);
   color: var(--text);
@@ -32,15 +34,31 @@ html {
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
 }
-html[data-theme='slate'] {
-  --chrome: #293038;
-  --sidebar: #282c31;
+html[data-theme='light'] {
+  color-scheme: light;
+  --accent: #345d91;
+  --text: #202633;
+  --muted: #596473;
+  --subtle: #737f8b;
+  --chrome: #f8f9fb;
+  --sidebar: #eef1f5;
+  --edge: rgb(24 35 55 / 13%);
+  --hover: rgb(24 35 55 / 6%);
+  --selected: rgb(24 35 55 / 10%);
+  --surface: #fff;
+  --tau-terminal-background: #fbfcfe;
 }
 html[data-accent='violet'] {
   --accent: #b7a8d7;
 }
 html[data-accent='mint'] {
   --accent: #99c7b8;
+}
+html[data-theme='light'][data-accent='violet'] {
+  --accent: #7052a0;
+}
+html[data-theme='light'][data-accent='mint'] {
+  --accent: #247563;
 }
 html[data-platform='macos'],
 html[data-platform='macos'] body,
@@ -83,7 +101,7 @@ input:focus-visible {
   background: var(--sidebar);
 }
 .macos .sidebar {
-  background: rgb(24 25 28 / 50%);
+  background: color-mix(in srgb, var(--sidebar) 82%, transparent);
   backdrop-filter: blur(28px) saturate(1.25);
 }
 .sidebar-header {
@@ -267,7 +285,7 @@ input:focus-visible {
   flex: 0 0 38px;
   min-width: 0;
   padding: 0 10px;
-  background: var(--tau-terminal-background);
+  background: var(--chrome);
 }
 .macos.sidebar-hidden .topbar {
   padding-left: 86px;
@@ -318,6 +336,16 @@ input:focus-visible {
   border: 0;
   background: transparent;
   color: var(--muted);
+  font-size: 12px;
+}
+.topbar-tab-name-input {
+  width: 110px;
+  min-width: 65px;
+  padding: 4px 7px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
   font-size: 12px;
 }
 .topbar-tab.selected .topbar-tab-select {
@@ -583,7 +611,7 @@ input:focus-visible {
 }
 .macos .settings-nav {
   padding-top: 54px;
-  background: rgb(24 25 28 / 50%);
+  background: color-mix(in srgb, var(--sidebar) 82%, transparent);
   backdrop-filter: blur(28px) saturate(1.25);
 }
 .settings-nav button {
@@ -615,7 +643,7 @@ input:focus-visible {
   margin: 0 2px 14px;
   padding: 0 8px;
   border-radius: 6px;
-  background: rgb(255 255 255 / 6%);
+  background: var(--hover);
   -webkit-app-region: no-drag;
 }
 .settings-search:focus-within {
@@ -706,7 +734,7 @@ input:focus-visible {
   min-width: 0;
   flex: 1;
   overflow: auto;
-  background: var(--tau-terminal-background);
+  background: var(--chrome);
 }
 .settings-content {
   width: min(640px, 100%);
@@ -735,8 +763,8 @@ input:focus-visible {
 }
 .setting-row-highlighted {
   border-radius: 6px;
-  background: rgb(159 184 212 / 10%);
-  box-shadow: 0 0 0 5px rgb(159 184 212 / 10%);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .setting-copy {
   min-width: 0;
@@ -765,7 +793,7 @@ input:focus-visible {
   min-height: 30px;
   border: 1px solid var(--edge);
   border-radius: 6px;
-  background: #26272a;
+  background: var(--surface);
   color: var(--text);
   padding: 4px 9px;
 }
@@ -814,6 +842,28 @@ input:focus-visible {
   display: flex;
   gap: 10px;
 }
+.mux-color-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  max-width: 330px;
+}
+.mux-color-control {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.mux-color-control input {
+  width: 40px;
+  height: 30px;
+  padding: 2px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
 .swatch {
   width: 24px;
   height: 24px;
@@ -828,6 +878,15 @@ input:focus-visible {
 }
 .setting-control .swatch-mint {
   background: #7ed9bc;
+}
+html[data-theme='light'] .setting-control .swatch-blue {
+  background: #345d91;
+}
+html[data-theme='light'] .setting-control .swatch-violet {
+  background: #7052a0;
+}
+html[data-theme='light'] .setting-control .swatch-mint {
+  background: #247563;
 }
 .swatch.chosen {
   outline: 1px solid var(--text);
