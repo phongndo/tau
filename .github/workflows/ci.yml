@@ -40,16 +40,23 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-bun-
+      - name: Cache pinned Ghostty native archive
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: apps/daemon/.ghostty-vt
+          key: ghostty-native-${{ runner.os }}-${{ runner.arch }}-${{ env.ZIG_VERSION }}-${{ hashFiles('scripts/ghostty-source.ts', 'scripts/build-ghostty-vt-native.ts') }}
       - run: bun install --frozen-lockfile
-      - run: |
+      - name: Zig lint, format, and unit tests
+        run: bun run zig:check
+      - name: Daemon runtime check (isolated HOME)
+        run: |
           set -euo pipefail
-          IFS=$'\n\t'
-          bun run zig:check
-          export TAUD_CI_HOME="$(mktemp -d)"
+          TAUD_CI_HOME="$(mktemp -d)"
           trap 'rm -rf "$TAUD_CI_HOME"' EXIT
           HOME="$TAUD_CI_HOME" bun run --filter @tau/daemon check
-          bun run zig:leak-check
-  # ── Combined quality gate: frontend (Bun) + Zig daemon ──
+      - name: Daemon leak check
+        run: bun run zig:leak-check
+  # ── Frontend quality; macOS memory-safety runs the daemon tests ──
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -74,6 +81,14 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-bun-
+      - name: Cache pinned Ghostty WASM
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            apps/desktop/public/ghostty-vt.wasm
+            apps/desktop/public/ghostty-vt.revision
+            apps/desktop/public/ghostty-vt-LICENSE.txt
+          key: ghostty-wasm-${{ runner.os }}-${{ runner.arch }}-${{ env.ZIG_VERSION }}-${{ hashFiles('scripts/ghostty-source.ts', 'scripts/build-ghostty-vt-wasm.ts') }}
       - run: bun install --frozen-lockfile
       - name: Lint (TypeScript + Zig)
         run: bun run lint
@@ -81,8 +96,6 @@ jobs:
         run: bun run fmt:check
       - name: TypeScript type check
         run: bun run tsc
-      - name: Zig unit tests
-        run: bun run zig:test
       - name: Persistence and tooling tests
         run: bun run test
 
@@ -125,6 +138,20 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-bun-
+      - name: Cache pinned Ghostty native archive
+        if: runner.os == 'macOS'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: apps/daemon/.ghostty-vt
+          key: ghostty-native-${{ runner.os }}-${{ runner.arch }}-${{ env.ZIG_VERSION }}-${{ hashFiles('scripts/ghostty-source.ts', 'scripts/build-ghostty-vt-native.ts') }}
+      - name: Cache pinned Ghostty WASM
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            apps/desktop/public/ghostty-vt.wasm
+            apps/desktop/public/ghostty-vt.revision
+            apps/desktop/public/ghostty-vt-LICENSE.txt
+          key: ghostty-wasm-${{ runner.os }}-${{ runner.arch }}-${{ env.ZIG_VERSION }}-${{ hashFiles('scripts/ghostty-source.ts', 'scripts/build-ghostty-vt-wasm.ts') }}
       - run: bun install --frozen-lockfile
       - name: Build
         run: bun run build
