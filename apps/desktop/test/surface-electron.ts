@@ -212,6 +212,26 @@ async function run() {
   canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: -90, bubbles: true, cancelable: true }))
   await painted()
   check('wheel scroll updates visible viewport and accessible text', reader.textContent !== recent && reader.textContent.includes('line-'), reader.textContent)
+  term.write('\\x1b[2J\\x1b[Hplain ascii run {}[]()->!= fi ffl AV Wa To\\r\\n\\x1b[1mbold\\x1b[0m \\x1b[3mitalic\\x1b[0m \\x1b[2mfaint\\x1b[0m \\x1b[4mund\\x1b[9mstr\\x1b[0m\\r\\n\\x1b[31mred\\x1b[32mgreen\\x1b[44mbg\\x1b[0m 漢字🥝e\\u0301 tail')
+  await painted()
+  const fullRepaint = async (runsEnabled) => {
+    term.textRuns = runsEnabled
+    term.clearRowCaches()
+    term.vt.invalidate()
+    term.refresh()
+    await painted()
+    // Compare the cell grid only; the fractional bottom edge re-blends on every full clear.
+    const width = Math.floor(term.cols * term.cellWidth)
+    const height = term.rows * term.cellHeight
+    return canvas.getContext('2d').getImageData(0, 0, width, height).data
+  }
+  const batched = await fullRepaint(true)
+  const perCell = await fullRepaint(false)
+  term.textRuns = true
+  let differing = 0
+  for (let i = 0; i < batched.length; i++) if (batched[i] !== perCell[i]) differing++
+  // Runs are enabled only for fonts whose run glyph advances equal the cell width.
+  check('batched ASCII text runs are pixel-identical to per-cell glyphs', differing === 0, JSON.stringify({ runs: term.asciiRuns, differing }))
   await term.resetCore()
   await painted()
   term.write('\\x1b[2J\\x1b[H\\x1b_Ga=T,f=32,s=1,v=1,i=1;/wAA/w==\\x1b\\\\')
