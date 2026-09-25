@@ -54,6 +54,8 @@ export class TauTerminal {
   private lastImageSignature = ''
   /** Drawing was skipped while no cell was visible; the next visible draw re-reads every row. */
   private hiddenStale = false
+  // Search highlights are JS-only pixels that Ghostty's dirty rows cannot report.
+  private repaintAll = false
   private fontSize = 14
   private fonts: string[] = []
   /** Per font variant: ASCII advances equal the cell width, so runs of cells can be drawn as one
@@ -328,7 +330,8 @@ export class TauTerminal {
     const scale = window.devicePixelRatio || 1
     const width = Math.max(1, Math.ceil(canvas.clientWidth * scale))
     const height = Math.max(1, Math.ceil(canvas.clientHeight * scale))
-    let reset = false
+    let reset = this.repaintAll
+    this.repaintAll = false
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width
       canvas.height = height
@@ -799,6 +802,7 @@ export class TauTerminal {
 
   search(query: string, direction: 'next' | 'previous', _incremental: boolean): boolean {
     this.searchQuery = query
+    this.repaintAll = true
     const result = this.vt.search(query, direction)
     this.searchIndex = result.resultIndex
     for (const listener of this.searchListeners) listener(result)
@@ -808,6 +812,7 @@ export class TauTerminal {
 
   clearSearch(): void {
     this.searchQuery = ''
+    this.repaintAll = true
     this.searchIndex = -1
     this.anchor = null
     this.selectionEnd = null

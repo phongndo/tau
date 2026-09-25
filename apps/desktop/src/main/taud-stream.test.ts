@@ -219,6 +219,33 @@ test('taud stream parser keeps partial tails for the next chunk', () => {
   assert.equal(frames[0]?.seq, 2)
 })
 
+test('taud stream parser never aliases a caller chunk that is reused after push', () => {
+  const first = encodeTaudStreamFrame({
+    kind: TaudStreamFrameKind.Output,
+    sessionId: 'session-1',
+    seq: 1,
+    payload: Buffer.alloc(6000, 'a'),
+  })
+  const second = encodeTaudStreamFrame({
+    kind: TaudStreamFrameKind.Output,
+    sessionId: 'session-1',
+    seq: 2,
+    payload: 'tail frame',
+  })
+  const chunk = Buffer.concat([first, second.subarray(0, 20)])
+  const parser = new TaudStreamFrameParser()
+  const [frame] = parser.push(chunk)
+  // A socket reader may recycle its buffer; neither emitted payloads nor the retained partial
+  // frame may observe that.
+  chunk.fill(0xff)
+  assert.equal(frame?.payload.toString('utf8'), 'a'.repeat(6000))
+  assert.equal(frame?.payload.byteOffset, 0)
+  assert.equal(frame?.payload.buffer.byteLength, 6000)
+  const [tail] = parser.push(second.subarray(20))
+  assert.equal(tail?.seq, 2)
+  assert.equal(tail?.payload.toString('utf8'), 'tail frame')
+})
+
 test('taud stream parser preserves magic prefixes while resyncing across chunks', () => {
   const encoded = encodeTaudStreamFrame({
     kind: TaudStreamFrameKind.Output,

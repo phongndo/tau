@@ -150,3 +150,10 @@ The glyph-run numbers used a temporary fontconfig exposing DejaVu Sans Mono. The
 - **WebGL glyph atlas: not measurable here.** WebGL2 is unavailable under this Xvfb (no GLX). It only appears with `--use-angle=swiftshader --enable-unsafe-swiftshader`, a CPU emulation that says nothing about GPU cost. It needs a real-GPU host, and a Canvas 2D fallback would remain necessary.
 
 Also observed: `bench:reload:budget` failed intermittently on every tree this session, the untouched baseline included (3 of 5), always with a corrupted `mux-graph:get` `snapshotJson`. It passed repeatedly earlier in the day, so it is load- or timing-dependent. It is pre-existing and not diagnosed.
+
+## Follow-up: payload copies and search repaint (same day)
+
+Compared with `a9eb5a5`, same host and toolchain.
+
+- **Main payload copies.** Electron's `Buffer.poolSize` is 64 KiB, so `Buffer.from(payload)` returned pool views for frames under 32 KiB, and the bridge copied every frame again. The parser now parses a lone socket chunk in place, copies only an incomplete-frame remainder, and makes exact-sized payload copies that the bridge posts without a second copy. Parse plus post of a 64 MiB stream in 64 KiB chunks under Electron's Node (medians of 6, both with native CRC): 1 KiB payloads 834 → 942 MiB/s, 4 KiB 972 → 1,331 MiB/s, 16 KiB 1,018 → 1,415 MiB/s; bridge copies per frame 1 → 0. Samples overlap at the 4 KiB tail (57–69 ms vs 39–70 ms). Regression tests cover parser non-aliasing and exact posting.
+- **Search highlights.** Highlights are JS-only pixels, so `search()`/`clearSearch()` repainted only rows Ghostty reported dirty; a match on a clean row away from the cursor stayed unhighlighted (surface check failed at `a9eb5a5` with the background colour). One full repaint now follows each search change.

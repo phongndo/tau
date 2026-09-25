@@ -226,3 +226,37 @@ test('unexpected current attach failures still reach the renderer', async () => 
     f.bridge.dispose()
   }
 })
+
+test('output posts exact-sized bytes: pooled views are copied, owned exact buffers are not', async () => {
+  const f = fixture()
+  try {
+    f.attach()
+    const stream = await f.resolve(0)
+    // Small Node Buffers are views into a shared pool; posting their backing buffer would expose
+    // unrelated bytes, so the bridge must copy them. Exact, private buffers post as they are.
+    const pooled = Buffer.alloc(64, 0x7a).subarray(8, 21)
+    pooled.write('pooled output')
+    const owned = Buffer.from(new Uint8Array(8192).fill(66))
+    expect(pooled.buffer.byteLength).toBeGreaterThan(pooled.byteLength)
+    expect(owned.byteOffset === 0 && owned.buffer.byteLength === owned.byteLength).toBe(true)
+    for (const [seq, payload] of [pooled, owned].entries()) {
+      stream.emit('frame', {
+        sessionId: 's',
+        kind: TaudStreamFrameKind.Output,
+        seq: seq + 1,
+        payload,
+      })
+    }
+    const posted = f.channel.messages as Array<{ type: string; seq: number; data: ArrayBuffer }>
+    expect(posted.map((message) => [message.type, message.seq])).toEqual([
+      ['output', 1],
+      ['output', 2],
+    ])
+    expect(posted[0]!.data).not.toBe(pooled.buffer)
+    expect(Buffer.from(posted[0]!.data).toString()).toBe('pooled output')
+    expect(posted[1]!.data).toBe(owned.buffer)
+    expect(posted[1]!.data.byteLength).toBe(8192)
+  } finally {
+    f.bridge.dispose()
+  }
+})
