@@ -15,6 +15,8 @@ import type {
 } from '@tau/shared/taud-protocol'
 import {
   createSequencedTerminalWriter,
+  inputBoostPriority,
+  noteTerminalInput,
   type TerminalOutputWriterDiagnostics,
 } from './terminal-output-writer'
 import { markRendererEvent, startRendererSpan } from './trace'
@@ -500,7 +502,9 @@ export async function createTerminal(
   updateStatus('Wiring IPC...')
 
   let terminalReset: Promise<void> = Promise.resolve()
+  let lastInputAt = 0
   const outputWriter = createSequencedTerminalWriter(openedTerm, {
+    priority: inputBoostPriority(() => lastInputAt),
     onApplied: (seq) => {
       markRendererEvent('terminal:ghostty-parse-complete')
       window.requestAnimationFrame(() => markRendererEvent('terminal:render-complete'))
@@ -661,6 +665,7 @@ export async function createTerminal(
   // Terminal input → PTY (no debug overhead)
   term.onData((data: string) => {
     if (archived) return
+    lastInputAt = noteTerminalInput()
     window.electronAPI.writeSessionInput(sessionId, data)
   })
 

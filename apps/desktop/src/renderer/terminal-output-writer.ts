@@ -25,14 +25,39 @@ const OUTPUT_BATCH_MAX_CHARS = 32 * 1024
 const OUTPUT_WRITE_CHUNK_MAX_CHARS = 16 * 1024
 const OUTPUT_WRITE_QUEUE_MAX_CHARS = 4 * 1024 * 1024
 const OUTPUT_WRITE_QUEUE_RESUME_CHARS = 2 * 1024 * 1024
+/** For this long after input, other panes' output yields to the typed-in pane so its echo is not
+ * queued behind their floods. The typed-in pane keeps normal priority, so rendering and input
+ * are not displaced, and the window is bounded so other panes are only briefly deprioritized. */
+export const INPUT_PRIORITY_WINDOW_MS = 1000
+let lastInputInAnyPaneAt = 0
+
+/** Record input in a pane; returns the timestamp for that pane's `inputBoostPriority`. */
+export function noteTerminalInput(): number {
+  lastInputInAnyPaneAt = performance.now()
+  return lastInputInAnyPaneAt
+}
+
+/** Priority callback for a writer whose pane last received input at `lastInputAt()`. */
+export function inputBoostPriority(lastInputAt: () => number): () => TaskPriority {
+  return () => {
+    const now = performance.now()
+    const own = lastInputAt()
+    if (own > 0 && now - own < INPUT_PRIORITY_WINDOW_MS) return 'user-visible'
+    const recent = lastInputInAnyPaneAt > 0 && now - lastInputInAnyPaneAt < INPUT_PRIORITY_WINDOW_MS
+    return recent ? 'background' : 'user-visible'
+  }
+}
+
 const OUTPUT_WRITE_QUEUE_DROP_NOTICE =
   '\r\n\x1b[33m[Tau dropped terminal output because the renderer write queue exceeded 4 MiB]\x1b[0m\r\n'
 
+export type TaskPriority = 'user-visible' | 'background'
+
 /** Runs `callback` in a later task, after pending input, rendering and timers get a turn. */
-export type YieldTask = (callback: () => void) => void
+export type YieldTask = (callback: () => void, priority?: TaskPriority) => void
 
 type PostTaskScheduler = {
-  postTask(callback: () => void, options?: { priority?: 'user-visible' }): Promise<unknown>
+  postTask(callback: () => void, options?: { priority?: TaskPriority }): Promise<unknown>
 }
 
 /**
@@ -45,8 +70,8 @@ export function defaultYieldTask(): YieldTask {
   const scheduler = (globalThis as { scheduler?: Partial<PostTaskScheduler> }).scheduler
   if (typeof scheduler?.postTask !== 'function') return (callback) => setTimeout(callback, 0)
   const postTask = scheduler.postTask.bind(scheduler)
-  return (callback) => {
-    void postTask(callback, { priority: 'user-visible' }).catch((error: unknown) => {
+  return (callback, priority = 'user-visible') => {
+    void postTask(callback, { priority }).catch((error: unknown) => {
       // Surface failures like an uncaught timer callback would.
       setTimeout(() => {
         throw error
@@ -81,6 +106,8 @@ export function createSequencedTerminalWriter(
     onWriteError?(error: unknown, lastAppliedSeq: number): void
     maxQueuedBytes?: number
     yieldTask?: YieldTask
+    /** Scheduling priority for the next batch, e.g. raised while the user types in this pane. */
+    priority?: () => TaskPriority
   },
 ): SequencedTerminalWriter {
   type Entry = { data: Uint8Array; seq: number }
@@ -125,7 +152,7 @@ export function createSequencedTerminalWriter(
     const token = ++scheduleToken
     yieldTask(() => {
       if (token === scheduleToken) process()
-    })
+    }, options.priority?.())
   }
   const cancelScheduled = () => {
     scheduled = false

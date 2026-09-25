@@ -11,7 +11,14 @@
  * use Chromium's software fallback and establish nothing about GPU presentation.
  */
 import { TauTerminal } from '../src/renderer/tau-terminal'
-import { createSequencedTerminalWriter } from '../src/renderer/terminal-output-writer'
+import * as writerModule from '../src/renderer/terminal-output-writer'
+
+const { createSequencedTerminalWriter } = writerModule
+// Mirror terminal.ts: sources that raise a pane's output priority after input get the same wiring.
+const { inputBoostPriority: inputBoost, noteTerminalInput } = writerModule as {
+  inputBoostPriority?: (at: () => number) => () => string
+  noteTerminalInput?: () => number
+}
 
 type Json = Record<string, unknown>
 type Pane = {
@@ -20,6 +27,7 @@ type Pane = {
   writer: ReturnType<typeof createSequencedTerminalWriter>
   feeder: Feeder
   resyncs: number
+  lastInputAt: number
 }
 
 const params = new URLSearchParams(location.search)
@@ -346,8 +354,9 @@ async function createPane(container: HTMLElement): Promise<Pane> {
   const size = term.proposeDimensions()
   if (size) term.resize(size.cols, size.rows)
   // Late-bound so the writer and feeder can reference each other.
-  const pane = { term, host: container, resyncs: 0 } as Pane
+  const pane = { term, host: container, resyncs: 0, lastInputAt: 0 } as Pane
   pane.writer = createSequencedTerminalWriter(term, {
+    ...(inputBoost ? { priority: inputBoost(() => pane.lastInputAt) as never } : {}),
     onApplied: (seq) => pane.feeder.onAck(seq),
     onResync: () => {
       pane.resyncs++
@@ -507,6 +516,7 @@ async function inputUnderLoad(panesCount: number): Promise<Json> {
     true,
   )
   focused.term.onData((data) => {
+    focused.lastInputAt = noteTerminalInput?.() ?? performance.now()
     const seq = focused.feeder.inject(encoder.encode(data))
     pendingEcho.set(seq, lastKeyStamp)
   })
@@ -547,6 +557,11 @@ async function inputUnderLoad(panesCount: number): Promise<Json> {
     frameIntervalMs: stats(frameIntervals),
     slowFrames: frameIntervals.filter((interval) => interval > 34).length,
     bytesParsed: panes.reduce((t, pane) => t + pane.writer.diagnostics().totalWrittenChars, 0),
+    focusedBytes: focused.writer.diagnostics().totalWrittenChars,
+    otherPaneMinBytes: Math.min(
+      ...panes.slice(1).map((pane) => pane.writer.diagnostics().totalWrittenChars),
+      Number.POSITIVE_INFINITY,
+    ),
     ...surface,
     memoryAfter: after,
     ...(cpu ? { profile: cpu } : {}),
