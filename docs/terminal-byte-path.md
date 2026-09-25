@@ -6,7 +6,7 @@
 PTY master read (taud, Zig)
   -> persistent event log + binary TASF stream frame
   -> Unix socket -> TaudClient stream parser (Electron main)
-  -> TaudPtyBridge: exact-sized owned copy -> per-session MessagePortMain
+  -> TaudPtyBridge: posts the parser's exact-sized payload (Electron clones it) -> per-session MessagePortMain
   -> preload: binary frame dispatch (bounded startup buffer if nobody subscribes)
   -> contextBridge callback -> renderer-owned Uint8Array
   -> sequenced writer: bounded batches of complete frames -> Ghostty WASM VT parser
@@ -16,13 +16,13 @@ PTY master read (taud, Zig)
 
 Each daemon output frame is one PTY read with its own sequence number. During a sustained burst (reads less than 2 ms apart that have already produced 8 KiB) the reader keeps reading for up to about a millisecond before publishing, so many small producer writes share one event-log frame, sequence number and stream frame instead of tripping main's unacknowledged-frame bound. The first read after idle, and the first read after terminal input, publish immediately. The search excerpt grows to twice its 1 MiB budget before being compacted to its newest 1 MiB, rather than being reread on every PTY read.
 
-Main validates each stream frame's CRC with native `zlib.crc32` and makes one exact-sized copy of the payload out of the parser's pending bytes; the socket chunk itself is not copied again before parsing.
+Main validates each stream frame's CRC with native `zlib.crc32`. The parser reads a lone socket chunk in place, copies only an incomplete-frame remainder (so it never keeps a view into the caller's buffer), and copies each payload into its own exact-sized buffer; `Buffer.from` would return a view into Node's shared pool (64 KiB slabs in Electron) for payloads under 32 KiB.
 
 The write callback confirms Ghostty parser application, **not** physical display presentation. A failed parse triggers a new WASM terminal and daemon snapshot resynchronization; the writer retains a bounded later-output suffix until a snapshot applies, dropping it only if the queue limit is exceeded. A stale snapshot cannot advance the acknowledgement cursor past missing frames. The native daemon and browser build share the revision in [`scripts/ghostty-source.ts`](../scripts/ghostty-source.ts). The WASM build applies narrow, verified browser-only patches for inline Kitty graphics (no host file access); `taud` uses the same upstream C ABI without those patches.
 
 ## Ownership and allocation rules
 
-- Main copies socket payloads into exact-sized buffers before posting. This avoids exposing unrelated bytes or retaining an entire pooled socket allocation. Electron's `MessagePortMain` clones byte buffers; its transfer list is for MessagePorts. Do not pass ArrayBuffers in that transfer list.
+- Main posts only exact-sized buffers: posting clones the whole `ArrayBuffer`, so a view would expose unrelated bytes or retain a pooled allocation. Parser payloads are posted without a second copy; any other view is copied first. Electron's `MessagePortMain` clones byte buffers; its transfer list is for MessagePorts. Do not pass ArrayBuffers in that transfer list.
 - The renderer receives private bytes through `contextBridge`. Production uses `writeOwned` to hand them to the writer; callers must not reuse/mutate handed-off bytes. `write` still snapshots borrowed input. Small views are copied even on the owned path so they cannot pin oversized backing buffers.
 - Before either a binary or text subscriber exists, preload retains one shared startup-byte queue, bounded to 1 MiB per session. Overflow clears it and requests a sequence-aware resync. Subscribing consumes and removes that queue. There is no second text-history buffer.
 - `onPtyData` is compatibility-only. A text decoder exists only while a session has text subscribers and decodes with `stream: true`. It is released on the last unsubscribe or session cleanup. Late text subscribers receive unconsumed startup bytes, not a duplicate history of output already delivered to binary subscribers. Normal binary sessions perform no compatibility text decoding.

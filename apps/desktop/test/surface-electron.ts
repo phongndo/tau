@@ -95,6 +95,17 @@ async function run() {
   await painted()
   check('search reports actual VT matches', term.search('world', 'next', false))
   term.clearSearch()
+  // Search highlights are JS-only pixels: they must appear on rows Ghostty does not report dirty.
+  term.write('\\x1b[?25l\\x1b[2J\\x1b[Hfind-me\\r\\n\\r\\nprompt')
+  await painted()
+  const hyphen = () => rgb(canvas, Math.floor(term.cellWidth * 4.5), 1)
+  const beforeHighlight = hyphen()
+  term.search('find-me', 'next', false)
+  await painted()
+  check('search highlights a clean row away from the cursor', hyphen() === '107,74,53', hyphen())
+  term.clearSearch()
+  await painted()
+  check('clearing search removes the highlight', hyphen() === beforeHighlight, hyphen())
   const emitted = []
   const received = term.onData(text => emitted.push(text))
   term.focus()
