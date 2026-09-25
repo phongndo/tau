@@ -108,6 +108,13 @@ jobs:
           Xvfb :97 -screen 0 1280x800x24 -nolisten tcp &
           xvfb_pid=$!
           trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+          # Xvfb starts asynchronously; wait for its socket before launching Electron.
+          for _ in $(seq 50); do
+            [ -S /tmp/.X11-unix/X97 ] && break
+            kill -0 "$xvfb_pid" 2>/dev/null || { echo "Xvfb exited"; exit 1; }
+            sleep 0.1
+          done
+          [ -S /tmp/.X11-unix/X97 ] || { echo "Xvfb did not start"; exit 1; }
           export DISPLAY=:97
           bun run test:surface
 
