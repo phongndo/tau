@@ -65,6 +65,29 @@ pub const SpawnOptions = struct {
     rows: u16,
 };
 
+/// Continue an output burst: read what arrives within `window_ns` into the rest of `buffer`, and
+/// return the filled length. Stops early at a full buffer, the deadline, EOF or an error; EOF and
+/// errors then surface on the reader's next poll and read. Waits at most about a millisecond
+/// beyond the window (poll's granularity) and never when the buffer is already full.
+pub fn readBurst(fd: std.c.fd_t, buffer: []u8, filled: usize, window_ns: u64) usize {
+    assert(filled <= buffer.len);
+    const sync_io = @import("sync_io.zig");
+    const deadline = sync_io.monotonicNs() + window_ns;
+    var total = filled;
+    while (total < buffer.len) {
+        const remaining = deadline - sync_io.monotonicNs();
+        if (remaining <= 0) break;
+        const timeout_ms: i32 = @intCast(@min(1000, @divTrunc(remaining + std.time.ns_per_ms - 1, std.time.ns_per_ms)));
+        var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+        const ready = std.posix.poll(&fds, timeout_ms) catch break;
+        if (ready == 0 or (fds[0].revents & std.posix.POLL.IN) == 0) break;
+        const amount = std.c.read(fd, buffer[total..].ptr, buffer.len - total);
+        if (amount <= 0) break;
+        total += @intCast(amount);
+    }
+    return total;
+}
+
 pub const Driver = struct {
     allocator: std.mem.Allocator,
 
@@ -374,4 +397,37 @@ fn expectProcessGone(pid: std.c.pid_t) !void {
         @import("sync_io.zig").sleepMs(10);
     }
     return error.ProcessStillExists;
+}
+
+test "readBurst collects output that has already arrived and stops at a deadline or EOF" {
+    const sync_io = @import("sync_io.zig");
+    var fds: [2]std.c.fd_t = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.pipe(&fds));
+    defer _ = std.c.close(fds[0]);
+    var write_open = true;
+    defer if (write_open) {
+        _ = std.c.close(fds[1]);
+    };
+
+    var buffer: [16]u8 = undefined;
+    @memcpy(buffer[0..3], "abc");
+    try std.testing.expectEqual(@as(isize, 6), std.c.write(fds[1], "defghi", 6));
+    // Already-available bytes join the burst; waiting for more ends at the window.
+    const started = sync_io.monotonicNs();
+    try std.testing.expectEqual(@as(usize, 9), readBurst(fds[0], &buffer, 3, std.time.ns_per_ms));
+    try std.testing.expectEqualStrings("abcdefghi", buffer[0..9]);
+    try std.testing.expect(sync_io.monotonicNs() - started < 250 * std.time.ns_per_ms);
+
+    // A full buffer returns without polling or reading.
+    try std.testing.expectEqual(@as(isize, 1), std.c.write(fds[1], "z", 1));
+    try std.testing.expectEqual(buffer.len, readBurst(fds[0], &buffer, buffer.len, 10 * std.time.ns_per_s));
+    var leftover: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(isize, 1), std.c.read(fds[0], &leftover, 1));
+
+    // EOF ends the burst early instead of waiting out the window.
+    _ = std.c.close(fds[1]);
+    write_open = false;
+    const eof_started = sync_io.monotonicNs();
+    try std.testing.expectEqual(@as(usize, 2), readBurst(fds[0], &buffer, 2, 5 * std.time.ns_per_s));
+    try std.testing.expect(sync_io.monotonicNs() - eof_started < std.time.ns_per_s);
 }

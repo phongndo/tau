@@ -14,6 +14,10 @@ pub const frame_header_size: usize = 32;
 pub const max_payload_bytes: u32 = limits.event_log_payload_bytes_max;
 pub const max_replay_bytes: usize = limits.event_log_replay_bytes_max;
 pub const max_excerpt_bytes: usize = limits.event_log_excerpt_bytes_max;
+/// The excerpt file may grow to this size before it is compacted to its newest
+/// `max_excerpt_bytes`. Compaction is then amortized O(1) per output byte rather than a whole
+/// excerpt reread (and, once full, rewrite) on every PTY read under the daemon lock.
+pub const excerpt_compact_bytes: usize = 2 * max_excerpt_bytes;
 
 /// Event-log files are append-only recovery streams:
 ///
@@ -707,13 +711,56 @@ const ReplayOutputRecorder = struct {
 fn appendBoundedExcerpt(allocator: std.mem.Allocator, path: []const u8, payload: []const u8) !void {
     if (payload.len == 0) return;
 
-    try appendFile(allocator, path, payload, 0o600, false);
+    const size = try appendFileSize(allocator, path, payload, 0o600);
+    if (size <= excerpt_compact_bytes) return;
 
-    const data = (try readFileAlloc(allocator, path, max_excerpt_bytes + payload.len)) orelse return;
-    defer allocator.free(data);
-    if (data.len <= max_excerpt_bytes) return;
+    // A failure below leaves the file oversized but intact; the next append retries.
+    const tail = (try readFileTailAlloc(allocator, path, max_excerpt_bytes)) orelse return;
+    defer allocator.free(tail);
+    try writeFile(allocator, path, tail, 0o600);
+}
 
-    try writeFile(allocator, path, data[data.len - max_excerpt_bytes ..], 0o600);
+/// The newest `max_excerpt_bytes` of a session's output excerpt, or null if it does not exist.
+pub fn readExcerptAlloc(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+    return readFileTailAlloc(allocator, path, max_excerpt_bytes);
+}
+
+/// Read at most the final `limit` bytes of a file.
+fn readFileTailAlloc(allocator: std.mem.Allocator, path: []const u8, limit: usize) !?[]u8 {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    const fd = std.c.open(path_z.ptr, .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
+    if (fd < 0) {
+        return switch (std.posix.errno(fd)) {
+            .NOENT => null,
+            else => error.FileOpenFailed,
+        };
+    }
+    defer _ = std.c.close(fd);
+
+    const size = try @import("sync_io.zig").fileSize(fd);
+    const len: usize = @intCast(@min(size, limit));
+    const start = size - len;
+    const data = try allocator.alloc(u8, len);
+    errdefer allocator.free(data);
+
+    var offset: usize = 0;
+    while (offset < data.len) {
+        const position = std.math.cast(std.c.off_t, start + offset) orelse return error.FileTooBig;
+        const amount = std.c.pread(fd, data[offset..].ptr, data.len - offset, position);
+        if (amount < 0) {
+            switch (std.posix.errno(amount)) {
+                .INTR => continue,
+                else => return error.FileReadFailed,
+            }
+        }
+        if (amount == 0) break;
+        offset += @intCast(amount);
+    }
+
+    if (offset == data.len) return data;
+    return try allocator.realloc(data, offset);
 }
 
 fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, limit: usize) !?[]u8 {
@@ -781,6 +828,25 @@ fn writeFilePrefix(allocator: std.mem.Allocator, path: []const u8, data: []const
     defer _ = std.c.close(fd);
 
     try writeAllFd(fd, data);
+}
+
+/// Append and return the resulting file size from the same descriptor.
+fn appendFileSize(allocator: std.mem.Allocator, path: []const u8, data: []const u8, mode: std.c.mode_t) !u64 {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    const fd = std.c.open(path_z.ptr, .{
+        .ACCMODE = .WRONLY,
+        .CREAT = true,
+        .APPEND = true,
+        .CLOEXEC = true,
+    }, mode);
+    if (fd < 0) return error.FileOpenFailed;
+    defer _ = std.c.close(fd);
+    _ = std.c.fchmod(fd, mode);
+
+    try writeAllFd(fd, data);
+    return @import("sync_io.zig").fileSize(fd);
 }
 
 fn appendFile(allocator: std.mem.Allocator, path: []const u8, data: []const u8, mode: std.c.mode_t, sync: bool) !void {
@@ -1133,4 +1199,101 @@ test "event log session file ownership cleans up on OOM" {
         persistentSessionFilesForAllocationFailure,
         .{sessions_dir},
     );
+}
+
+fn excerptTestPath(allocator: std.mem.Allocator, tmp: anytype) ![]u8 {
+    return std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/excerpt.txt", .{tmp.sub_path});
+}
+
+fn excerptPatternByte(index: usize) u8 {
+    return @truncate((index *% 131) ^ (index >> 11));
+}
+
+test "output excerpt keeps the newest bytes and compacts only past twice its budget" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try excerptTestPath(std.testing.allocator, tmp);
+    defer std.testing.allocator.free(path);
+
+    var chunk: [4000]u8 = undefined;
+    var written: usize = 0;
+    var compactions: usize = 0;
+    var previous_size: u64 = 0;
+    while (written < 3 * max_excerpt_bytes + max_excerpt_bytes / 2) {
+        for (&chunk, 0..) |*byte, index| byte.* = excerptPatternByte(written + index);
+        try appendBoundedExcerpt(std.testing.allocator, path, &chunk);
+        written += chunk.len;
+
+        const file = (try openReadFile(std.testing.allocator, path)).?;
+        defer _ = std.c.close(file.fd);
+        try std.testing.expect(file.size <= excerpt_compact_bytes + chunk.len);
+        if (file.size < previous_size) {
+            compactions += 1;
+            try std.testing.expectEqual(@as(u64, max_excerpt_bytes), file.size);
+        }
+        previous_size = file.size;
+    }
+    // Amortized: one compaction per max_excerpt_bytes appended, not one per read.
+    try std.testing.expect(compactions >= 2 and compactions <= 3);
+
+    const excerpt = (try readExcerptAlloc(std.testing.allocator, path)).?;
+    defer std.testing.allocator.free(excerpt);
+    try std.testing.expectEqual(max_excerpt_bytes, excerpt.len);
+    for (excerpt, written - max_excerpt_bytes..) |byte, index| {
+        try std.testing.expectEqual(excerptPatternByte(index), byte);
+    }
+
+    try std.testing.expect((try readExcerptAlloc(std.testing.allocator, ".zig-cache/tmp/missing/excerpt.txt")) == null);
+}
+
+fn excerptCompactionForAllocationFailure(allocator: std.mem.Allocator, path: []const u8) !void {
+    // Start just below the compaction threshold so this append must compact.
+    const prefill = try std.testing.allocator.alloc(u8, excerpt_compact_bytes - 8);
+    defer std.testing.allocator.free(prefill);
+    for (prefill, 0..) |*byte, index| byte.* = excerptPatternByte(index);
+    try writeFile(std.testing.allocator, path, prefill, 0o600);
+
+    var payload: [64]u8 = undefined;
+    for (&payload, prefill.len..) |*byte, index| byte.* = excerptPatternByte(index);
+    appendBoundedExcerpt(allocator, path, &payload) catch |err| {
+        // Failing before the append leaves the file unchanged; failing during compaction keeps
+        // every appended byte. Either way the newest tail is intact, never truncated or mixed.
+        const kept = (try readExcerptAlloc(std.testing.allocator, path)).?;
+        defer std.testing.allocator.free(kept);
+        const tail = kept[kept.len - payload.len ..];
+        if (!std.mem.eql(u8, tail, &payload)) {
+            try std.testing.expectEqualSlices(u8, prefill[prefill.len - payload.len ..], tail);
+        }
+        return err;
+    };
+
+    const excerpt = (try readExcerptAlloc(std.testing.allocator, path)).?;
+    defer std.testing.allocator.free(excerpt);
+    try std.testing.expectEqual(max_excerpt_bytes, excerpt.len);
+    const first = prefill.len + payload.len - max_excerpt_bytes;
+    for (excerpt, first..) |byte, index| try std.testing.expectEqual(excerptPatternByte(index), byte);
+}
+
+test "output excerpt compaction cleans up and keeps its tail under allocation failure" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try excerptTestPath(std.testing.allocator, tmp);
+    defer std.testing.allocator.free(path);
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        excerptCompactionForAllocationFailure,
+        .{path},
+    );
+
+    // A compaction that failed is retried, and completed, by the next append.
+    const oversized = try std.testing.allocator.alloc(u8, excerpt_compact_bytes + 32);
+    defer std.testing.allocator.free(oversized);
+    @memset(oversized, 'o');
+    try writeFile(std.testing.allocator, path, oversized, 0o600);
+    try appendBoundedExcerpt(std.testing.allocator, path, "n");
+    const excerpt = (try readExcerptAlloc(std.testing.allocator, path)).?;
+    defer std.testing.allocator.free(excerpt);
+    try std.testing.expectEqual(max_excerpt_bytes, excerpt.len);
+    try std.testing.expectEqual(@as(u8, 'n'), excerpt[excerpt.len - 1]);
 }

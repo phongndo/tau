@@ -55,6 +55,29 @@ export type GhosttyFrame = {
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
+const HEX = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, '0'))
+/** Distinct colors interned per terminal before the cache is cleared (bounds truecolor churn). */
+const COLOR_CACHE_MAX = 4096
+
+type BitField = { lsb: number; width: number; mask: number }
+type CellStyle = Pick<
+  GhosttyCell,
+  'fg' | 'bg' | 'bold' | 'italic' | 'faint' | 'underline' | 'strikethrough' | 'inverse'
+> & { invisible: boolean }
+
+function bitField(field: { lsb: number; width: number } | undefined, name: string): BitField {
+  if (!field || field.width > 32 || field.lsb + field.width > 64)
+    throw new Error(`Unsupported Ghostty cell layout for ${name}`)
+  return { ...field, mask: field.width === 32 ? 0xffffffff : 2 ** field.width - 1 }
+}
+
+/** Read a <=32-bit field from a little-endian u64 split into 32-bit halves (no BigInt). */
+function readBits(lo: number, hi: number, field: BitField): number {
+  if (field.lsb >= 32) return (hi >>> (field.lsb - 32)) & field.mask
+  let value = lo >>> field.lsb
+  if (field.lsb > 0 && field.lsb + field.width > 32) value |= hi << (32 - field.lsb)
+  return field.width === 32 ? value >>> 0 : value & field.mask
+}
 
 export class GhosttyVt {
   readonly api: Api
@@ -72,6 +95,10 @@ export class GhosttyVt {
   readonly mouseEncoder: number
   readonly imageIterator: number
   private readonly imageCache = new Map<string, Pick<GhosttyImage, 'rgba' | 'width' | 'height'>>()
+  private readonly colorCache = new Map<number, string>()
+  private readonly cellBits: { tag: BitField; content: BitField; style: BitField; wide: BitField }
+  private dataView: DataView
+  private forceFullRender = false
   cols: number
   rows: number
   private cellWidth = 8
@@ -97,6 +124,15 @@ export class GhosttyVt {
     if (this.layout.abi.pointer_size !== 4 || this.layout.abi.endian !== 'little') {
       throw new Error('Unsupported Ghostty WASM ABI')
     }
+    const bits = this.layout.types.GhosttyCell?.bits ?? {}
+    // The codepoint is the low 21 bits of the content union.
+    this.cellBits = {
+      tag: bitField(bits.content_tag, 'content_tag'),
+      content: bitField(bits.content && { lsb: bits.content.lsb, width: 21 }, 'content'),
+      style: bitField(bits.style_id, 'style_id'),
+      wide: bitField(bits.wide, 'wide'),
+    }
+    this.dataView = new DataView(api.memory.buffer)
     this.cols = cols
     this.rows = rows
     this.slot = api.ghostty_wasm_alloc_opaque()
@@ -175,8 +211,11 @@ export class GhosttyVt {
     }
   }
 
+  /** WASM memory growth detaches the old buffer; rebuild the view only when that happens. */
   private view(): DataView {
-    return new DataView(this.api.memory.buffer)
+    const buffer = this.api.memory.buffer
+    if (this.dataView.buffer !== buffer) this.dataView = new DataView(buffer)
+    return this.dataView
   }
 
   private check(result: number, operation: string): void {
@@ -184,8 +223,15 @@ export class GhosttyVt {
   }
 
   private readRgb(ptr: number): string {
-    const data = new Uint8Array(this.api.memory.buffer, ptr, 3)
-    return `#${[...data].map((component) => component.toString(16).padStart(2, '0')).join('')}`
+    const view = this.view()
+    const key = (view.getUint8(ptr) << 16) | (view.getUint8(ptr + 1) << 8) | view.getUint8(ptr + 2)
+    let color = this.colorCache.get(key)
+    if (color === undefined) {
+      if (this.colorCache.size >= COLOR_CACHE_MAX) this.colorCache.clear()
+      color = `#${HEX[key >>> 16]}${HEX[(key >>> 8) & 0xff]}${HEX[key & 0xff]}`
+      this.colorCache.set(key, color)
+    }
+    return color
   }
 
   setDefaultColors(background: string, foreground: string, light = false): void {
@@ -718,9 +764,20 @@ export class GhosttyVt {
     this.cellHeight = cellHeight
   }
 
+  /** Make the next render report every row (e.g. after drawing was skipped while hidden). */
+  invalidate(): void {
+    this.forceFullRender = true
+  }
+
   render(): GhosttyFrame {
     const api = this.api
     this.check(api.ghostty_render_state_update(this.renderState, this.terminal), 'render update')
+    if (this.forceFullRender) {
+      // GHOSTTY_RENDER_STATE_OPTION_DIRTY = GHOSTTY_RENDER_STATE_DIRTY_FULL
+      this.view().setUint32(this.scratch, 2, true)
+      this.check(api.ghostty_render_state_set(this.renderState, 0, this.scratch), 'full dirty')
+      this.forceFullRender = false
+    }
     this.check(api.ghostty_render_state_get(this.renderState, 3, this.scratch), 'dirty state')
     const dirty = this.view().getUint32(this.scratch, true)
     const colors = this.layout.types.GhosttyRenderStateColors
@@ -731,13 +788,14 @@ export class GhosttyVt {
     const cursorType = this.layout.types.GhosttyRenderStateCursor
     this.view().setUint32(this.scratch, cursorType.size, true)
     this.check(api.ghostty_render_state_get(this.renderState, 18, this.scratch), 'cursor')
+    const view = this.view()
     const cursor = {
-      x: this.view().getUint16(this.scratch + cursorType.fields.viewport_x.offset, true),
-      y: this.view().getUint16(this.scratch + cursorType.fields.viewport_y.offset, true),
+      x: view.getUint16(this.scratch + cursorType.fields.viewport_x.offset, true),
+      y: view.getUint16(this.scratch + cursorType.fields.viewport_y.offset, true),
       visible:
-        this.view().getUint8(this.scratch + cursorType.fields.visible.offset) !== 0 &&
-        this.view().getUint8(this.scratch + cursorType.fields.viewport_has_value.offset) !== 0,
-      style: this.view().getUint32(this.scratch + cursorType.fields.visual_style.offset, true),
+        view.getUint8(this.scratch + cursorType.fields.visible.offset) !== 0 &&
+        view.getUint8(this.scratch + cursorType.fields.viewport_has_value.offset) !== 0,
+      style: view.getUint32(this.scratch + cursorType.fields.visual_style.offset, true),
     }
     const rows: GhosttyRow[] = []
     if (dirty !== 0) {
@@ -860,107 +918,128 @@ export class GhosttyVt {
   private readRow(background: string, foreground: string): GhosttyCell[] {
     const api = this.api
     this.check(api.ghostty_render_state_row_get(this.rowIterator, 5, this.scratch), 'row cells')
-    const ptr = this.view().getUint32(this.scratch, true)
-    const count = this.view().getUint32(this.scratch + 4, true)
+    let view = this.view()
+    const ptr = view.getUint32(this.scratch, true)
+    const count = view.getUint32(this.scratch + 4, true)
     if (count !== this.cols) throw new Error(`Ghostty row width ${count} != ${this.cols}`)
-    const bits = this.layout.types.GhosttyCell.bits!
     const selection = this.layout.types.GhosttyRenderStateRowSelection
-    this.view().setUint32(this.scratch, selection.size, true)
+    view.setUint32(this.scratch, selection.size, true)
     const selectionStatus = api.ghostty_render_state_row_get(this.rowIterator, 4, this.scratch)
     if (selectionStatus !== 0 && selectionStatus !== -4)
       this.check(selectionStatus, 'row selection')
+    view = this.view()
     const selectedStart =
       selectionStatus === 0
-        ? this.view().getUint16(this.scratch + selection.fields.start_x.offset, true)
+        ? view.getUint16(this.scratch + selection.fields.start_x.offset, true)
         : -1
     const selectedEnd =
       selectionStatus === 0
-        ? this.view().getUint16(this.scratch + selection.fields.end_x.offset, true)
+        ? view.getUint16(this.scratch + selection.fields.end_x.offset, true)
         : -1
+    const { tag: tagBits, content: contentBits, style: styleBits, wide: wideBits } = this.cellBits
+    // Style ids are page-local and a row belongs to one page, so resolved styles are shared only
+    // within this row. Text cells with the same id have identical colors and attributes.
+    const styles = new Map<number, CellStyle>()
     const cells: GhosttyCell[] = []
     let iteratorReady = false
-    for (let x = 0; x < count; x++) {
-      const packed = this.view().getBigUint64(ptr + x * 8, true)
-      const field = (name: keyof typeof bits) => {
-        const { lsb, width } = bits[name]
-        return Number((packed >> BigInt(lsb)) & ((1n << BigInt(width)) - 1n))
+    const select = (x: number) => {
+      if (!iteratorReady) {
+        this.view().setUint32(this.slot, this.cells, true)
+        this.check(
+          api.ghostty_render_state_row_get(this.rowIterator, 3, this.slot),
+          'cell iterator',
+        )
+        iteratorReady = true
       }
-      const tag = field('content_tag')
-      const styleId = field('style_id')
-      const wide = field('wide')
+      this.check(api.ghostty_render_state_row_cells_select(this.cells, x), 'cell select')
+    }
+    const color = (option: number, fallback: string, name: string) => {
+      const result = api.ghostty_render_state_row_cells_get(this.cells, option, this.scratch)
+      if (result === 0) return this.readRgb(this.scratch)
+      if (result !== -2) this.check(result, name)
+      return fallback
+    }
+    for (let x = 0; x < count; x++) {
+      // Cell reads are pure getters and cannot grow WASM memory, but graphemes/styles use scratch.
+      view = this.view()
+      const lo = view.getUint32(ptr + x * 8, true)
+      const hi = view.getUint32(ptr + x * 8 + 4, true)
+      const tag = readBits(lo, hi, tagBits)
+      const styleId = readBits(lo, hi, styleBits)
+      const wide = readBits(lo, hi, wideBits)
       let text = ''
       if (tag <= 1 && wide !== 2 && wide !== 3) {
-        const codepoint = Number((packed >> BigInt(bits.content.lsb)) & 0x1fffffn)
+        const codepoint = readBits(lo, hi, contentBits)
         if (codepoint > 0 && codepoint <= 0x10ffff) text = String.fromCodePoint(codepoint)
       }
       let fg = foreground
       let bg = background
-      let bold = false
-      let italic = false
-      let faint = false
-      let underline = false
-      let strikethrough = false
-      let inverse = false
-      if (styleId !== 0 || tag !== 0 || wide !== 0) {
-        if (!iteratorReady) {
-          this.view().setUint32(this.slot, this.cells, true)
+      let style: CellStyle | undefined
+      if (tag === 1) {
+        select(x)
+        this.check(
+          api.ghostty_render_state_row_cells_get(this.cells, 3, this.scratch),
+          'grapheme length',
+        )
+        const length = this.view().getUint32(this.scratch, true)
+        if (length > 0 && length <= 1024) {
           this.check(
-            api.ghostty_render_state_row_get(this.rowIterator, 3, this.slot),
-            'cell iterator',
+            api.ghostty_render_state_row_cells_get(this.cells, 4, this.scratch),
+            'grapheme',
           )
-          iteratorReady = true
-        }
-        this.check(api.ghostty_render_state_row_cells_select(this.cells, x), 'cell select')
-        if (tag === 1) {
-          this.check(
-            api.ghostty_render_state_row_cells_get(this.cells, 3, this.scratch),
-            'grapheme length',
-          )
-          const length = this.view().getUint32(this.scratch, true)
-          if (length > 0 && length <= 1024) {
-            this.check(
-              api.ghostty_render_state_row_cells_get(this.cells, 4, this.scratch),
-              'grapheme',
-            )
-            text = ''
-            for (let i = 0; i < length; i++) {
-              const cp = this.view().getUint32(this.scratch + i * 4, true)
-              if (cp <= 0x10ffff) text += String.fromCodePoint(cp)
-            }
+          view = this.view()
+          text = ''
+          for (let i = 0; i < length; i++) {
+            const cp = view.getUint32(this.scratch + i * 4, true)
+            if (cp <= 0x10ffff) text += String.fromCodePoint(cp)
           }
         }
-        const fgResult = api.ghostty_render_state_row_cells_get(this.cells, 6, this.scratch)
-        if (fgResult === 0) fg = this.readRgb(this.scratch)
-        else if (fgResult !== -2) this.check(fgResult, 'foreground')
-        const bgResult = api.ghostty_render_state_row_cells_get(this.cells, 5, this.scratch)
-        if (bgResult === 0) bg = this.readRgb(this.scratch)
-        else if (bgResult !== -2) this.check(bgResult, 'background')
-        if (styleId !== 0) {
-          const style = this.layout.types.GhosttyStyle
-          this.view().setUint32(this.scratch, style.size, true)
+      }
+      if (tag >= 2) {
+        // Background-only cells take their color from the cell content, not the style.
+        select(x)
+        fg = color(6, foreground, 'foreground')
+        bg = color(5, background, 'background')
+      }
+      if (styleId !== 0) {
+        style = tag <= 1 ? styles.get(styleId) : undefined
+        if (!style) {
+          select(x)
+          const styleFg = color(6, foreground, 'foreground')
+          const styleBg = tag <= 1 ? color(5, background, 'background') : bg
+          const layout = this.layout.types.GhosttyStyle
+          this.view().setUint32(this.scratch, layout.size, true)
           this.check(api.ghostty_render_state_row_cells_get(this.cells, 2, this.scratch), 'style')
+          view = this.view()
           const get = (name: string) =>
-            this.view().getUint8(this.scratch + style.fields[name].offset) !== 0
-          bold = get('bold')
-          italic = get('italic')
-          faint = get('faint')
-          underline =
-            this.view().getUint32(this.scratch + style.fields.underline.offset, true) !== 0
-          strikethrough = get('strikethrough')
-          inverse = get('inverse')
-          if (get('invisible')) text = ''
+            view.getUint8(this.scratch + layout.fields[name].offset) !== 0
+          style = {
+            fg: styleFg,
+            bg: styleBg,
+            bold: get('bold'),
+            italic: get('italic'),
+            faint: get('faint'),
+            underline: view.getUint32(this.scratch + layout.fields.underline.offset, true) !== 0,
+            strikethrough: get('strikethrough'),
+            inverse: get('inverse'),
+            invisible: get('invisible'),
+          }
+          if (tag <= 1) styles.set(styleId, style)
         }
+        fg = style.fg
+        bg = style.bg
+        if (style.invisible) text = ''
       }
       cells.push({
         text,
         fg,
         bg,
-        bold,
-        italic,
-        faint,
-        underline,
-        strikethrough,
-        inverse,
+        bold: style?.bold ?? false,
+        italic: style?.italic ?? false,
+        faint: style?.faint ?? false,
+        underline: style?.underline ?? false,
+        strikethrough: style?.strikethrough ?? false,
+        inverse: style?.inverse ?? false,
         selected: x >= selectedStart && x <= selectedEnd,
         wide,
       })

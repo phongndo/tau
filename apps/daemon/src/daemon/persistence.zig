@@ -349,7 +349,7 @@ pub fn pruneMissingEventLogMetadataLocked(self: anytype) void {
 }
 
 pub fn indexSearchExcerptFromSnapshot(self: anytype, snapshot_input: *const SearchExcerptSnapshot) void {
-    const excerpt = util.readSmallFileAlloc(self.allocator, snapshot_input.excerpt_path, event_log.max_excerpt_bytes) catch |err| {
+    const excerpt = event_log.readExcerptAlloc(self.allocator, snapshot_input.excerpt_path) catch |err| {
         std.log.warn("failed to read search excerpt for {s}: {t}", .{ snapshot_input.terminal_session_id, err });
         return;
     };

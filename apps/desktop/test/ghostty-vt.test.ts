@@ -257,3 +257,123 @@ test('direct Ghostty WASM handles non-ASCII graphemes, wide cells and resize', a
     vt.dispose()
   }
 })
+
+/** Uncached per-cell reference: every styled cell asks the Ghostty cell API directly. */
+function referenceViewport(vt: GhosttyVt, background: string, foreground: string) {
+  const api = vt.api
+  const view = () => new DataView(api.memory.buffer)
+  const rgb = (ptr: number) =>
+    `#${[...new Uint8Array(api.memory.buffer, ptr, 3)].map((c) => c.toString(16).padStart(2, '0')).join('')}`
+  const bits = vt.layout.types.GhosttyCell.bits!
+  const field = (packed: bigint, name: string) =>
+    Number((packed >> BigInt(bits[name].lsb)) & ((1n << BigInt(bits[name].width)) - 1n))
+  const style = vt.layout.types.GhosttyStyle
+  const selection = vt.layout.types.GhosttyRenderStateRowSelection
+  const rows: Array<Record<string, unknown>[]> = []
+  view().setUint32(vt.slot, vt.rowIterator, true)
+  expect(api.ghostty_render_state_get(vt.renderState, 4, vt.slot)).toBe(0)
+  while (api.ghostty_render_state_row_iterator_next(vt.rowIterator)) {
+    expect(api.ghostty_render_state_row_get(vt.rowIterator, 5, vt.scratch)).toBe(0)
+    const ptr = view().getUint32(vt.scratch, true)
+    const count = view().getUint32(vt.scratch + 4, true)
+    view().setUint32(vt.scratch, selection.size, true)
+    const selected = api.ghostty_render_state_row_get(vt.rowIterator, 4, vt.scratch) === 0
+    const start = selected
+      ? view().getUint16(vt.scratch + selection.fields.start_x.offset, true)
+      : -1
+    const end = selected ? view().getUint16(vt.scratch + selection.fields.end_x.offset, true) : -1
+    view().setUint32(vt.slot, vt.cells, true)
+    expect(api.ghostty_render_state_row_get(vt.rowIterator, 3, vt.slot)).toBe(0)
+    const cells: Record<string, unknown>[] = []
+    for (let x = 0; x < count; x++) {
+      const packed = view().getBigUint64(ptr + x * 8, true)
+      const tag = field(packed, 'content_tag')
+      const styleId = field(packed, 'style_id')
+      const wide = field(packed, 'wide')
+      let text = ''
+      if (tag <= 1 && wide !== 2 && wide !== 3) {
+        const cp = Number((packed >> BigInt(bits.content.lsb)) & 0x1fffffn)
+        if (cp > 0 && cp <= 0x10ffff) text = String.fromCodePoint(cp)
+      }
+      const cell = { text, fg: foreground, bg: background, bold: false, italic: false }
+      Object.assign(cell, { faint: false, underline: false, strikethrough: false, inverse: false })
+      expect(api.ghostty_render_state_row_cells_select(vt.cells, x)).toBe(0)
+      if (tag === 1 && api.ghostty_render_state_row_cells_get(vt.cells, 3, vt.scratch) === 0) {
+        const length = view().getUint32(vt.scratch, true)
+        expect(api.ghostty_render_state_row_cells_get(vt.cells, 4, vt.scratch)).toBe(0)
+        cell.text = ''
+        for (let i = 0; i < length; i++)
+          cell.text += String.fromCodePoint(view().getUint32(vt.scratch + i * 4, true))
+      }
+      if (api.ghostty_render_state_row_cells_get(vt.cells, 6, vt.scratch) === 0)
+        cell.fg = rgb(vt.scratch)
+      if (api.ghostty_render_state_row_cells_get(vt.cells, 5, vt.scratch) === 0)
+        cell.bg = rgb(vt.scratch)
+      if (styleId !== 0) {
+        view().setUint32(vt.scratch, style.size, true)
+        expect(api.ghostty_render_state_row_cells_get(vt.cells, 2, vt.scratch)).toBe(0)
+        const flag = (name: string) => view().getUint8(vt.scratch + style.fields[name].offset) !== 0
+        Object.assign(cell, {
+          bold: flag('bold'),
+          italic: flag('italic'),
+          faint: flag('faint'),
+          underline: view().getUint32(vt.scratch + style.fields.underline.offset, true) !== 0,
+          strikethrough: flag('strikethrough'),
+          inverse: flag('inverse'),
+        })
+        if (flag('invisible')) cell.text = ''
+      }
+      cells.push({ ...cell, selected: x >= start && x <= end, wide })
+    }
+    rows.push(cells)
+  }
+  return rows
+}
+
+test('cached cell extraction matches an uncached per-cell reference across styles', async () => {
+  const vt = await terminal(96, 60)
+  try {
+    let text = '\x1b[1mbold\x1b[0m \x1b[3;4mitalic-under\x1b[0m \x1b[2;9mfaint-strike\x1b[0m '
+    text += '\x1b[7minverse\x1b[0m \x1b[8msecret\x1b[0m \x1b[38;5;202m256\x1b[48;5;17mbg\x1b[0m\r\n'
+    text += '漢字🥝é👩‍👩‍👧 \x1b[44m\x1b[K\x1b[0m\r\n'
+    // >64 distinct styles pushes style ids across the u64 low/high word boundary (bits 26..41),
+    // and >4096 truecolor backgrounds overflow the interned color cache.
+    for (let row = 0; row < 56; row++) {
+      for (let col = 0; col < 96; col++) {
+        const value = row * 96 + col
+        text += `\x1b[48;2;${value & 0xff};${(value >> 8) & 0xff};${row};38;2;${col};1;2m${col % 10}`
+      }
+      text += '\x1b[0m'
+      if (row < 55) text += '\r\n'
+    }
+    vt.write(text)
+    vt.setSelection({ x: 2, y: 0 }, { x: 10, y: 1 })
+    vt.render()
+    vt.invalidate()
+    const frame = vt.render()
+    expect(frame.dirty).toBe(2)
+    expect(frame.rows.map(({ y }) => y)).toEqual(Array.from({ length: 60 }, (_, y) => y))
+    const reference = referenceViewport(vt, frame.background, frame.foreground)
+    expect(frame.rows.map(({ cells }) => cells)).toEqual(reference as never)
+    expect(frame.rows[0].cells.some((cell) => cell.selected)).toBe(true)
+    expect(frame.rows[1].cells.some((cell) => cell.wide === 1)).toBe(true)
+  } finally {
+    vt.dispose()
+  }
+})
+
+test('invalidate re-reports every row once after dirty state was consumed', async () => {
+  const vt = await terminal(12, 3)
+  try {
+    vt.write('one\r\ntwo\r\nthree')
+    vt.render()
+    expect(vt.render().rows).toHaveLength(0)
+    vt.invalidate()
+    const frame = vt.render()
+    expect(frame.rows.map(({ y }) => y)).toEqual([0, 1, 2])
+    expect(frame.rows[2].cells.map(({ text }) => text).join('')).toStartWith('three')
+    expect(vt.render().rows).toHaveLength(0)
+  } finally {
+    vt.dispose()
+  }
+})

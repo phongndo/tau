@@ -13,6 +13,8 @@ function loadWasm(): Promise<ArrayBuffer> {
   return wasmBytes
 }
 
+const FONT_VARIANTS = ['', 'bold ', 'italic ', 'italic bold '] as const
+
 type Listener<T> = (value: T) => void
 function subscribe<T>(listeners: Set<Listener<T>>, listener: Listener<T>): { dispose(): void } {
   listeners.add(listener)
@@ -36,9 +38,16 @@ export class TauTerminal {
     Listener<{ resultIndex: number; resultCount: number }>
   >()
   private readonly rowsCache: GhosttyCell[][] = []
+  /** Accessible text per viewport row; the reader is rewritten only when a row changes. */
+  private readonly rowText: string[] = []
+  private readonly foregrounds: string[] = []
   private readonly imageCanvases = new Map<string, HTMLCanvasElement>()
   private lastFrame: GhosttyFrame | null = null
+  private lastImageSignature = ''
+  /** Drawing was skipped while no cell was visible; the next visible draw re-reads every row. */
+  private hiddenStale = false
   private fontSize = 14
+  private fonts: string[] = []
   private fontFamily = '"SF Mono", Menlo, Monaco, "JetBrains Mono", monospace'
   private cellWidth = 8
   private cellHeight = 18
@@ -51,6 +60,8 @@ export class TauTerminal {
   private renderHeld = false
   private anchor: Point | null = null
   private selectionEnd: Point | null = null
+  /** Whether the VT core holds a selection (search matches are separate from it). */
+  private hasSelection = false
   private drag = false
   private mouseReporting = false
   private searchQuery = ''
@@ -180,6 +191,7 @@ export class TauTerminal {
       css.getPropertyValue('--terminal-font-family').trim() ||
       '"SF Mono", Menlo, Monaco, "JetBrains Mono", monospace'
     ctx.font = `${this.fontSize}px ${this.fontFamily}`
+    this.fonts = FONT_VARIANTS.map((variant) => `${variant}${this.fontSize}px ${this.fontFamily}`)
     const measurement = ctx.measureText('M')
     this.cellWidth = Math.max(1, measurement.width)
     this.cellHeight = Math.ceil(
@@ -198,8 +210,7 @@ export class TauTerminal {
     const light = document.documentElement.dataset.theme === 'light'
     this.vt.setDefaultColors(light ? '#fbfcfe' : '#151515', light ? '#202633' : '#d4d4d4', light)
     this.updateFontMetrics(ctx)
-    this.rowsCache.length = 0
-    this.lastFrame = null
+    this.clearRowCaches()
     const size = this.proposeDimensions()
     const gridChanged = size && (size.cols !== this.cols || size.rows !== this.rows)
     if (size) this.resize(size.cols, size.rows)
@@ -220,8 +231,7 @@ export class TauTerminal {
   resize(cols: number, rows: number): void {
     if (cols === this.cols && rows === this.rows) return
     this.vt.resize(cols, rows, Math.round(this.cellWidth), Math.round(this.cellHeight))
-    this.rowsCache.length = 0
-    this.lastFrame = null
+    this.clearRowCaches()
     this.refresh()
     for (const listener of this.resizeListeners) listener({ cols, rows })
   }
@@ -238,11 +248,11 @@ export class TauTerminal {
     this.vt.dispose()
     this.vt = next
     this.renderHeld = false
-    this.rowsCache.length = 0
-    this.lastFrame = null
+    this.clearRowCaches()
     this.searchQuery = ''
     this.anchor = null
     this.selectionEnd = null
+    this.hasSelection = false
     this.refresh()
   }
 
@@ -262,11 +272,33 @@ export class TauTerminal {
     })
   }
 
+  private clearRowCaches(): void {
+    this.rowsCache.length = 0
+    this.rowText.length = 0
+    this.lastFrame = null
+    this.lastImageSignature = ''
+  }
+
   private draw(): void {
     const canvas = this.canvas
     if (!canvas) return
     const ctx = canvas.getContext('2d', { alpha: false })
     if (!ctx) return
+    // A parked (hidden-tab) or collapsed pane cannot show a single cell. Leave the VT's dirty
+    // state accumulated, release the backing store, and re-read every row once it is visible.
+    if (canvas.clientWidth < this.cellWidth || canvas.clientHeight < this.cellHeight) {
+      if (!this.hiddenStale) {
+        this.hiddenStale = true
+        canvas.width = 1
+        canvas.height = 1
+        this.clearRowCaches()
+      }
+      return
+    }
+    if (this.hiddenStale) {
+      this.hiddenStale = false
+      this.vt.invalidate()
+    }
     const scale = window.devicePixelRatio || 1
     const width = Math.max(1, Math.ceil(canvas.clientWidth * scale))
     const height = Math.max(1, Math.ceil(canvas.clientHeight * scale))
@@ -280,43 +312,58 @@ export class TauTerminal {
     ctx.textBaseline = 'alphabetic'
     ctx.font = `${this.fontSize}px ${this.fontFamily}`
     const frame = this.vt.render()
-    const previous = this.lastFrame
-    const previousCursor = previous?.cursor
+    const previousCursor = this.lastFrame?.cursor
     this.lastFrame = frame
     if (reset || frame.dirty === 2) {
       ctx.fillStyle = frame.background
       ctx.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight)
     }
     for (const row of frame.rows) this.rowsCache[row.y] = row.cells
+    // Selection changes, scrolling and screen switches arrive as full-dirty frames from Ghostty.
     const dirty = new Set(frame.rows.map((row) => row.y))
-    if (reset || this.imageSignature(previous?.images) !== this.imageSignature(frame.images))
+    const imageSignature = frame.images.length === 0 ? '' : this.imageSignature(frame.images)
+    if (reset || imageSignature !== this.lastImageSignature)
       for (let row = 0; row < this.rows; row++) dirty.add(row)
+    this.lastImageSignature = imageSignature
     if (previousCursor?.visible) dirty.add(previousCursor.y)
     if (frame.cursor.visible) dirty.add(frame.cursor.y)
-    if (this.anchor) for (let row = 0; row < this.rows; row++) dirty.add(row)
-    for (const row of dirty) this.paintRow(ctx, row, frame)
-    if (dirty.size > 0 && this.screenReader) {
-      this.screenReader.textContent = Array.from({ length: this.rows }, (_, y) =>
-        (this.rowsCache[y] ?? [])
-          .map((cell) => (cell.wide >= 2 ? '' : cell.text || ' '))
-          .join('')
-          .trimEnd(),
-      ).join('\n')
+    let textChanged = false
+    for (const row of dirty) {
+      this.paintRow(ctx, row, frame)
+      if (row < 0 || row >= this.rows) continue
+      const text = this.accessibleRowText(row)
+      if (text !== this.rowText[row]) {
+        this.rowText[row] = text
+        textChanged = true
+      }
     }
-    const active = new Set(frame.images.map((image) => `${image.id}:${image.generation}`))
-    for (const key of this.imageCanvases.keys())
-      if (!active.has(key)) this.imageCanvases.delete(key)
+    if (textChanged && this.screenReader) {
+      for (let row = 0; row < this.rows; row++) this.rowText[row] ??= ''
+      this.rowText.length = this.rows
+      this.screenReader.textContent = this.rowText.join('\n')
+    }
+    if (this.imageCanvases.size > 0) {
+      const active = new Set(frame.images.map((image) => `${image.id}:${image.generation}`))
+      for (const key of this.imageCanvases.keys())
+        if (!active.has(key)) this.imageCanvases.delete(key)
+    }
   }
 
-  private imageSignature(images: GhosttyFrame['images'] | undefined): string {
-    return (
-      images
-        ?.map(
-          (image) =>
-            `${image.id}:${image.generation}:${image.x}:${image.y}:${image.offsetX}:${image.offsetY}:${image.pixelWidth}:${image.pixelHeight}:${image.z}`,
-        )
-        .join('|') ?? ''
-    )
+  private accessibleRowText(y: number): string {
+    const cells = this.rowsCache[y]
+    if (!cells) return ''
+    let text = ''
+    for (const cell of cells) if (cell.wide < 2) text += cell.text || ' '
+    return text.trimEnd()
+  }
+
+  private imageSignature(images: GhosttyFrame['images']): string {
+    return images
+      .map(
+        (image) =>
+          `${image.id}:${image.generation}:${image.x}:${image.y}:${image.offsetX}:${image.offsetY}:${image.pixelWidth}:${image.pixelHeight}:${image.z}`,
+      )
+      .join('|')
   }
 
   private paintImages(
@@ -372,16 +419,20 @@ export class TauTerminal {
     ctx.fillRect(0, y * this.cellHeight, this.cols * this.cellWidth, this.cellHeight)
     const cells = this.rowsCache[y] ?? []
     const search = this.searchQuery.toLocaleLowerCase()
-    const line = cells
-      .map((cell) => cell.text || ' ')
-      .join('')
-      .toLocaleLowerCase()
-    const matches: number[] = []
+    // Per-column search highlight, built only while a search query is active.
+    let highlighted: Uint8Array | null = null
     if (search) {
-      for (let start = line.indexOf(search); start >= 0; start = line.indexOf(search, start + 1))
-        matches.push(start)
+      const line = cells
+        .map((cell) => cell.text || ' ')
+        .join('')
+        .toLocaleLowerCase()
+      for (let start = line.indexOf(search); start >= 0; start = line.indexOf(search, start + 1)) {
+        highlighted ??= new Uint8Array(cells.length)
+        highlighted.fill(1, start, Math.min(cells.length, start + search.length))
+      }
     }
-    const foregrounds: string[] = []
+    const foregrounds = this.foregrounds
+    foregrounds.length = cells.length
     for (let x = 0; x < cells.length; x++) {
       const cell = cells[x]
       if (cell.wide === 2 || cell.wide === 3) continue
@@ -389,7 +440,7 @@ export class TauTerminal {
       const py = y * this.cellHeight
       let fg = cell.inverse ? cell.bg : cell.fg
       let bg = cell.inverse ? cell.fg : cell.bg
-      if (matches.some((start) => x >= start && x < start + search.length)) bg = '#6b4a35'
+      if (highlighted?.[x]) bg = '#6b4a35'
       if (cell.selected) {
         bg = '#264f78'
         fg = '#ffffff'
@@ -401,25 +452,43 @@ export class TauTerminal {
       foregrounds[x] = fg
     }
     this.paintImages(ctx, y, frame, false)
+    // Canvas state setters parse their arguments; only change font/alpha/fill when they differ.
+    const fonts = this.fonts
+    let font = -1
+    let faint = false
+    let fill = ''
     for (let x = 0; x < cells.length; x++) {
       const cell = cells[x]
       if (cell.wide === 2 || cell.wide === 3 || !cell.text) continue
       const px = x * this.cellWidth
       const py = y * this.cellHeight
-      ctx.fillStyle = foregrounds[x]
-      ctx.globalAlpha = cell.faint ? 0.6 : 1
-      ctx.font = `${cell.italic ? 'italic ' : ''}${cell.bold ? 'bold ' : ''}${this.fontSize}px ${this.fontFamily}`
+      if (fill !== foregrounds[x]) {
+        fill = foregrounds[x]!
+        ctx.fillStyle = fill
+      }
+      if (faint !== cell.faint) {
+        faint = cell.faint
+        ctx.globalAlpha = faint ? 0.6 : 1
+      }
+      const variant = (cell.bold ? 1 : 0) | (cell.italic ? 2 : 0)
+      if (font !== variant) {
+        font = variant
+        ctx.font = fonts[variant]!
+      }
       ctx.fillText(cell.text, px, py + this.baseline)
-      ctx.globalAlpha = 1
       if (cell.underline || cell.strikethrough) {
+        // Decorations are opaque even on faint text.
+        if (faint) ctx.globalAlpha = 1
         ctx.fillRect(
           px,
           py + (cell.strikethrough ? this.cellHeight / 2 : this.cellHeight - 2),
           this.cellWidth,
           1,
         )
+        if (faint) ctx.globalAlpha = 0.6
       }
     }
+    if (faint) ctx.globalAlpha = 1
     this.paintImages(ctx, y, frame, true)
     if (frame.cursor.visible && frame.cursor.y === y && this.cursorVisible) {
       const x = frame.cursor.x * this.cellWidth
@@ -456,6 +525,19 @@ export class TauTerminal {
 
   private selectedText(): string {
     return this.vt.selectedText()
+  }
+
+  /** Changing a selection marks Ghostty's screen dirty; repaint now rather than waiting for
+   * output, so a cleared highlight disappears on the keypress that cleared it. */
+  private select(start: Point | null, end?: Point | null): void {
+    if (start && end) {
+      this.vt.setSelection(start, end)
+      this.hasSelection = true
+    } else if (this.hasSelection) {
+      this.vt.setSelection(null)
+      this.hasSelection = false
+    } else return
+    this.refresh()
   }
 
   private sendMouse(
@@ -522,7 +604,7 @@ export class TauTerminal {
     }
     if (event.button !== 0) return
     this.drag = true
-    this.vt.setSelection(null)
+    this.select(null)
     this.anchor = this.point(event)
     this.selectionEnd = this.anchor
     this.canvas?.setPointerCapture(event.pointerId)
@@ -547,8 +629,7 @@ export class TauTerminal {
       return
     }
     this.selectionEnd = this.point(event)
-    this.vt.setSelection(this.anchor, this.selectionEnd)
-    this.refresh()
+    this.select(this.anchor, this.selectionEnd)
   }
 
   private readonly pointerUp = (event: PointerEvent): void => {
@@ -573,8 +654,7 @@ export class TauTerminal {
     if (hit) {
       this.anchor = { x: hit.index, y: this.point(event).y }
       this.selectionEnd = { x: hit.index + hit[0].length - 1, y: this.point(event).y }
-      this.vt.setSelection(this.anchor, this.selectionEnd)
-      this.refresh()
+      this.select(this.anchor, this.selectionEnd)
     }
   }
 
@@ -608,7 +688,7 @@ export class TauTerminal {
     event.preventDefault()
     this.anchor = null
     this.selectionEnd = null
-    this.vt.setSelection(null)
+    this.select(null)
     this.emit(decoder.decode(encoded))
   }
 
@@ -682,7 +762,7 @@ export class TauTerminal {
     this.searchIndex = -1
     this.anchor = null
     this.selectionEnd = null
-    this.vt.setSelection(null)
+    this.select(null)
     this.vt.search('')
     this.refresh()
   }

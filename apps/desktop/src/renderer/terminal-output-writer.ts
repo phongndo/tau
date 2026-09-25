@@ -28,6 +28,33 @@ const OUTPUT_WRITE_QUEUE_RESUME_CHARS = 2 * 1024 * 1024
 const OUTPUT_WRITE_QUEUE_DROP_NOTICE =
   '\r\n\x1b[33m[Tau dropped terminal output because the renderer write queue exceeded 4 MiB]\x1b[0m\r\n'
 
+/** Runs `callback` in a later task, after pending input, rendering and timers get a turn. */
+export type YieldTask = (callback: () => void) => void
+
+type PostTaskScheduler = {
+  postTask(callback: () => void, options?: { priority?: 'user-visible' }): Promise<unknown>
+}
+
+/**
+ * Chromium's `scheduler.postTask` yields a real task without the 4 ms clamp that nested
+ * `setTimeout(0)` calls receive after five levels, which otherwise dominates flood throughput
+ * and the time a keystroke echo waits behind queued output. Input keeps its higher scheduler
+ * priority. Other hosts (tests) fall back to `setTimeout`.
+ */
+export function defaultYieldTask(): YieldTask {
+  const scheduler = (globalThis as { scheduler?: Partial<PostTaskScheduler> }).scheduler
+  if (typeof scheduler?.postTask !== 'function') return (callback) => setTimeout(callback, 0)
+  const postTask = scheduler.postTask.bind(scheduler)
+  return (callback) => {
+    void postTask(callback, { priority: 'user-visible' }).catch((error: unknown) => {
+      // Surface failures like an uncaught timer callback would.
+      setTimeout(() => {
+        throw error
+      }, 0)
+    })
+  }
+}
+
 export type SequencedTerminalWriter = {
   /** Snapshot borrowed bytes; the caller may reuse them after this returns. */
   write(data: Uint8Array, seq: number): void
@@ -53,6 +80,7 @@ export function createSequencedTerminalWriter(
     onResync(lastAppliedSeq: number): void
     onWriteError?(error: unknown, lastAppliedSeq: number): void
     maxQueuedBytes?: number
+    yieldTask?: YieldTask
   },
 ): SequencedTerminalWriter {
   type Entry = { data: Uint8Array; seq: number }
@@ -64,7 +92,10 @@ export function createSequencedTerminalWriter(
   let disposed = false
   let waitingForSnapshot = false
   let minimumSnapshotSeq = 0
-  let scheduled: ReturnType<typeof setTimeout> | null = null
+  const yieldTask = options.yieldTask ?? defaultYieldTask()
+  // A pending yielded task runs only if its token is still current (cancelled by flush/dispose).
+  let scheduled = false
+  let scheduleToken = 0
   let lastAppliedSeq = 0
   let drainWaiters: Array<() => void> = []
   let writeCount = 0
@@ -89,9 +120,16 @@ export function createSequencedTerminalWriter(
     for (const resolve of waiters) resolve()
   }
   const schedule = () => {
-    if (disposed || writing || waitingForSnapshot || scheduled !== null || head === queue.length)
-      return
-    scheduled = setTimeout(process, 0)
+    if (disposed || writing || waitingForSnapshot || scheduled || head === queue.length) return
+    scheduled = true
+    const token = ++scheduleToken
+    yieldTask(() => {
+      if (token === scheduleToken) process()
+    })
+  }
+  const cancelScheduled = () => {
+    scheduled = false
+    scheduleToken++
   }
   // Reused for every write; don't retain the completed frame's byte buffer in a closure.
   const onWriteComplete = () => {
@@ -109,8 +147,7 @@ export function createSequencedTerminalWriter(
     resolveDrains()
   }
   const process = () => {
-    if (scheduled !== null) clearTimeout(scheduled)
-    scheduled = null
+    cancelScheduled()
     if (disposed || writing || waitingForSnapshot) return
     const first = queue[head]
     if (!first) {
@@ -265,8 +302,7 @@ export function createSequencedTerminalWriter(
     },
     dispose() {
       disposed = true
-      if (scheduled !== null) clearTimeout(scheduled)
-      scheduled = null
+      cancelScheduled()
       queue.length = 0
       head = 0
       queuedBytes = 0

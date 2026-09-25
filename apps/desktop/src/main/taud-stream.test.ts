@@ -37,6 +37,7 @@ import {
   encodeTaudResizePayload,
   encodeTaudStreamFrame,
   TaudStreamFrameParser,
+  taudCrc32,
 } from './taud-stream'
 
 const fixtureRoot = resolve(
@@ -427,4 +428,18 @@ test('taud stream parser rejects oversized payload headers before buffering bodi
   encoded.writeUInt32BE(TAUD_STREAM_MAX_PAYLOAD_BYTES + 1, TAUD_STREAM_PAYLOAD_LENGTH_OFFSET)
 
   assert.throws(() => new TaudStreamFrameParser().push(encoded), /header/u)
+})
+
+test('native stream CRC matches CRC-32/IEEE and the portable snapshot implementation', () => {
+  assert.equal(taudCrc32(Buffer.from('123456789')), 0xcbf43926)
+  assert.equal(taudCrc32(new Uint8Array()), 0)
+  const bytes = new Uint8Array(70_001)
+  for (let index = 0; index < bytes.length; index++) bytes[index] = (index * 131) ^ (index >> 7)
+  for (const view of [
+    bytes,
+    bytes.subarray(3),
+    bytes.subarray(0, 17),
+    Buffer.from(bytes.buffer, 9),
+  ])
+    assert.equal(taudCrc32(view), currentScreenCrc32(view))
 })

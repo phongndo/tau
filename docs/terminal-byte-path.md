@@ -14,6 +14,10 @@ PTY master read (taud, Zig)
   -> Tau canvas renders Ghostty render-state frames on requestAnimationFrame
 ```
 
+Each daemon output frame is one PTY read with its own sequence number. During a sustained burst (reads less than 2 ms apart that have already produced 8 KiB) the reader keeps reading for up to about a millisecond before publishing, so many small producer writes share one event-log frame, sequence number and stream frame instead of tripping main's unacknowledged-frame bound. The first read after idle, and the first read after terminal input, publish immediately. The search excerpt grows to twice its 1 MiB budget before being compacted to its newest 1 MiB, rather than being reread on every PTY read.
+
+Main validates each stream frame's CRC with native `zlib.crc32` and makes one exact-sized copy of the payload out of the parser's pending bytes; the socket chunk itself is not copied again before parsing.
+
 The write callback confirms Ghostty parser application, **not** physical display presentation. A failed parse triggers a new WASM terminal and daemon snapshot resynchronization; the writer retains a bounded later-output suffix until a snapshot applies, dropping it only if the queue limit is exceeded. A stale snapshot cannot advance the acknowledgement cursor past missing frames. The native daemon and browser build share the revision in [`scripts/ghostty-source.ts`](../scripts/ghostty-source.ts). The WASM build applies narrow, verified browser-only patches for inline Kitty graphics (no host file access); `taud` uses the same upstream C ABI without those patches.
 
 ## Ownership and allocation rules
@@ -25,7 +29,13 @@ The write callback confirms Ghostty parser application, **not** physical display
 - The writer checks its 4 MiB queued-byte bound before allocating. Overflow discards queued presentation frames and requests a snapshot; it does not acknowledge discarded frames. One outstanding Ghostty write is additional to that queue budget.
 - Already-queued complete frames are coalesced into at most 64 KiB / 128-frame batches. A single larger frame stays intact. An isolated owned frame incurs no writer byte-buffer copy. Multi-frame batches allocate one aggregate buffer. This reduces buffer-object churn, write callbacks and acknowledgements; it does not make copying of batched bytes disappear.
 - Consumed queue entries are cleared immediately. The queue uses a cursor with periodic in-place compaction rather than shifting every frame. Snapshot filtering compacts in place, and disposing clears queued ownership and ignores late parse callbacks.
-- Acknowledgement occurs only after the whole batch is applied. The writer yields between batches using a task; it does not wait for more frames just to fill a batch. The existing snapshot recovery path and main's byte/frame backlog bounds remain in place.
+- Acknowledgement occurs only after the whole batch is applied. The writer processes one batch per task and yields between batches with Chromium's `scheduler.postTask` (`setTimeout` where that API is absent, as in unit tests). Nested `setTimeout(0)` is clamped to 4 ms, which had capped a pane at roughly 16 MiB/s and made a keystroke echo wait behind the queued window; input keeps its higher scheduler priority. The writer does not wait for more frames just to fill a batch. The existing snapshot recovery path and main's byte/frame backlog bounds remain in place.
+
+## Rendering
+
+`TauTerminal` draws at most once per animation frame, and only rows Ghostty reports dirty (plus cursor rows; everything on a resize, full-dirty frame or image change). Selection changes, scrolling and screen switches arrive from Ghostty as full-dirty frames, so the surface does not force its own full repaints. Cell extraction reuses one `DataView` until WASM memory grows, decodes packed cells without BigInt, interns color strings, and resolves each style id once per row (style ids are page-local; a row belongs to one page). The accessible viewport text is recomputed only for painted rows and written to the DOM only when it changes.
+
+A pane whose canvas cannot show one cell (a parked hidden tab, or a collapsed layout) keeps parsing and acknowledging output but skips render-state reads and painting, and releases its canvas backing store. Ghostty's dirty state accumulates meanwhile; the first visible draw marks the render state fully dirty and re-reads every row, so a restored pane shows current output.
 
 ## Reload and port teardown
 
@@ -57,6 +67,6 @@ Surface correctness: `bun run test:surface` bundles the actual `TauTerminal` int
 For performance work distinguish:
 
 - Decoder/buffer construction counts and retained queue bytes: deterministic allocation probes.
-- Writer + Ghostty throughput: isolate the writer with the packaged Ghostty WASM and byte workload, and check final screen content.
+- Writer + Ghostty throughput: isolate the writer with the packaged Ghostty WASM and byte workload, and check final screen content. `bun run bench:surface` does this for the production `TauTerminal` surface (parse, render-state extraction and canvas-command timings, frame cadence, input dispatch and echo-drawn latency under flood, hidden panes, idle, create/close memory) and can alternate against another source tree; see the header of [`surface-benchmark.ts`](../apps/desktop/bench/surface-benchmark.ts). `bench:terminal` and `bench:renderer` measure an xterm.js harness, not Tau's surface.
 - Packaged input/output smoke: checks transport and counters, not full terminal presentation throughput.
 - Frame presentation, idle CPU and RSS: use a real display/GPU; Xvfb does not establish hardware rendering performance. The benchmark commands and enforced smoke thresholds live in the root and desktop `package.json` files.

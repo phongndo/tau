@@ -2,8 +2,50 @@ const std = @import("std");
 const event_log = @import("../event_log.zig");
 const pty = @import("../pty.zig");
 const session = @import("../session.zig");
+const sync_io = @import("../sync_io.zig");
 
 const assert = std.debug.assert;
+
+/// PTY reads closer together than this belong to one output burst.
+const burst_gap_ns = 2 * std.time.ns_per_ms;
+/// A burst must already have produced this much output before reads wait to coalesce. Echoes,
+/// prompts and request/response exchanges stay below it and are published without delay.
+const burst_coalesce_after_bytes = 8 * 1024;
+/// How long a coalescing read keeps collecting output before publishing it as one frame.
+const burst_window_ns = std.time.ns_per_ms;
+
+/// Decides per PTY read whether to wait briefly and coalesce a sustained output burst.
+const BurstTracker = struct {
+    last_read_ns: i96 = 0,
+    burst_bytes: usize = 0,
+
+    /// `input_since_last_read`: terminal input arrived after the previous read, so this read
+    /// probably carries its echo and is published immediately.
+    fn shouldCoalesce(self: *BurstTracker, now_ns: i96, input_since_last_read: bool) bool {
+        if (self.last_read_ns == 0 or now_ns - self.last_read_ns >= burst_gap_ns) self.burst_bytes = 0;
+        return self.burst_bytes >= burst_coalesce_after_bytes and !input_since_last_read;
+    }
+
+    fn recordRead(self: *BurstTracker, finished_ns: i96, amount: usize) void {
+        self.burst_bytes +|= amount;
+        self.last_read_ns = finished_ns;
+    }
+};
+
+test "PTY reads coalesce only inside a sustained burst without recent input" {
+    var tracker: BurstTracker = .{};
+    const ms = std.time.ns_per_ms;
+    try std.testing.expect(!tracker.shouldCoalesce(10 * ms, false));
+    tracker.recordRead(10 * ms, 4096);
+    try std.testing.expect(!tracker.shouldCoalesce(11 * ms, false));
+    tracker.recordRead(11 * ms, 4096);
+    // 8 KiB of back-to-back output: later reads may wait to coalesce, unless input just arrived.
+    try std.testing.expect(tracker.shouldCoalesce(12 * ms, false));
+    try std.testing.expect(!tracker.shouldCoalesce(12 * ms, true));
+    tracker.recordRead(12 * ms, 64);
+    // A pause ends the burst; the next read (an echo or prompt) is published at once.
+    try std.testing.expect(!tracker.shouldCoalesce(12 * ms + burst_gap_ns, false));
+}
 
 pub fn Context(comptime Daemon: type) type {
     return struct {
@@ -61,13 +103,17 @@ pub fn Context(comptime Daemon: type) type {
         pub fn runSessionReader(self: Self, session_id: []const u8) !void {
             assert(session_id.len > 0);
 
+            var burst: BurstTracker = .{};
             while (true) {
                 const child_fd = self.liveChildFd(session_id) orelse return;
                 var poll_fds = [_]std.posix.pollfd{.{ .fd = child_fd, .events = std.posix.POLL.IN, .revents = 0 }};
 
                 _ = try std.posix.poll(&poll_fds, 250);
                 if ((poll_fds[0].revents & (std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR)) != 0) {
-                    try self.readPtyAndBroadcast(session_id);
+                    const started = sync_io.monotonicNs();
+                    const coalesce = burst.shouldCoalesce(started, self.daemon.inputSince(burst.last_read_ns));
+                    const amount = try self.readPtyAndBroadcastBurst(session_id, coalesce);
+                    burst.recordRead(sync_io.monotonicNs(), amount);
                 }
 
                 if (try self.reapExitedChild(session_id)) return;
@@ -89,33 +135,41 @@ pub fn Context(comptime Daemon: type) type {
         }
 
         pub fn readPtyAndBroadcast(self: Self, session_id: []const u8) !void {
+            _ = try self.readPtyAndBroadcastBurst(session_id, false);
+        }
+
+        /// With `coalesce` (a sustained output burst) keep reading briefly before publishing, so
+        /// one frame and sequence number carries many small producer writes instead of one each.
+        /// Returns the number of bytes published.
+        pub fn readPtyAndBroadcastBurst(self: Self, session_id: []const u8, coalesce: bool) !usize {
             assert(session_id.len > 0);
 
             const daemon = self.daemon;
             var child_copy: pty.Child = blk: {
                 daemon.lock();
                 defer daemon.unlock();
-                const item = daemon.sessions.find(session_id) orelse return;
+                const item = daemon.sessions.find(session_id) orelse return 0;
                 item.assertInvariants();
-                break :blk item.pty_child orelse return;
+                break :blk item.pty_child orelse return 0;
             };
 
             var buffer: [64 * 1024]u8 = undefined;
-            const amount = daemon.pty_driver.read(&child_copy, &buffer) catch |err| {
+            var amount = daemon.pty_driver.read(&child_copy, &buffer) catch |err| {
                 std.log.warn("PTY read failed for {s}: {t}", .{ session_id, err });
                 _ = try self.markExitedAndBroadcast(session_id, -1, 0);
-                return;
+                return 0;
             };
             // An EOF means the slave closed. The reader loop reaps the child and publishes its
             // real exit code, including successful `exit` after an inner shell has returned.
-            if (amount == 0) return;
+            if (amount == 0) return 0;
+            if (coalesce) amount = pty.readBurst(child_copy.master_fd, &buffer, amount, burst_window_ns);
 
             const payload = buffer[0..amount];
             daemon.recordPtyRead();
             daemon.lock();
             defer daemon.unlock();
 
-            const item = daemon.sessions.find(session_id) orelse return;
+            const item = daemon.sessions.find(session_id) orelse return 0;
             item.assertInvariants();
             item.writeVt(payload) catch |err| {
                 // Never publish a possibly divergent screen snapshot after Ghostty reports a
@@ -134,6 +188,7 @@ pub fn Context(comptime Daemon: type) type {
 
             try daemon.broadcastStreamFrameLocked(item, .output, seq, payload);
             item.assertInvariants();
+            return amount;
         }
 
         pub fn reapExitedChild(self: Self, session_id: []const u8) !bool {

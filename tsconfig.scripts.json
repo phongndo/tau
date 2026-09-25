@@ -17,6 +17,8 @@
     "apps/desktop/bench/benchmark.ts",
     "apps/desktop/bench/ipc-benchmark.ts",
     "apps/desktop/bench/renderer-benchmark.ts",
-    "apps/desktop/bench/run-electron.ts"
+    "apps/desktop/bench/run-electron.ts",
+    "apps/desktop/bench/surface-benchmark.ts",
+    "apps/desktop/bench/surface-benchmark-electron.ts"
   ]
 }

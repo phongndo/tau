@@ -14,6 +14,11 @@ pub fn sleepMs(milliseconds: i64) void {
     std.Io.sleep(io(), .fromMilliseconds(milliseconds), .awake) catch unreachable;
 }
 
+/// Monotonic time for intervals; unaffected by wall-clock adjustments.
+pub fn monotonicNs() i96 {
+    return std.Io.Clock.awake.now(io()).toNanoseconds();
+}
+
 pub fn nowMs() i64 {
     return std.Io.Clock.real.now(io()).toMilliseconds();
 }

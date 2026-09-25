@@ -60,6 +60,8 @@ pub const Daemon = struct {
     active_control_connections: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     active_session_readers: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     stream_input_frames_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    /// Monotonic time of the latest terminal input, so readers publish its echo without coalescing.
+    last_input_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     stream_input_bytes_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     stream_output_frames_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     stream_output_bytes_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -443,8 +445,14 @@ pub const Daemon = struct {
     }
 
     pub fn recordStreamInputFrame(self: *Daemon, payload_len: usize) void {
+        self.last_input_ns.store(@intCast(@max(0, sync_io.monotonicNs())), .monotonic);
         _ = self.stream_input_frames_total.fetchAdd(1, .monotonic);
         _ = self.stream_input_bytes_total.fetchAdd(@intCast(payload_len), .monotonic);
+    }
+
+    /// Whether terminal input was written after `since_ns` (monotonic).
+    pub fn inputSince(self: *Daemon, since_ns: i96) bool {
+        return self.last_input_ns.load(.monotonic) > since_ns;
     }
 
     pub fn recordPtyRead(self: *Daemon) void {

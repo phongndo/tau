@@ -611,7 +611,8 @@ export class TaudSessionStream extends EventEmitter<TaudSessionStreamEvents> {
     private readonly initialTail: Buffer,
   ) {
     super()
-    socket.on('data', (chunk) => this.handleChunk(Buffer.from(chunk)))
+    // The frame parser copies what it retains; the socket's chunk needs no extra copy.
+    socket.on('data', (chunk: Buffer) => this.handleChunk(chunk))
     socket.once('error', (error) => this.emit('error', normalizeError(error)))
     socket.once('close', () => this.emit('close'))
   }

@@ -1,5 +1,8 @@
 import { expect, test } from 'bun:test'
-import { createSequencedTerminalWriter } from '../src/renderer/terminal-output-writer'
+import {
+  createSequencedTerminalWriter,
+  defaultYieldTask,
+} from '../src/renderer/terminal-output-writer'
 
 function fixture(options: { maxQueuedBytes?: number } = {}) {
   const writes: Uint8Array[] = []
@@ -322,4 +325,89 @@ test('disposing while the parser is writing releases drains and suppresses late 
     writeQueueChunks: 0,
     writing: false,
   })
+})
+
+test('yields exactly one bounded batch per scheduled task and acknowledges after each', () => {
+  const tasks: Array<() => void> = []
+  const acks: number[] = []
+  const writes: number[] = []
+  const writer = createSequencedTerminalWriter(
+    { write: (data, done) => (writes.push(data.length), done?.()) },
+    {
+      onApplied: (seq) => acks.push(seq),
+      onResync: () => {
+        throw new Error('Unexpected resync')
+      },
+      yieldTask: (callback) => tasks.push(callback),
+    },
+  )
+  try {
+    for (let seq = 1; seq <= 300; seq++) writer.writeOwned(Uint8Array.of(65), seq)
+    expect(tasks).toHaveLength(1)
+    expect(writes).toEqual([])
+    tasks.shift()!()
+    expect(acks).toEqual([128])
+    expect(tasks).toHaveLength(1)
+    tasks.shift()!()
+    tasks.shift()!()
+    expect(acks).toEqual([128, 256, 300])
+    expect(writes).toEqual([128, 128, 44])
+    expect(tasks).toHaveLength(0)
+  } finally {
+    writer.dispose()
+  }
+})
+
+test('flush and dispose cancel an already scheduled yield task', () => {
+  const tasks: Array<() => void> = []
+  const writes: number[] = []
+  const acks: number[] = []
+  const writer = createSequencedTerminalWriter(
+    { write: (data, done) => (writes.push(data[0]!), done?.()) },
+    {
+      onApplied: (seq) => acks.push(seq),
+      onResync: () => {},
+      yieldTask: (callback) => tasks.push(callback),
+    },
+  )
+  writer.writeOwned(Uint8Array.of(1), 1)
+  writer.flush()
+  expect(writes).toEqual([1])
+  // The task scheduled before flush is stale and must not process later frames out of turn.
+  writer.writeOwned(Uint8Array.of(2), 2)
+  const stale = tasks.shift()!
+  const current = tasks.shift()!
+  stale()
+  expect(writes).toEqual([1])
+  current()
+  expect(writes).toEqual([1, 2])
+  writer.writeOwned(Uint8Array.of(3), 3)
+  writer.dispose()
+  for (const task of tasks.splice(0)) task()
+  expect(writes).toEqual([1, 2])
+  expect(acks).toEqual([1, 2])
+})
+
+test('default yield uses the unclamped scheduler.postTask when the host provides it', async () => {
+  const global = globalThis as { scheduler?: unknown }
+  const previous = global.scheduler
+  const posted: Array<{ priority?: string }> = []
+  global.scheduler = {
+    postTask(callback: () => void, options: { priority?: string }) {
+      posted.push(options)
+      return Promise.resolve().then(callback)
+    },
+  }
+  try {
+    let ran = false
+    defaultYieldTask()(() => {
+      ran = true
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(ran).toBe(true)
+    expect(posted).toEqual([{ priority: 'user-visible' }])
+  } finally {
+    global.scheduler = previous
+  }
 })

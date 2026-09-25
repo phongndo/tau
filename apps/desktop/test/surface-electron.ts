@@ -28,6 +28,13 @@ const painted = () => new Promise(resolve => requestAnimationFrame(() => request
 function rgb(canvas, x, y) {
   return [...canvas.getContext('2d').getImageData(x, y, 1, 1).data].slice(0, 3).join(',')
 }
+function hasColor(canvas, color) {
+  const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data
+  for (let i = 0; i < pixels.length; i += 4) {
+    if (pixels[i] + ',' + pixels[i + 1] + ',' + pixels[i + 2] === color) return true
+  }
+  return false
+}
 function firstCellHasInk(canvas, blank) {
   for (let y = 1; y < 18; y++) for (let x = 1; x < 8; x++) {
     if (rgb(canvas, x, y) !== blank) return true
@@ -154,6 +161,46 @@ async function run() {
   const copy = new DataTransfer()
   input.dispatchEvent(new ClipboardEvent('copy', { bubbles: true, clipboardData: copy }))
   check('real pointer drag selects and copies viewport text', /^sele/u.test(copy.getData('text/plain')), copy.getData('text/plain'))
+  const selectionColor = '38,79,120'
+  check('selection highlight reaches canvas pixels', hasColor(canvas, selectionColor))
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', code: 'ArrowUp', bubbles: true }))
+  await painted()
+  check('clearing a selection repaints the highlighted rows', !hasColor(canvas, selectionColor))
+  await fetch('/action', { method: 'POST', body: 'click' })
+  await painted()
+  const surfaceProto = TauSurfaceTest.TauTerminal.prototype
+  const paintRow = surfaceProto.paintRow
+  let rowsPainted = 0
+  surfaceProto.paintRow = function (...args) {
+    rowsPainted++
+    return paintRow.apply(this, args)
+  }
+  term.write('z')
+  await painted()
+  check('a plain click does not force full-screen repaints', rowsPainted > 0 && rowsPainted < term.rows, String(rowsPainted))
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', code: 'ArrowUp', bubbles: true }))
+  rowsPainted = 0
+  term.write('k')
+  await painted()
+  surfaceProto.paintRow = paintRow
+  check('a keystroke echo without a selection repaints only changed rows', rowsPainted > 0 && rowsPainted < term.rows, String(rowsPainted))
+  const parking = document.createElement('div')
+  parking.style.cssText = 'position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;overflow:hidden'
+  document.body.append(parking)
+  // Production parks a 100%-sized runtime wrapper, so it collapses to the parking box.
+  host.style.width = '100%'
+  host.style.height = '100%'
+  parking.append(host)
+  term.write('\x1b[2J\x1b[Hwhile-parked')
+  await painted()
+  check('a parked terminal releases its canvas backing store', canvas.width === 1 && canvas.height === 1)
+  host.style.width = ''
+  host.style.height = ''
+  document.body.prepend(host)
+  parking.remove()
+  term.refresh(0, term.rows - 1)
+  await painted()
+  check('an unparked terminal presents output written while hidden', reader.textContent.includes('while-parked') && canvas.width > 1 && firstCellHasInk(canvas, blank), reader.textContent)
   term.write('\\x1b[?1000h\\x1b[?1006h')
   await fetch('/action', { method: 'POST', body: 'click' })
   await painted()
