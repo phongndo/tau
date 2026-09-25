@@ -2,7 +2,7 @@
  * Serves the bundled page and packaged Ghostty WASM, injects real Chromium input events, and
  * exposes CDP GC/heap/profiler and per-process metrics to the page. */
 import { app, BrowserWindow } from 'electron'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage } from 'node:http'
 
 const arg = (name: string) =>
@@ -17,6 +17,8 @@ if (!bundlePath || !wasmPath || !scenario || !output) {
   throw new Error('Usage: --bundle= --wasm= --scenario= --out= [--profile=1]')
 }
 const bundle = readFileSync(bundlePath)
+const workerPath = arg('worker')
+const workerBundle = workerPath && existsSync(workerPath) ? readFileSync(workerPath) : null
 const wasm = readFileSync(wasmPath)
 
 // Keep the production renderer switches that affect canvas/GPU and V8 heap behavior.
@@ -196,6 +198,8 @@ async function main(): Promise<void> {
     }
     if (req.url === '/ghostty-vt.wasm')
       res.writeHead(200, { 'Content-Type': 'application/wasm' }).end(wasm)
+    else if (req.url === '/tau-terminal-worker.js' && workerBundle)
+      res.writeHead(200, { 'Content-Type': 'text/javascript' }).end(workerBundle)
     else if (req.url === '/bench.js')
       res.writeHead(200, { 'Content-Type': 'text/javascript' }).end(bundle)
     else if (req.url?.startsWith('/?'))

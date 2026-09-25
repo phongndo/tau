@@ -109,8 +109,15 @@ export class GhosttyVt {
   private defaultColors = '#151515:#d4d4d4'
   private lightColorScheme = false
 
-  static async create(bytes: BufferSource, cols = 80, rows = 24): Promise<GhosttyVt> {
-    const { instance } = await WebAssembly.instantiate(bytes)
+  static async create(
+    source: BufferSource | WebAssembly.Module,
+    cols = 80,
+    rows = 24,
+  ): Promise<GhosttyVt> {
+    const instance =
+      source instanceof WebAssembly.Module
+        ? await WebAssembly.instantiate(source)
+        : (await WebAssembly.instantiate(source)).instance
     return new GhosttyVt(instance.exports as unknown as Api, cols, rows)
   }
 

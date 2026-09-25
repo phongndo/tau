@@ -43,9 +43,47 @@ const rendersByVt = new Map<unknown, number>()
 let hookedVt = false
 let measuring = false
 let longTasks: number[] = []
-let onDrawn: ((term: TauTerminal, end: number) => void) | null = null
+let onDrawn: ((term: TauTerminal, end: number, appliedWrites?: number) => void) | null = null
+
+type WorkerStats = { at: number; drawMs: number; renderMs: number; appliedWrites: number }
+type WorkerSurface = {
+  appliedWriteCount: number
+  onFrameStats(listener: (stats: WorkerStats) => void): { dispose(): void }
+  onParseStats(listener: (ms: number) => void): { dispose(): void }
+}
+/** Surfaces that paint in a worker report frames and parses by event instead of prototype hooks. */
+const workerSurface = (term: TauTerminal): WorkerSurface | null =>
+  typeof (term as unknown as Partial<WorkerSurface>).onFrameStats === 'function'
+    ? (term as unknown as WorkerSurface)
+    : null
+const workerFrameWaiters = new Map<TauTerminal, Array<{ writes: number; resolve: () => void }>>()
 
 function hookSurface(term: TauTerminal): void {
+  const worker = workerSurface(term)
+  if (worker) {
+    worker.onParseStats((ms) => {
+      if (measuring) samples.parse.push(ms)
+    })
+    worker.onFrameStats((stats) => {
+      if (measuring) {
+        samples.draw.push(stats.drawMs)
+        samples.render.push(stats.renderMs)
+        drawsByTerm.set(term, (drawsByTerm.get(term) ?? 0) + 1)
+        rendersByVt.set(term, (rendersByVt.get(term) ?? 0) + 1)
+      }
+      onDrawn?.(term, stats.at, stats.appliedWrites)
+      const waiters = workerFrameWaiters.get(term) ?? []
+      workerFrameWaiters.set(
+        term,
+        waiters.filter((waiter) => {
+          if (stats.appliedWrites < waiter.writes) return true
+          waiter.resolve()
+          return false
+        }),
+      )
+    })
+    return
+  }
   const proto = TauTerminal.prototype as unknown as Record<string, (...args: unknown[]) => unknown>
   if (!(proto.draw as { hooked?: boolean }).hooked) {
     const draw = proto.draw
@@ -149,6 +187,22 @@ const painted = () =>
   new Promise<void>((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
   )
+/** Until every pane has drawn everything applied so far (a worker frame, or two page frames). */
+async function presented(panes: Pane[]): Promise<void> {
+  await Promise.all(
+    panes.map((pane) => {
+      const worker = workerSurface(pane.term)
+      if (!worker) return painted()
+      const writes = worker.appliedWriteCount
+      return new Promise<void>((resolve) => {
+        const waiters = workerFrameWaiters.get(pane.term) ?? []
+        waiters.push({ writes, resolve })
+        workerFrameWaiters.set(pane.term, waiters)
+        pane.term.refresh()
+      })
+    }),
+  )
+}
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 // ─── workloads (deterministic) ──────────────────────────────────────────────────────────────────
@@ -377,6 +431,8 @@ function readerText(pane: Pane): string {
 }
 
 function wasmBytes(pane: Pane): number {
+  const worker = pane.term as unknown as { wasmBytes?: number }
+  if (typeof worker.wasmBytes === 'number') return worker.wasmBytes
   return (pane.term as unknown as { vt: { api: { memory: WebAssembly.Memory } } }).vt.api.memory
     .buffer.byteLength
 }
@@ -423,7 +479,7 @@ async function flood(
     await Promise.all(panes.map((pane) => pane.feeder.applied()))
     const parsed = performance.now() - start
     // Wait for the frame that paints the applied state.
-    await painted()
+    await presented(panes)
     return { parsed, presented: performance.now() - start }
   })
   const surface = endMeasure()
@@ -511,17 +567,28 @@ async function inputUnderLoad(panesCount: number): Promise<Json> {
     pendingEcho.set(seq, lastKeyStamp)
   })
   let appliedSeq = 0
+  // For worker surfaces: the applied-write count when each echo's batch was acknowledged.
+  const echoWrites = new Map<number, number>()
+  const focusedWorker = workerSurface(focused.term)
   const originalAck = focused.feeder.onAck.bind(focused.feeder)
   focused.feeder.onAck = (seq) => {
     appliedSeq = Math.max(appliedSeq, seq)
+    if (focusedWorker)
+      for (const echoSeq of pendingEcho.keys())
+        if (echoSeq <= appliedSeq && !echoWrites.has(echoSeq))
+          echoWrites.set(echoSeq, focusedWorker.appliedWriteCount)
     originalAck(seq)
   }
-  onDrawn = (term, end) => {
+  onDrawn = (term, end, appliedWrites) => {
     if (term !== focused.term) return
     for (const [seq, stamp] of pendingEcho) {
-      if (seq <= appliedSeq) {
+      const drawn = focusedWorker
+        ? echoWrites.has(seq) && (appliedWrites ?? 0) >= echoWrites.get(seq)!
+        : seq <= appliedSeq
+      if (drawn) {
         if (measuring) echoLatency.push(end - stamp)
         pendingEcho.delete(seq)
+        echoWrites.delete(seq)
       }
     }
   }
@@ -578,10 +645,12 @@ async function hiddenPanes(): Promise<Json> {
   await Promise.all(panes.map((pane) => pane.feeder.applied()))
   for (const pane of panes) pane.feeder.start([encoder.encode(`\r\n${marker}`)])
   await Promise.all(panes.map((pane) => pane.feeder.applied()))
-  await painted()
+  await presented(panes.slice(0, 1))
   const elapsed = performance.now() - start
   const surface = endMeasure()
-  const vt = (pane: Pane) => (pane.term as unknown as { vt: unknown }).vt
+  // Worker surfaces are counted by terminal (they have no page-side VT object).
+  const vt = (pane: Pane) =>
+    workerSurface(pane.term) ? pane.term : (pane.term as unknown as { vt: unknown }).vt
   const hiddenRenders = parked.reduce((total, pane) => total + (rendersByVt.get(vt(pane)) ?? 0), 0)
   const visibleRenders = rendersByVt.get(vt(panes[0]!)) ?? 0
   // Mirror attachTerminalRuntime: reattach, refit, force a render; state must be current.
@@ -592,11 +661,13 @@ async function hiddenPanes(): Promise<Json> {
     pane.term.refresh(0, pane.term.rows - 1)
   }
   await painted()
+  await presented(parked)
   const restored = parked.map((pane) => {
     const canvas = pane.host.querySelector('canvas')!
     return {
       reader: readerText(pane).includes(marker),
-      canvas: canvas.width > 1 && canvas.height > 1,
+      // A worker-owned canvas is an OffscreenCanvas placeholder; its frame proves the repaint.
+      canvas: workerSurface(pane.term) !== null || (canvas.width > 1 && canvas.height > 1),
     }
   })
   if (!restored.every((item) => item.reader && item.canvas))

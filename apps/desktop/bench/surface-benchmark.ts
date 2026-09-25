@@ -65,6 +65,18 @@ async function bundlePage(label: string, root: string): Promise<string> {
     ],
   })
   if (!build.success) throw new AggregateError(build.logs, `bundle ${label} failed`)
+  // Sources whose surface paints in a worker ship a second bundle, served beside the page.
+  const workerEntry = resolve(rendererDir, 'tau-terminal-worker.ts')
+  if (await Bun.file(workerEntry).exists()) {
+    const worker = await Bun.build({
+      entrypoints: [workerEntry],
+      outdir: cache,
+      naming: `worker-${label}.js`,
+      target: 'browser',
+      format: 'iife',
+    })
+    if (!worker.success) throw new AggregateError(worker.logs, `worker bundle ${label} failed`)
+  } else rmSync(resolve(cache, `worker-${label}.js`), { force: true })
   return resolve(cache, `page-${label}.js`)
 }
 
@@ -91,6 +103,7 @@ async function runScenario(label: string, name: string): Promise<Record<string, 
       resolve(cache, 'electron-main.mjs'),
       `--user-data-dir=${resolve(cache, `profile-${label}`)}`,
       `--bundle=${bundles.get(label)}`,
+      `--worker=${resolve(cache, `worker-${label}.js`)}`,
       `--wasm=${wasm}`,
       `--scenario=${name}`,
       `--out=${out}`,
