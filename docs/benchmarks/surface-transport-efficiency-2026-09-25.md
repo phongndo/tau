@@ -113,3 +113,40 @@ TAU_ELECTRON_SMOKE_OUTPUT_BYTES=8388608 TAU_ELECTRON_SMOKE_MAX_INPUT_ECHO_MS=500
 ```
 
 Daemon CPU was read from `/proc/<taud pid>/stat` (utime, stime) until the managed daemon exited. The 64-byte-write frame counts used a temporary copy of the soak benchmark with `chunk=b"0123456789abcdef"*4`. Raw JSON and logs were kept in session scratch space and are not part of the repository.
+
+## Follow-up levers (same day)
+
+These were measured against the pass above (`b93fdb9`), 3 alternating rounds, in the same environment. A second session was running its own Electron benchmarks on this host at the time (load average around 8 on 32 threads), so the rounds alternated sources and only differences that repeated are claimed.
+
+The glyph-run numbers used a temporary fontconfig exposing DejaVu Sans Mono. The earlier results used the only font Electron found here, the proportional DejaVu Sans, which disables runs by design.
+
+| Scenario (medians)                              |             Pass | Priority + glyph runs |
+| ----------------------------------------------- | ---------------: | --------------------: |
+| Echo drawn p50 / p95, 4 panes flooding          | 145.4 / 150.8 ms |        43.6 / 50.4 ms |
+| Key dispatch p95, 1 / 4 panes under flood       |     2.8 / 3.2 ms |          1.7 / 0.9 ms |
+| Full-screen TUI draw p50 / p95                  |     2.3 / 3.0 ms |          1.0 / 1.4 ms |
+| flood-plain presented                           |         103.4 ms |               88.1 ms |
+| Frame-interval p95, idle work, create/close RSS |        unchanged |             unchanged |
+
+- **Input priority** (`perf/lever-priority`). The first variant raised the typed-in pane to `user-blocking`. It cut the 4-pane echo to 51 ms, but frame-interval p95 doubled to 33.4 ms, so it was rejected. The retained variant lowers the other panes to `background` instead. The trade-off: while you type continuously, other flooding panes parsed about 6× less (10.8 against 63 MB over the window). In the app, that can push them into main's existing backlog/snapshot-resync path; it is bounded to 1 s after the last input.
+- **Glyph runs** (`perf/lever-textruns`). A first version set `textRendering: optimizeSpeed`. That changes glyph advances in Chromium and shifted the cell grid, so it was dropped.
+- **Worker per pane** (`perf/lever-worker`, spike, not production-complete). The VT core and an OffscreenCanvas painter move into a dedicated worker. The page compiles the WASM module once and shares it. The writer and its acknowledgement order are unchanged.
+
+  | Measurement                                 |         Pass | Worker spike |
+  | ------------------------------------------- | -----------: | -----------: |
+  | flood-sgr-4 presented                       |     270.5 ms |      86.4 ms |
+  | Output parsed in 3.5 s, 4 panes under input |       243 MB |       966 MB |
+  | Echo drawn p50, 4 panes                     |     145.6 ms |      43.8 ms |
+  | Key dispatch p95, 1 pane                    |       2.3 ms |       0.3 ms |
+  | Additional pane first frame                 |      15.7 ms |       6.9 ms |
+  | Renderer RSS, 1 / 4 panes                   | 165 / 164 MB | 182 / 201 MB |
+
+  An early version leaked about 3.7 MB of renderer RSS per closed pane: a retained facade pinned the placeholder canvas and its last frame. After fixing that, 60 cycles grew 6.6 MB, but a small facade object is still retained. Open gaps before this could ship:
+  - OSC 52 clipboard writes are denied, because confirmation lives on the page.
+  - A failed parse is reported but not recovered.
+  - Key encoding is asynchronous, so the default action is prevented for every non-modifier key, and kitty report-all modifier keys and double-click selection are not ported.
+  - There is no Vite/CSP worker packaging, and the surface test suite is not ported.
+
+- **WebGL glyph atlas: not measurable here.** WebGL2 is unavailable under this Xvfb (no GLX). It only appears with `--use-angle=swiftshader --enable-unsafe-swiftshader`, a CPU emulation that says nothing about GPU cost. It needs a real-GPU host, and a Canvas 2D fallback would remain necessary.
+
+Also observed: `bench:reload:budget` failed intermittently on every tree this session, the untouched baseline included (3 of 5), always with a corrupted `mux-graph:get` `snapshotJson`. It passed repeatedly earlier in the day, so it is load- or timing-dependent. It is pre-existing and not diagnosed.
