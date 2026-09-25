@@ -154,6 +154,8 @@ const METRICS: Record<string, string[]> = {
     'drawMs.p95',
     'frameIntervalMs.p95',
     'bytesParsed',
+    'focusedBytes',
+    'otherPaneMinBytes',
   ],
   'hidden-panes': ['elapsedMs', 'visibleRenders', 'hiddenRenders', 'drawMs.sum', 'renderMs.sum'],
   idle: ['rafRequests', 'drawMs.n'],

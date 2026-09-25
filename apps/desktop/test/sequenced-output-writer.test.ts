@@ -2,6 +2,9 @@ import { expect, test } from 'bun:test'
 import {
   createSequencedTerminalWriter,
   defaultYieldTask,
+  inputBoostPriority,
+  INPUT_PRIORITY_WINDOW_MS,
+  noteTerminalInput,
 } from '../src/renderer/terminal-output-writer'
 
 function fixture(options: { maxQueuedBytes?: number } = {}) {
@@ -409,5 +412,47 @@ test('default yield uses the unclamped scheduler.postTask when the host provides
     expect(posted).toEqual([{ priority: 'user-visible' }])
   } finally {
     global.scheduler = previous
+  }
+})
+
+test('after input, other panes yield to the typed-in pane for a bounded window', () => {
+  const realNow = performance.now.bind(performance)
+  let now = 10_000
+  performance.now = () => now
+  try {
+    let typedAt = 0
+    const typed = inputBoostPriority(() => typedAt)
+    const other = inputBoostPriority(() => 0)
+    expect([typed(), other()]).toEqual(['user-visible', 'user-visible'])
+    typedAt = noteTerminalInput()
+    // The typed-in pane keeps normal priority (never above rendering); the others step back.
+    expect([typed(), other()]).toEqual(['user-visible', 'background'])
+    now += INPUT_PRIORITY_WINDOW_MS
+    expect([typed(), other()]).toEqual(['user-visible', 'user-visible'])
+  } finally {
+    performance.now = realNow
+  }
+})
+
+test('the writer schedules each batch with its current priority', () => {
+  const priorities: Array<string | undefined> = []
+  const tasks: Array<() => void> = []
+  let priority: 'user-visible' | 'background' = 'background'
+  const writer = createSequencedTerminalWriter(
+    { write: (_data, done) => done?.() },
+    {
+      onApplied: () => {},
+      onResync: () => {},
+      priority: () => priority,
+      yieldTask: (callback, value) => (priorities.push(value), tasks.push(callback)),
+    },
+  )
+  try {
+    for (let seq = 1; seq <= 200; seq++) writer.writeOwned(Uint8Array.of(65), seq)
+    priority = 'user-visible'
+    tasks.shift()!()
+    expect(priorities).toEqual(['background', 'user-visible'])
+  } finally {
+    writer.dispose()
   }
 })
