@@ -14,6 +14,14 @@ function loadWasm(): Promise<ArrayBuffer> {
 }
 
 const FONT_VARIANTS = ['', 'bold ', 'italic ', 'italic bold '] as const
+/** Glyphs that may share one fillText call. Coding-font ligatures (->, !=, <=, ...) are built from
+ * punctuation, which canvas cannot disable, so runs are limited to letters, digits and spaces. */
+const RUN_CHARACTERS = ' 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+const RUNNABLE = new Set(RUN_CHARACTERS)
+
+function runnable(cell: GhosttyCell): boolean {
+  return cell.wide === 0 && RUNNABLE.has(cell.text)
+}
 
 type Listener<T> = (value: T) => void
 function subscribe<T>(listeners: Set<Listener<T>>, listener: Listener<T>): { dispose(): void } {
@@ -48,6 +56,9 @@ export class TauTerminal {
   private hiddenStale = false
   private fontSize = 14
   private fonts: string[] = []
+  /** Per font variant: ASCII advances equal the cell width, so runs of cells can be drawn as one
+   * string at identical glyph positions. Otherwise that variant is drawn cell by cell. */
+  private asciiRuns: boolean[] = []
   private fontFamily = '"SF Mono", Menlo, Monaco, "JetBrains Mono", monospace'
   private cellWidth = 8
   private cellHeight = 18
@@ -62,6 +73,8 @@ export class TauTerminal {
   private selectionEnd: Point | null = null
   /** Whether the VT core holds a selection (search matches are separate from it). */
   private hasSelection = false
+  /** Draw eligible ASCII runs with one fillText; tests compare against per-cell drawing. */
+  private textRuns = true
   private drag = false
   private mouseReporting = false
   private searchQuery = ''
@@ -194,6 +207,13 @@ export class TauTerminal {
     this.fonts = FONT_VARIANTS.map((variant) => `${variant}${this.fontSize}px ${this.fontFamily}`)
     const measurement = ctx.measureText('M')
     this.cellWidth = Math.max(1, measurement.width)
+    this.configureText(ctx)
+    this.asciiRuns = this.fonts.map((font) => {
+      ctx.font = font
+      const width = ctx.measureText(RUN_CHARACTERS).width
+      return Math.abs(width - RUN_CHARACTERS.length * this.cellWidth) < 0.01
+    })
+    ctx.font = this.fonts[0]!
     this.cellHeight = Math.ceil(
       Math.max(
         this.fontSize + 4,
@@ -201,6 +221,12 @@ export class TauTerminal {
       ),
     )
     this.baseline = Math.round((this.cellHeight - this.fontSize) / 2 + this.fontSize - 2)
+  }
+
+  /** Runs must not kern; single-glyph draws are unaffected. (Do not use textRendering:
+   * optimizeSpeed; Chromium then changes glyph advances and the cell grid.) */
+  private configureText(ctx: CanvasRenderingContext2D): void {
+    ctx.fontKerning = 'none'
   }
 
   private appearanceChanged = () => {
@@ -310,6 +336,7 @@ export class TauTerminal {
     }
     ctx.setTransform(scale, 0, 0, scale, 0, 0)
     ctx.textBaseline = 'alphabetic'
+    this.configureText(ctx)
     ctx.font = `${this.fontSize}px ${this.fontFamily}`
     const frame = this.vt.render()
     const previousCursor = this.lastFrame?.cursor
@@ -457,11 +484,13 @@ export class TauTerminal {
     let font = -1
     let faint = false
     let fill = ''
-    for (let x = 0; x < cells.length; x++) {
+    const py = y * this.cellHeight
+    for (let x = 0; x < cells.length;) {
       const cell = cells[x]
-      if (cell.wide === 2 || cell.wide === 3 || !cell.text) continue
-      const px = x * this.cellWidth
-      const py = y * this.cellHeight
+      if (cell.wide === 2 || cell.wide === 3 || !cell.text) {
+        x++
+        continue
+      }
       if (fill !== foregrounds[x]) {
         fill = foregrounds[x]!
         ctx.fillStyle = fill
@@ -475,18 +504,38 @@ export class TauTerminal {
         font = variant
         ctx.font = fonts[variant]!
       }
-      ctx.fillText(cell.text, px, py + this.baseline)
-      if (cell.underline || cell.strikethrough) {
+      // Extend a run over following cells that share every property affecting the glyph.
+      let end = x + 1
+      let text = cell.text
+      if (this.textRuns && this.asciiRuns[variant] && runnable(cell)) {
+        while (end < cells.length) {
+          const next = cells[end]
+          if (
+            !runnable(next) ||
+            foregrounds[end] !== fill ||
+            next.faint !== faint ||
+            ((next.bold ? 1 : 0) | (next.italic ? 2 : 0)) !== variant
+          )
+            break
+          text += next.text
+          end++
+        }
+      }
+      ctx.fillText(text, x * this.cellWidth, py + this.baseline)
+      for (let at = x; at < end; at++) {
+        const decorated = cells[at]
+        if (!decorated.underline && !decorated.strikethrough) continue
         // Decorations are opaque even on faint text.
         if (faint) ctx.globalAlpha = 1
         ctx.fillRect(
-          px,
-          py + (cell.strikethrough ? this.cellHeight / 2 : this.cellHeight - 2),
+          at * this.cellWidth,
+          py + (decorated.strikethrough ? this.cellHeight / 2 : this.cellHeight - 2),
           this.cellWidth,
           1,
         )
         if (faint) ctx.globalAlpha = 0.6
       }
+      x = end
     }
     if (faint) ctx.globalAlpha = 1
     this.paintImages(ctx, y, frame, true)
