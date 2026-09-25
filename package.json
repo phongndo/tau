@@ -45,6 +45,7 @@
     "bench:soak": "bun run --filter @tau/desktop bench:soak",
     "bench:soak:budget": "bun run --filter @tau/desktop bench:soak:budget",
     "bench:renderer": "bun run --filter @tau/desktop bench:renderer",
+    "bench:surface": "bun run --filter @tau/desktop bench:surface",
     "bench:startup:budget": "bun run --filter @tau/desktop bench:startup:budget",
     "bench:app-soak": "bun run --filter @tau/desktop bench:app-soak",
     "bench:app-soak:hour": "bun run --filter @tau/desktop bench:app-soak:hour",

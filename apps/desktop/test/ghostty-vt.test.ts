@@ -257,3 +257,29 @@ test('direct Ghostty WASM handles non-ASCII graphemes, wide cells and resize', a
     vt.dispose()
   }
 })
+
+test('row decoding keeps styles, background-only cells and graphemes per cell', async () => {
+  const vt = await terminal(16, 2)
+  try {
+    // Repeated style IDs share one lookup per row; erased cells carry their own background color.
+    vt.write(
+      '\x1b[31mA\x1b[1mB\x1b[22mC\x1b[0mD\x1b[48;2;1;2;3m\x1b[2X\x1b[0m\x1b[2Cé\x1b[8mH\x1b[0m\x1b[7mI\x1b[0m',
+    )
+    const frame = vt.render()
+    const cells = frame.rows.find((row) => row.y === 0)!.cells
+    const red = cells[0]!.fg
+    expect(red).not.toBe(frame.foreground)
+    expect(cells[0]).toMatchObject({ text: 'A', bold: false, bg: frame.background })
+    expect(cells[1]).toMatchObject({ text: 'B', bold: true, fg: red })
+    expect(cells[2]).toMatchObject({ text: 'C', bold: false, fg: red })
+    expect(cells[3]).toMatchObject({ text: 'D', fg: frame.foreground, bg: frame.background })
+    expect(cells[4]).toMatchObject({ text: '', bg: '#010203' })
+    expect(cells[5]).toMatchObject({ text: '', bg: '#010203' })
+    expect(cells[6]).toMatchObject({ text: 'é', bg: frame.background })
+    expect(cells[7]).toMatchObject({ text: '' })
+    expect(cells[8]).toMatchObject({ text: 'I', inverse: true })
+    expect(cells[9]).toMatchObject({ text: '', inverse: false, fg: frame.foreground })
+  } finally {
+    vt.dispose()
+  }
+})

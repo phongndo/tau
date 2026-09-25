@@ -858,8 +858,12 @@ export class TaudPtyBridge {
       this.tripSessionChannelBackpressure(sessionId, channel)
       return
     }
-    // Exact-sized owned copy so the posted message does not retain a view into `data`.
-    const bytes = Uint8Array.from(data)
+    // Post an exact-sized buffer: posting clones the whole ArrayBuffer, so a view into a larger
+    // (pooled) buffer would leak unrelated bytes. Stream parser payloads are already exact copies.
+    const bytes =
+      data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+        ? data
+        : Uint8Array.from(data)
     try {
       // MessagePortMain's transfer list accepts MessagePorts only. ArrayBuffers are still cloned as
       // message data, but passing one in the transfer list makes Electron reject the entire post.

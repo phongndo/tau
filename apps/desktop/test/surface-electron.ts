@@ -88,6 +88,34 @@ async function run() {
   await painted()
   check('search reports actual VT matches', term.search('world', 'next', false))
   term.clearSearch()
+  // Search highlights are JS-only pixels: they must appear on rows Ghostty does not report dirty.
+  term.write('\\x1b[?25l\\x1b[2J\\x1b[Hfind-me\\r\\n\\r\\nprompt')
+  await painted()
+  const hyphen = () => rgb(canvas, Math.floor(term.cellWidth * 4.5), 1)
+  const beforeHighlight = hyphen()
+  term.search('find-me', 'next', false)
+  await painted()
+  check('search highlights a clean row away from the cursor', hyphen() === '107,74,53', hyphen())
+  term.clearSearch()
+  await painted()
+  check('clearing search removes the highlight', hyphen() === beforeHighlight, hyphen())
+  // A parked surface (1x1, off-screen, as terminal.ts hides runtimes) keeps parsing but defers
+  // painting; reattaching repaints what changed while hidden.
+  const parking = document.createElement('div')
+  parking.style.cssText = 'position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;overflow:hidden'
+  document.body.appendChild(parking)
+  const canvasSize = canvas.width + 'x' + canvas.height
+  host.style.width = host.style.height = '100%'
+  parking.appendChild(host)
+  term.write('\\x1b[2J\\x1b[H\\x1b[42mPARKED\\x1b[0m')
+  await painted()
+  check('parked surface skips painting', term.hidden && canvas.width + 'x' + canvas.height === canvasSize && !reader.textContent.includes('PARKED'))
+  host.style.width = host.style.height = ''
+  document.body.insertBefore(host, document.body.firstChild)
+  parking.remove()
+  term.refresh(0, term.rows - 1)
+  await painted()
+  check('reattached surface repaints output written while parked', !term.hidden && reader.textContent.includes('PARKED') && rgb(canvas, 1, 1) !== blank, reader.textContent)
   const emitted = []
   const received = term.onData(text => emitted.push(text))
   term.focus()
@@ -154,6 +182,7 @@ async function run() {
   const copy = new DataTransfer()
   input.dispatchEvent(new ClipboardEvent('copy', { bubbles: true, clipboardData: copy }))
   check('real pointer drag selects and copies viewport text', /^sele/u.test(copy.getData('text/plain')), copy.getData('text/plain'))
+  check('selection highlight reaches canvas pixels', rgb(canvas, Math.floor(term.cellWidth * 2.5), 1) === '38,79,120', rgb(canvas, Math.floor(term.cellWidth * 2.5), 1))
   term.write('\\x1b[?1000h\\x1b[?1006h')
   await fetch('/action', { method: 'POST', body: 'click' })
   await painted()

@@ -56,6 +56,32 @@ export type GhosttyFrame = {
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
+type CellField = { lsb: number; mask: number }
+type CellStyle = Pick<
+  GhosttyCell,
+  'fg' | 'bg' | 'bold' | 'italic' | 'faint' | 'underline' | 'strikethrough' | 'inverse'
+> & { invisible: boolean }
+
+// `#rrggbb` strings for render colors, bounded so truecolor gradients cannot grow it forever.
+const rgbStrings = new Map<number, string>()
+
+function rgbString(rgb: number): string {
+  let value = rgbStrings.get(rgb)
+  if (value === undefined) {
+    if (rgbStrings.size >= 4096) rgbStrings.clear()
+    value = `#${rgb.toString(16).padStart(6, '0')}`
+    rgbStrings.set(rgb, value)
+  }
+  return value
+}
+
+/** Read a packed-cell field from its little-endian u32 halves without BigInt allocation. */
+function cellField(lo: number, hi: number, field: CellField): number {
+  if (field.lsb >= 32) return (hi >>> (field.lsb - 32)) & field.mask
+  if (field.lsb === 0) return lo & field.mask
+  return ((lo >>> field.lsb) | (hi << (32 - field.lsb))) & field.mask
+}
+
 export class GhosttyVt {
   readonly api: Api
   readonly layout: Manifest
@@ -81,6 +107,15 @@ export class GhosttyVt {
   private clipboardListener: ((text: string) => boolean) | null = null
   private defaultColors = '#151515:#d4d4d4'
   private lightColorScheme = false
+  // Reused across calls; replaced only when WASM memory growth detaches the old buffer.
+  private dataView: DataView | null = null
+  private readonly cellBits: Record<'content_tag' | 'content' | 'style_id' | 'wide', CellField>
+  private readonly styleOffsets: Record<
+    'bold' | 'italic' | 'faint' | 'underline' | 'strikethrough' | 'inverse' | 'invisible',
+    number
+  >
+  // Per-row: cells of one row share a page, so a style ID resolves to one style and fg/bg pair.
+  private readonly rowStyles = new Map<number, CellStyle>()
 
   static async create(bytes: BufferSource, cols = 80, rows = 24): Promise<GhosttyVt> {
     const { instance } = await WebAssembly.instantiate(bytes)
@@ -99,6 +134,29 @@ export class GhosttyVt {
     }
     this.cols = cols
     this.rows = rows
+    const bits = this.layout.types.GhosttyCell.bits!
+    const field = (name: string, width = bits[name]!.width): CellField => {
+      const { lsb } = bits[name]!
+      if (width > 31 || lsb + width > 64) throw new Error('Unsupported Ghostty cell layout')
+      return { lsb, mask: 2 ** width - 1 }
+    }
+    // Only the 21-bit codepoint arm of the 24-bit content union is read.
+    this.cellBits = {
+      content_tag: field('content_tag'),
+      content: field('content', 21),
+      style_id: field('style_id'),
+      wide: field('wide'),
+    }
+    const style = this.layout.types.GhosttyStyle.fields
+    this.styleOffsets = {
+      bold: style.bold!.offset,
+      italic: style.italic!.offset,
+      faint: style.faint!.offset,
+      underline: style.underline!.offset,
+      strikethrough: style.strikethrough!.offset,
+      inverse: style.inverse!.offset,
+      invisible: style.invisible!.offset,
+    }
     this.slot = api.ghostty_wasm_alloc_opaque()
     this.scratch = api.ghostty_wasm_alloc(4096)
     if (!this.slot || !this.scratch) throw new Error('Ghostty WASM memory exhausted')
@@ -176,7 +234,9 @@ export class GhosttyVt {
   }
 
   private view(): DataView {
-    return new DataView(this.api.memory.buffer)
+    const buffer = this.api.memory.buffer
+    if (this.dataView?.buffer !== buffer) this.dataView = new DataView(buffer)
+    return this.dataView
   }
 
   private check(result: number, operation: string): void {
@@ -184,8 +244,10 @@ export class GhosttyVt {
   }
 
   private readRgb(ptr: number): string {
-    const data = new Uint8Array(this.api.memory.buffer, ptr, 3)
-    return `#${[...data].map((component) => component.toString(16).padStart(2, '0')).join('')}`
+    const view = this.view()
+    return rgbString(
+      (view.getUint8(ptr) << 16) | (view.getUint8(ptr + 1) << 8) | view.getUint8(ptr + 2),
+    )
   }
 
   setDefaultColors(background: string, foreground: string, light = false): void {
@@ -860,50 +922,52 @@ export class GhosttyVt {
   private readRow(background: string, foreground: string): GhosttyCell[] {
     const api = this.api
     this.check(api.ghostty_render_state_row_get(this.rowIterator, 5, this.scratch), 'row cells')
-    const ptr = this.view().getUint32(this.scratch, true)
-    const count = this.view().getUint32(this.scratch + 4, true)
+    let view = this.view()
+    const ptr = view.getUint32(this.scratch, true)
+    const count = view.getUint32(this.scratch + 4, true)
     if (count !== this.cols) throw new Error(`Ghostty row width ${count} != ${this.cols}`)
-    const bits = this.layout.types.GhosttyCell.bits!
     const selection = this.layout.types.GhosttyRenderStateRowSelection
-    this.view().setUint32(this.scratch, selection.size, true)
+    view.setUint32(this.scratch, selection.size, true)
     const selectionStatus = api.ghostty_render_state_row_get(this.rowIterator, 4, this.scratch)
     if (selectionStatus !== 0 && selectionStatus !== -4)
       this.check(selectionStatus, 'row selection')
     const selectedStart =
       selectionStatus === 0
-        ? this.view().getUint16(this.scratch + selection.fields.start_x.offset, true)
+        ? view.getUint16(this.scratch + selection.fields.start_x.offset, true)
         : -1
     const selectedEnd =
       selectionStatus === 0
-        ? this.view().getUint16(this.scratch + selection.fields.end_x.offset, true)
+        ? view.getUint16(this.scratch + selection.fields.end_x.offset, true)
         : -1
+    const {
+      content_tag: tagBits,
+      content: contentBits,
+      style_id: styleBits,
+      wide: wideBits,
+    } = this.cellBits
+    const styles = this.rowStyles
+    styles.clear()
     const cells: GhosttyCell[] = []
     let iteratorReady = false
     for (let x = 0; x < count; x++) {
-      const packed = this.view().getBigUint64(ptr + x * 8, true)
-      const field = (name: keyof typeof bits) => {
-        const { lsb, width } = bits[name]
-        return Number((packed >> BigInt(lsb)) & ((1n << BigInt(width)) - 1n))
-      }
-      const tag = field('content_tag')
-      const styleId = field('style_id')
-      const wide = field('wide')
+      // WASM addresses survive memory growth; only the ArrayBuffer view must be refreshed.
+      view = this.view()
+      const lo = view.getUint32(ptr + x * 8, true)
+      const hi = view.getUint32(ptr + x * 8 + 4, true)
+      const tag = cellField(lo, hi, tagBits)
+      const styleId = cellField(lo, hi, styleBits)
+      const wide = cellField(lo, hi, wideBits)
       let text = ''
       if (tag <= 1 && wide !== 2 && wide !== 3) {
-        const codepoint = Number((packed >> BigInt(bits.content.lsb)) & 0x1fffffn)
+        const codepoint = cellField(lo, hi, contentBits)
         if (codepoint > 0 && codepoint <= 0x10ffff) text = String.fromCodePoint(codepoint)
       }
-      let fg = foreground
-      let bg = background
-      let bold = false
-      let italic = false
-      let faint = false
-      let underline = false
-      let strikethrough = false
-      let inverse = false
-      if (styleId !== 0 || tag !== 0 || wide !== 0) {
+      // Code-point cells resolve colors purely from their style; background-only cells (tags
+      // 2/3) carry their own color and are always read individually.
+      let style = tag <= 1 ? styles.get(styleId) : undefined
+      if (tag === 1 || (style === undefined && (styleId !== 0 || tag !== 0))) {
         if (!iteratorReady) {
-          this.view().setUint32(this.slot, this.cells, true)
+          view.setUint32(this.slot, this.cells, true)
           this.check(
             api.ghostty_render_state_row_get(this.rowIterator, 3, this.slot),
             'cell iterator',
@@ -911,61 +975,86 @@ export class GhosttyVt {
           iteratorReady = true
         }
         this.check(api.ghostty_render_state_row_cells_select(this.cells, x), 'cell select')
-        if (tag === 1) {
-          this.check(
-            api.ghostty_render_state_row_cells_get(this.cells, 3, this.scratch),
-            'grapheme length',
-          )
-          const length = this.view().getUint32(this.scratch, true)
-          if (length > 0 && length <= 1024) {
-            this.check(
-              api.ghostty_render_state_row_cells_get(this.cells, 4, this.scratch),
-              'grapheme',
-            )
-            text = ''
-            for (let i = 0; i < length; i++) {
-              const cp = this.view().getUint32(this.scratch + i * 4, true)
-              if (cp <= 0x10ffff) text += String.fromCodePoint(cp)
-            }
-          }
-        }
-        const fgResult = api.ghostty_render_state_row_cells_get(this.cells, 6, this.scratch)
-        if (fgResult === 0) fg = this.readRgb(this.scratch)
-        else if (fgResult !== -2) this.check(fgResult, 'foreground')
-        const bgResult = api.ghostty_render_state_row_cells_get(this.cells, 5, this.scratch)
-        if (bgResult === 0) bg = this.readRgb(this.scratch)
-        else if (bgResult !== -2) this.check(bgResult, 'background')
-        if (styleId !== 0) {
-          const style = this.layout.types.GhosttyStyle
-          this.view().setUint32(this.scratch, style.size, true)
-          this.check(api.ghostty_render_state_row_cells_get(this.cells, 2, this.scratch), 'style')
-          const get = (name: string) =>
-            this.view().getUint8(this.scratch + style.fields[name].offset) !== 0
-          bold = get('bold')
-          italic = get('italic')
-          faint = get('faint')
-          underline =
-            this.view().getUint32(this.scratch + style.fields.underline.offset, true) !== 0
-          strikethrough = get('strikethrough')
-          inverse = get('inverse')
-          if (get('invisible')) text = ''
+        if (tag === 1) text = this.readGrapheme(text)
+        if (style === undefined) {
+          style = this.readCellStyle(styleId, background, foreground)
+          if (tag <= 1) styles.set(styleId, style)
         }
       }
+      if (style !== undefined && style.invisible) text = ''
       cells.push({
         text,
-        fg,
-        bg,
-        bold,
-        italic,
-        faint,
-        underline,
-        strikethrough,
-        inverse,
+        fg: style?.fg ?? foreground,
+        bg: style?.bg ?? background,
+        bold: style?.bold ?? false,
+        italic: style?.italic ?? false,
+        faint: style?.faint ?? false,
+        underline: style?.underline ?? false,
+        strikethrough: style?.strikethrough ?? false,
+        inverse: style?.inverse ?? false,
         selected: x >= selectedStart && x <= selectedEnd,
         wide,
       })
     }
     return cells
+  }
+
+  /** Grapheme cluster of the selected cell; falls back to its base code point. */
+  private readGrapheme(text: string): string {
+    const api = this.api
+    this.check(
+      api.ghostty_render_state_row_cells_get(this.cells, 3, this.scratch),
+      'grapheme length',
+    )
+    const length = this.view().getUint32(this.scratch, true)
+    if (length <= 0 || length > 1024) return text
+    this.check(api.ghostty_render_state_row_cells_get(this.cells, 4, this.scratch), 'grapheme')
+    const view = this.view()
+    let cluster = ''
+    for (let i = 0; i < length; i++) {
+      const cp = view.getUint32(this.scratch + i * 4, true)
+      if (cp <= 0x10ffff) cluster += String.fromCodePoint(cp)
+    }
+    return cluster
+  }
+
+  /** Colors and attributes of the selected cell. */
+  private readCellStyle(styleId: number, background: string, foreground: string): CellStyle {
+    const api = this.api
+    const fgResult = api.ghostty_render_state_row_cells_get(this.cells, 6, this.scratch)
+    let fg = foreground
+    if (fgResult === 0) fg = this.readRgb(this.scratch)
+    else if (fgResult !== -2) this.check(fgResult, 'foreground')
+    const bgResult = api.ghostty_render_state_row_cells_get(this.cells, 5, this.scratch)
+    let bg = background
+    if (bgResult === 0) bg = this.readRgb(this.scratch)
+    else if (bgResult !== -2) this.check(bgResult, 'background')
+    const style: CellStyle = {
+      fg,
+      bg,
+      bold: false,
+      italic: false,
+      faint: false,
+      underline: false,
+      strikethrough: false,
+      inverse: false,
+      invisible: false,
+    }
+    if (styleId === 0) return style
+    const layout = this.layout.types.GhosttyStyle
+    this.view().setUint32(this.scratch, layout.size, true)
+    this.check(api.ghostty_render_state_row_cells_get(this.cells, 2, this.scratch), 'style')
+    const view = this.view()
+    const offsets = this.styleOffsets
+    const flag = (offset: number) => view.getUint8(this.scratch + offset) !== 0
+    style.bold = flag(offsets.bold)
+    style.italic = flag(offsets.italic)
+    style.faint = flag(offsets.faint)
+    style.underline = view.getUint32(this.scratch + offsets.underline, true) !== 0
+    style.strikethrough = flag(offsets.strikethrough)
+    style.inverse = flag(offsets.inverse)
+    style.invisible = flag(offsets.invisible)
+    return style
   }
 
   dispose(): void {

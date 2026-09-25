@@ -36,6 +36,15 @@ export class TauTerminal {
     Listener<{ resultIndex: number; resultCount: number }>
   >()
   private readonly rowsCache: GhosttyCell[][] = []
+  // Accessible text per viewport row; the reader is rewritten only when a row's text changes.
+  private readonly rowText: string[] = []
+  private dirtyRows = new Uint8Array(0)
+  private readonly foregrounds: string[] = []
+  // Pixels painted from JS-only state (search highlights) that Ghostty's dirty rows cannot see.
+  private repaintAll = true
+  // Canvas font/color parsing is not free; skip redundant assignments within one draw.
+  private canvasFont = ''
+  private canvasFill = ''
   private readonly imageCanvases = new Map<string, HTMLCanvasElement>()
   private lastFrame: GhosttyFrame | null = null
   private fontSize = 14
@@ -44,6 +53,7 @@ export class TauTerminal {
   private cellHeight = 18
   private baseline = 14
   private animationFrame: number | null = null
+  private parked = false
   private disposed = false
   private active = true
   private composing = false
@@ -53,7 +63,7 @@ export class TauTerminal {
   private selectionEnd: Point | null = null
   private drag = false
   private mouseReporting = false
-  private searchQuery = ''
+  private searchNeedle = ''
   private searchIndex = -1
 
   static async create(): Promise<TauTerminal> {
@@ -95,6 +105,11 @@ export class TauTerminal {
 
   get rows(): number {
     return this.vt.rows
+  }
+
+  /** True after the last frame found the surface parked off-screen or collapsed. */
+  get hidden(): boolean {
+    return this.parked
   }
 
   open(wrapper: HTMLElement): void {
@@ -198,8 +213,7 @@ export class TauTerminal {
     const light = document.documentElement.dataset.theme === 'light'
     this.vt.setDefaultColors(light ? '#fbfcfe' : '#151515', light ? '#202633' : '#d4d4d4', light)
     this.updateFontMetrics(ctx)
-    this.rowsCache.length = 0
-    this.lastFrame = null
+    this.invalidateRows()
     const size = this.proposeDimensions()
     const gridChanged = size && (size.cols !== this.cols || size.rows !== this.rows)
     if (size) this.resize(size.cols, size.rows)
@@ -220,8 +234,7 @@ export class TauTerminal {
   resize(cols: number, rows: number): void {
     if (cols === this.cols && rows === this.rows) return
     this.vt.resize(cols, rows, Math.round(this.cellWidth), Math.round(this.cellHeight))
-    this.rowsCache.length = 0
-    this.lastFrame = null
+    this.invalidateRows()
     this.refresh()
     for (const listener of this.resizeListeners) listener({ cols, rows })
   }
@@ -238,9 +251,8 @@ export class TauTerminal {
     this.vt.dispose()
     this.vt = next
     this.renderHeld = false
-    this.rowsCache.length = 0
-    this.lastFrame = null
-    this.searchQuery = ''
+    this.invalidateRows()
+    this.searchNeedle = ''
     this.anchor = null
     this.selectionEnd = null
     this.refresh()
@@ -262,50 +274,98 @@ export class TauTerminal {
     })
   }
 
+  private invalidateRows(): void {
+    this.rowsCache.length = 0
+    this.rowText.length = 0
+    this.lastFrame = null
+    this.repaintAll = true
+  }
+
+  private setFont(ctx: CanvasRenderingContext2D, font: string): void {
+    if (this.canvasFont === font) return
+    ctx.font = font
+    this.canvasFont = font
+  }
+
+  private setFill(ctx: CanvasRenderingContext2D, fill: string): void {
+    if (this.canvasFill === fill) return
+    ctx.fillStyle = fill
+    this.canvasFill = fill
+  }
+
   private draw(): void {
     const canvas = this.canvas
     if (!canvas) return
+    // Hidden runtimes are parked in a 1x1 off-screen container (terminal.ts). Leave Ghostty's
+    // dirty rows pending rather than decoding and painting invisible frames. The canvas keeps its
+    // pixels meanwhile; the refresh on reattach paints whatever Ghostty then reports as changed.
+    this.parked = !canvas.isConnected || canvas.clientWidth <= 1 || canvas.clientHeight <= 1
+    if (this.parked) return
     const ctx = canvas.getContext('2d', { alpha: false })
     if (!ctx) return
     const scale = window.devicePixelRatio || 1
     const width = Math.max(1, Math.ceil(canvas.clientWidth * scale))
     const height = Math.max(1, Math.ceil(canvas.clientHeight * scale))
-    let reset = false
+    let reset = this.repaintAll
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width
       canvas.height = height
       reset = true
     }
+    this.canvasFont = ''
+    this.canvasFill = ''
     ctx.setTransform(scale, 0, 0, scale, 0, 0)
     ctx.textBaseline = 'alphabetic'
-    ctx.font = `${this.fontSize}px ${this.fontFamily}`
     const frame = this.vt.render()
     const previous = this.lastFrame
     const previousCursor = previous?.cursor
     this.lastFrame = frame
+    this.repaintAll = false
     if (reset || frame.dirty === 2) {
-      ctx.fillStyle = frame.background
+      this.setFill(ctx, frame.background)
       ctx.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight)
     }
-    for (const row of frame.rows) this.rowsCache[row.y] = row.cells
-    const dirty = new Set(frame.rows.map((row) => row.y))
-    if (reset || this.imageSignature(previous?.images) !== this.imageSignature(frame.images))
-      for (let row = 0; row < this.rows; row++) dirty.add(row)
-    if (previousCursor?.visible) dirty.add(previousCursor.y)
-    if (frame.cursor.visible) dirty.add(frame.cursor.y)
-    if (this.anchor) for (let row = 0; row < this.rows; row++) dirty.add(row)
-    for (const row of dirty) this.paintRow(ctx, row, frame)
-    if (dirty.size > 0 && this.screenReader) {
-      this.screenReader.textContent = Array.from({ length: this.rows }, (_, y) =>
-        (this.rowsCache[y] ?? [])
-          .map((cell) => (cell.wide >= 2 ? '' : cell.text || ' '))
-          .join('')
-          .trimEnd(),
-      ).join('\n')
+    const rows = this.rows
+    if (this.dirtyRows.length !== rows) this.dirtyRows = new Uint8Array(rows)
+    const dirty = this.dirtyRows
+    dirty.fill(reset ? 1 : 0)
+    let textChanged = reset || this.rowText.length !== rows
+    for (const row of frame.rows) {
+      this.rowsCache[row.y] = row.cells
+      if (row.y >= rows) continue
+      dirty[row.y] = 1
+      const text = this.accessibleRow(row.y)
+      if (this.rowText[row.y] !== text) {
+        this.rowText[row.y] = text
+        textChanged = true
+      }
     }
-    const active = new Set(frame.images.map((image) => `${image.id}:${image.generation}`))
-    for (const key of this.imageCanvases.keys())
-      if (!active.has(key)) this.imageCanvases.delete(key)
+    if (
+      (previous?.images.length || frame.images.length) &&
+      this.imageSignature(previous?.images) !== this.imageSignature(frame.images)
+    )
+      dirty.fill(1)
+    if (previousCursor?.visible && previousCursor.y < rows) dirty[previousCursor.y] = 1
+    if (frame.cursor.visible && frame.cursor.y < rows) dirty[frame.cursor.y] = 1
+    for (let row = 0; row < rows; row++) if (dirty[row]) this.paintRow(ctx, row, frame)
+    if (textChanged && this.screenReader) {
+      if (this.rowText.length !== rows) {
+        this.rowText.length = rows
+        for (let row = 0; row < rows; row++) this.rowText[row] = this.accessibleRow(row)
+      }
+      this.screenReader.textContent = this.rowText.join('\n')
+    }
+    if (this.imageCanvases.size > 0) {
+      const active = new Set(frame.images.map((image) => `${image.id}:${image.generation}`))
+      for (const key of this.imageCanvases.keys())
+        if (!active.has(key)) this.imageCanvases.delete(key)
+    }
+  }
+
+  private accessibleRow(y: number): string {
+    let text = ''
+    for (const cell of this.rowsCache[y] ?? []) text += cell.wide >= 2 ? '' : cell.text || ' '
+    return text.trimEnd()
   }
 
   private imageSignature(images: GhosttyFrame['images'] | undefined): string {
@@ -368,50 +428,65 @@ export class TauTerminal {
 
   private paintRow(ctx: CanvasRenderingContext2D, y: number, frame: GhosttyFrame): void {
     if (y < 0 || y >= this.rows) return
-    ctx.fillStyle = frame.background
+    this.setFill(ctx, frame.background)
     ctx.fillRect(0, y * this.cellHeight, this.cols * this.cellWidth, this.cellHeight)
     const cells = this.rowsCache[y] ?? []
-    const search = this.searchQuery.toLocaleLowerCase()
-    const line = cells
-      .map((cell) => cell.text || ' ')
-      .join('')
-      .toLocaleLowerCase()
-    const matches: number[] = []
+    const search = this.searchNeedle
+    let matched: Uint8Array | null = null
     if (search) {
-      for (let start = line.indexOf(search); start >= 0; start = line.indexOf(search, start + 1))
-        matches.push(start)
+      // Match positions are string offsets in the joined row, applied to cell columns.
+      const line = cells
+        .map((cell) => cell.text || ' ')
+        .join('')
+        .toLocaleLowerCase()
+      for (let start = line.indexOf(search); start >= 0; start = line.indexOf(search, start + 1)) {
+        matched ??= new Uint8Array(cells.length)
+        matched.fill(1, start, Math.min(cells.length, start + search.length))
+      }
     }
-    const foregrounds: string[] = []
+    const foregrounds = this.foregrounds
+    foregrounds.length = cells.length
+    const py = y * this.cellHeight
     for (let x = 0; x < cells.length; x++) {
       const cell = cells[x]
       if (cell.wide === 2 || cell.wide === 3) continue
-      const px = x * this.cellWidth
-      const py = y * this.cellHeight
       let fg = cell.inverse ? cell.bg : cell.fg
       let bg = cell.inverse ? cell.fg : cell.bg
-      if (matches.some((start) => x >= start && x < start + search.length)) bg = '#6b4a35'
+      if (matched?.[x]) bg = '#6b4a35'
       if (cell.selected) {
         bg = '#264f78'
         fg = '#ffffff'
       }
       if (bg !== frame.background) {
-        ctx.fillStyle = bg
-        ctx.fillRect(px, py, (cell.wide === 1 ? 2 : 1) * this.cellWidth, this.cellHeight)
+        this.setFill(ctx, bg)
+        ctx.fillRect(
+          x * this.cellWidth,
+          py,
+          (cell.wide === 1 ? 2 : 1) * this.cellWidth,
+          this.cellHeight,
+        )
       }
       foregrounds[x] = fg
     }
     this.paintImages(ctx, y, frame, false)
+    const base = `${this.fontSize}px ${this.fontFamily}`
+    let alpha = 1
     for (let x = 0; x < cells.length; x++) {
       const cell = cells[x]
       if (cell.wide === 2 || cell.wide === 3 || !cell.text) continue
       const px = x * this.cellWidth
-      const py = y * this.cellHeight
-      ctx.fillStyle = foregrounds[x]
-      ctx.globalAlpha = cell.faint ? 0.6 : 1
-      ctx.font = `${cell.italic ? 'italic ' : ''}${cell.bold ? 'bold ' : ''}${this.fontSize}px ${this.fontFamily}`
+      this.setFill(ctx, foregrounds[x]!)
+      const cellAlpha = cell.faint ? 0.6 : 1
+      if (alpha !== cellAlpha) ctx.globalAlpha = alpha = cellAlpha
+      this.setFont(
+        ctx,
+        cell.italic || cell.bold
+          ? `${cell.italic ? 'italic ' : ''}${cell.bold ? 'bold ' : ''}${base}`
+          : base,
+      )
       ctx.fillText(cell.text, px, py + this.baseline)
-      ctx.globalAlpha = 1
       if (cell.underline || cell.strikethrough) {
+        if (alpha !== 1) ctx.globalAlpha = alpha = 1
         ctx.fillRect(
           px,
           py + (cell.strikethrough ? this.cellHeight / 2 : this.cellHeight - 2),
@@ -420,21 +495,21 @@ export class TauTerminal {
         )
       }
     }
+    if (alpha !== 1) ctx.globalAlpha = 1
     this.paintImages(ctx, y, frame, true)
     if (frame.cursor.visible && frame.cursor.y === y && this.cursorVisible) {
       const x = frame.cursor.x * this.cellWidth
-      const top = y * this.cellHeight
-      ctx.fillStyle = this.active ? '#d4d4d4' : '#666666'
-      if (frame.cursor.style === 0) ctx.fillRect(x, top, 2, this.cellHeight)
+      this.setFill(ctx, this.active ? '#d4d4d4' : '#666666')
+      if (frame.cursor.style === 0) ctx.fillRect(x, py, 2, this.cellHeight)
       else if (frame.cursor.style === 2)
-        ctx.fillRect(x, top + this.cellHeight - 2, this.cellWidth, 2)
+        ctx.fillRect(x, py + this.cellHeight - 2, this.cellWidth, 2)
       else {
-        ctx.fillRect(x, top, this.cellWidth, this.cellHeight)
+        ctx.fillRect(x, py, this.cellWidth, this.cellHeight)
         const text = cells[frame.cursor.x]?.text
         if (text) {
-          ctx.fillStyle = '#151515'
-          ctx.font = `${this.fontSize}px ${this.fontFamily}`
-          ctx.fillText(text, x, top + this.baseline)
+          this.setFill(ctx, '#151515')
+          this.setFont(ctx, base)
+          ctx.fillText(text, x, py + this.baseline)
         }
       }
     }
@@ -669,7 +744,8 @@ export class TauTerminal {
   }
 
   search(query: string, direction: 'next' | 'previous', _incremental: boolean): boolean {
-    this.searchQuery = query
+    this.searchNeedle = query.toLocaleLowerCase()
+    this.repaintAll = true
     const result = this.vt.search(query, direction)
     this.searchIndex = result.resultIndex
     for (const listener of this.searchListeners) listener(result)
@@ -678,7 +754,8 @@ export class TauTerminal {
   }
 
   clearSearch(): void {
-    this.searchQuery = ''
+    this.searchNeedle = ''
+    this.repaintAll = true
     this.searchIndex = -1
     this.anchor = null
     this.selectionEnd = null

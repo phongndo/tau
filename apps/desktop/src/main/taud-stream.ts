@@ -1,3 +1,4 @@
+import { crc32 } from 'node:zlib'
 import {
   TAUD_STREAM_HEADER_SIZE,
   TAUD_STREAM_MAGIC,
@@ -23,30 +24,9 @@ export type TaudParsedStreamFrame = {
   readonly payload: Buffer
 }
 
-let crcTable: Uint32Array | null = null
-
-function getCrcTable(): Uint32Array {
-  if (crcTable) return crcTable
-
-  const table = new Uint32Array(256)
-  for (let i = 0; i < 256; i++) {
-    let value = i
-    for (let bit = 0; bit < 8; bit++) {
-      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1
-    }
-    table[i] = value >>> 0
-  }
-  crcTable = table
-  return table
-}
-
+/** IEEE CRC-32, as written by taud. Native zlib: every output byte is checked on Electron main. */
 export function taudCrc32(buffer: Buffer | Uint8Array): number {
-  const table = getCrcTable()
-  let crc = 0xffffffff
-  for (const byte of buffer) {
-    crc = table[(crc ^ byte) & 0xff]! ^ (crc >>> 8)
-  }
-  return (crc ^ 0xffffffff) >>> 0
+  return crc32(buffer)
 }
 
 export function encodeTaudStreamFrame(input: {
@@ -147,14 +127,33 @@ function trailingMagicPrefixLength(buffer: Buffer): number {
   return 0
 }
 
+/** Exact-sized private copy. `Buffer.from` returns views into Node's shared pool (64 KiB slabs in
+ * Electron) for payloads below half the pool size; the bridge posts exact buffers without a copy. */
+function exactCopy(bytes: Buffer): Buffer {
+  const copy = Buffer.allocUnsafeSlow(bytes.length)
+  bytes.copy(copy)
+  return copy
+}
+
 export class TaudStreamFrameParser {
-  private pending = Buffer.alloc(0)
+  private pending: Buffer = Buffer.alloc(0)
 
   push(chunk: Buffer | Uint8Array): TaudParsedStreamFrame[] {
     if (chunk.length === 0) return []
-    this.pending =
-      this.pending.length === 0 ? Buffer.from(chunk) : Buffer.concat([this.pending, chunk])
+    // Parse a lone chunk in place. Payloads are copied out below, and a partial-frame remainder is
+    // copied before returning, so no view into the caller's (possibly reused) chunk is retained.
+    const borrowed = this.pending.length === 0
+    this.pending = borrowed
+      ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+      : Buffer.concat([this.pending, chunk])
+    try {
+      return this.parsePending()
+    } finally {
+      if (borrowed && this.pending.length > 0) this.pending = Buffer.from(this.pending)
+    }
+  }
 
+  private parsePending(): TaudParsedStreamFrame[] {
     const frames: TaudParsedStreamFrame[] = []
     let offset = 0
 
@@ -210,7 +209,7 @@ export class TaudStreamFrameParser {
         kind,
         sessionId,
         seq: safeSeqToNumber(seq),
-        payload: Buffer.from(payload),
+        payload: exactCopy(payload),
       })
       offset = payloadEnd
     }

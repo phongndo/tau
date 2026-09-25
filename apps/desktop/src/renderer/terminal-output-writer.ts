@@ -52,6 +52,8 @@ export function createSequencedTerminalWriter(
     onApplied(seq: number): void
     onResync(lastAppliedSeq: number): void
     onWriteError?(error: unknown, lastAppliedSeq: number): void
+    /** Hidden panes yield with a timer so they cannot crowd out visible output and input. */
+    isBackground?(): boolean
     maxQueuedBytes?: number
   },
 ): SequencedTerminalWriter {
@@ -64,7 +66,12 @@ export function createSequencedTerminalWriter(
   let disposed = false
   let waitingForSnapshot = false
   let minimumSnapshotSeq = 0
-  let scheduled: ReturnType<typeof setTimeout> | null = null
+  // Yield between batches with a message task. Browsers clamp setTimeout(0) chained from timer
+  // callbacks to >= 4 ms after five levels, capping parsing at one batch per 4 ms. Input and
+  // rendering tasks still outrank message tasks. Background writers keep the throttled timer.
+  let scheduled = false
+  const yieldChannel = typeof MessageChannel === 'function' ? new MessageChannel() : null
+  let yieldTimer: ReturnType<typeof setTimeout> | null = null
   let lastAppliedSeq = 0
   let drainWaiters: Array<() => void> = []
   let writeCount = 0
@@ -89,9 +96,10 @@ export function createSequencedTerminalWriter(
     for (const resolve of waiters) resolve()
   }
   const schedule = () => {
-    if (disposed || writing || waitingForSnapshot || scheduled !== null || head === queue.length)
-      return
-    scheduled = setTimeout(process, 0)
+    if (disposed || writing || waitingForSnapshot || scheduled || head === queue.length) return
+    scheduled = true
+    if (yieldChannel && !options.isBackground?.()) yieldChannel.port2.postMessage(null)
+    else yieldTimer = setTimeout(process, 0)
   }
   // Reused for every write; don't retain the completed frame's byte buffer in a closure.
   const onWriteComplete = () => {
@@ -109,8 +117,9 @@ export function createSequencedTerminalWriter(
     resolveDrains()
   }
   const process = () => {
-    if (scheduled !== null) clearTimeout(scheduled)
-    scheduled = null
+    if (yieldTimer !== null) clearTimeout(yieldTimer)
+    yieldTimer = null
+    scheduled = false
     if (disposed || writing || waitingForSnapshot) return
     const first = queue[head]
     if (!first) {
@@ -166,6 +175,13 @@ export function createSequencedTerminalWriter(
       else options.onResync(lastAppliedSeq)
       resolveDrains()
     }
+  }
+  if (yieldChannel) {
+    yieldChannel.port1.onmessage = () => {
+      if (scheduled) process()
+    }
+    // Node/Bun ports keep the process alive; a browser renderer has no such API.
+    ;(yieldChannel.port1 as { unref?: () => void }).unref?.()
   }
   const enqueue = (data: Uint8Array, seq: number, owned: boolean) => {
     if (disposed || data.byteLength === 0) return
@@ -265,8 +281,11 @@ export function createSequencedTerminalWriter(
     },
     dispose() {
       disposed = true
-      if (scheduled !== null) clearTimeout(scheduled)
-      scheduled = null
+      if (yieldTimer !== null) clearTimeout(yieldTimer)
+      yieldTimer = null
+      scheduled = false
+      yieldChannel?.port1.close()
+      yieldChannel?.port2.close()
       queue.length = 0
       head = 0
       queuedBytes = 0

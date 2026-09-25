@@ -507,6 +507,7 @@ export async function createTerminal(
       window.electronAPI.acknowledgeSessionOutput(sessionId, seq)
     },
     onResync: (seq) => window.electronAPI.requestSessionResync(sessionId, seq),
+    isBackground: () => openedTerm.hidden,
     onWriteError: (error, seq) => {
       console.error('[terminal] Ghostty VT write failed; rebuilding from daemon snapshot:', error)
       terminalReset = openedTerm.resetCore()

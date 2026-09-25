@@ -12,5 +12,6 @@ These are dated results, not current performance promises:
 - [Bun tooling migration](tooling-benchmarks.md) — macOS development workflow comparison and raw samples.
 - [Dependency upgrade](benchmarks/dependency-upgrade-2026-09-23.md) — compatibility decisions and bounded before/after observations.
 - [Output allocations](benchmarks/output-allocation-2026-09-23.md) — allocation counts, real-xterm workload, and packaged smoke results.
+- [Surface and output-path pass](benchmarks/perf-pass-2026-09-25.md) — production TauTerminal/Ghostty surface, main transport and packaged results; one rejected daemon experiment.
 
 The executable benchmark definitions and thresholds are in [package.json](../package.json) and [apps/desktop/package.json](../apps/desktop/package.json). Check the code and rerun a relevant benchmark before relying on an older result.

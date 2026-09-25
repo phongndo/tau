@@ -279,17 +279,61 @@ test('queue compaction preserves order and accounting across thousands of frames
   }
 })
 
-test('synchronous parser callbacks still yield between bounded batches and resolve drain', async () => {
-  const acks: number[] = []
-  const writer = createSequencedTerminalWriter(
+function synchronousWriter(acks: number[], isBackground?: () => boolean) {
+  return createSequencedTerminalWriter(
     { write: (_data, done) => done?.() },
     {
       onApplied: (seq) => acks.push(seq),
       onResync: () => {
         throw new Error('Unexpected resync')
       },
+      isBackground,
     },
   )
+}
+
+test('synchronous parser callbacks process one bounded batch per yielded task', async () => {
+  // Bun drains one MessagePort's queue before other ports, so observe the writer's yields
+  // directly: each posted task must run exactly one batch, leaving the event loop in between.
+  const posted: Array<() => void> = []
+  const RealMessageChannel = globalThis.MessageChannel
+  class RecordingChannel {
+    readonly port1 = { onmessage: null as (() => void) | null, close() {} }
+    readonly port2 = { postMessage: () => posted.push(() => this.port1.onmessage?.()), close() {} }
+  }
+  globalThis.MessageChannel = RecordingChannel as unknown as typeof MessageChannel
+  const acks: number[] = []
+  let writer: ReturnType<typeof synchronousWriter>
+  try {
+    writer = synchronousWriter(acks)
+  } finally {
+    globalThis.MessageChannel = RealMessageChannel
+  }
+  try {
+    for (let seq = 1; seq <= 1025; seq++) writer.writeOwned(Uint8Array.of(65), seq)
+    let drained = false
+    const draining = writer.drain().then(() => {
+      drained = true
+    })
+    expect(acks).toEqual([128])
+    expect(posted.length).toBeGreaterThan(0)
+    for (let task = 0; posted.length > 0; task++) {
+      posted.shift()!()
+      expect(acks.length).toBeLessThanOrEqual(task + 2)
+    }
+    await draining
+    expect(drained).toBe(true)
+    expect(acks.at(-1)).toBe(1025)
+    expect(acks.length).toBe(9)
+  } finally {
+    writer.dispose()
+  }
+})
+
+test('background writers yield to timers between bounded batches', async () => {
+  const acks: number[] = []
+  let background = true
+  const writer = synchronousWriter(acks, () => background)
   let yielded = false
   const timer = setTimeout(() => {
     yielded = true
@@ -301,11 +345,25 @@ test('synchronous parser callbacks still yield between bounded batches and resol
     await draining
     expect(yielded).toBe(true)
     expect(acks.at(-1)).toBe(1025)
-    expect(acks.length).toBe(9)
+    // Becoming visible again switches back to message yields without losing ordering.
+    background = false
+    for (let seq = 1026; seq <= 1300; seq++) writer.writeOwned(Uint8Array.of(66), seq)
+    await writer.drain()
+    expect(acks.at(-1)).toBe(1300)
   } finally {
     clearTimeout(timer)
     writer.dispose()
   }
+})
+
+test('disposing a writer with a pending yield never processes queued output', async () => {
+  const acks: number[] = []
+  const writer = synchronousWriter(acks)
+  for (let seq = 1; seq <= 300; seq++) writer.writeOwned(Uint8Array.of(65), seq)
+  expect(acks).toEqual([])
+  writer.dispose()
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  expect(acks).toEqual([])
 })
 
 test('disposing while the parser is writing releases drains and suppresses late callbacks', async () => {
